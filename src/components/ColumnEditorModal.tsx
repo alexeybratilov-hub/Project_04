@@ -1,16 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  X, Columns, Plus, Trash2, ArrowUp, 
-  ArrowDown, Lock, Check, AlertTriangle, 
+import {
+  X, Columns, Plus, Trash2, ArrowUp,
+  ArrowDown, Link2, Check, AlertTriangle,
   Link as LinkIcon, List, Calendar, Hash, Type, CheckSquare, Edit2
 } from 'lucide-react';
-import { Column, ColumnType, Tab } from '../types/database';
+import { Column, ColumnType, Tab, Tag } from '../types/database';
+import { createUniqueId, integrityService } from '../services/integrityService';
 
 interface ColumnEditorModalProps {
   isOpen: boolean;
   onClose: () => void;
   currentTab: Tab;
   allTabs: Tab[];
+  tags?: Tag[];
   onUpdateColumns: (tabId: string, columns: Column[]) => void;
 }
 
@@ -19,6 +21,7 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
   onClose,
   currentTab,
   allTabs,
+  tags = [],
   onUpdateColumns
 }) => {
   const [columns, setColumns] = useState<Column[]>(currentTab?.columns || []);
@@ -35,7 +38,7 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
   const [editingColId, setEditingColId] = useState<string | null>(null);
   const [editingColName, setEditingColName] = useState('');
 
-  // Inline delete confirmation state (replaces window.confirm which can be blocked in iframes/apps)
+  // Inline delete confirmation state
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   // Sync columns state when modal opens or tab changes
@@ -49,10 +52,20 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
     }
   }, [currentTab?.id, currentTab?.columns, isOpen]);
 
-  // Potential master tabs (all tabs other than current tab)
+  // Esc key closes modal
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !editingColId) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, editingColId, onClose]);
+
   const masterCandidates = allTabs.filter((t) => t.id !== currentTab?.id);
 
-  // Default relation selection when master candidates change or relation type selected
   useEffect(() => {
     if (newColType === 'relation' && masterCandidates.length > 0) {
       if (!newColRelTabId || !masterCandidates.some((t) => t.id === newColRelTabId)) {
@@ -114,7 +127,7 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
     const safeWidth = Math.max(70, Math.min(800, Number(newColWidth) || 180));
 
     const newCol: Column = {
-      id: `col_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: createUniqueId('col'),
       name: trimmedName,
       type: newColType,
       width: safeWidth,
@@ -212,6 +225,7 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
             type="button"
             onClick={onClose}
             className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg transition-colors"
+            title="Закрыть (Esc)"
           >
             <X className="w-5 h-5" />
           </button>
@@ -219,7 +233,6 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
 
         {/* Content Body */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6 text-xs">
-          {/* Feedback banners */}
           {successMsg && (
             <div className="p-3 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 rounded-lg flex items-center gap-2 text-xs">
               <Check className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
@@ -235,16 +248,16 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
           )}
 
           {/* ADD COLUMN FORM */}
-          <form 
-            onSubmit={handleAddColumn} 
-            className="p-5 bg-slate-50 dark:bg-slate-850 rounded-xl border border-slate-200 dark:border-slate-750 shadow-xs space-y-4"
+          <form
+            onSubmit={handleAddColumn}
+            className="p-5 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700 shadow-xs space-y-4"
           >
             <div className="flex items-center justify-between">
               <h3 className="font-semibold text-slate-900 dark:text-slate-100 text-sm flex items-center gap-2">
                 <Plus className="w-4 h-4 text-blue-600" />
                 <span>Добавить новый столбец</span>
               </h3>
-              <span className="text-[11px] text-slate-400">
+              <span className="text-[11px] text-slate-400 font-mono tabular-nums">
                 Всего в таблице: {columns.length}
               </span>
             </div>
@@ -292,7 +305,7 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
                   step={10}
                   value={newColWidth}
                   onChange={(e) => setNewColWidth(parseInt(e.target.value, 10) || 180)}
-                  className="w-full px-2.5 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-mono text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-hidden"
+                  className="w-full px-2.5 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-mono tabular-nums text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-hidden"
                 />
               </div>
             </div>
@@ -377,7 +390,7 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
             </div>
           </form>
 
-          {/* Existing Columns List with Inline Rename, Width Editing, Move, and Reliable Inline Delete */}
+          {/* Existing Columns List */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h3 className="font-semibold text-slate-800 dark:text-slate-200 text-sm">
@@ -401,21 +414,20 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
                   const isDeleting = confirmDeleteId === col.id;
                   const isEditing = editingColId === col.id;
 
-                  const dependentTabs = allTabs.filter((t) =>
-                    t.id !== currentTab.id &&
-                    t.columns.some((c) => c.relation?.masterTabId === currentTab.id && c.relation?.masterColumnId === col.id)
-                  );
+                  const impact = isDeleting
+                    ? integrityService.getColumnDeleteImpact(currentTab.id, col.id, allTabs, tags)
+                    : null;
 
                   return (
-                    <div key={col.id} className="transition-colors hover:bg-slate-50/70 dark:hover:bg-slate-850/50">
+                    <div key={col.id} className="transition-colors hover:bg-slate-50/70 dark:hover:bg-slate-800/40">
                       <div className="p-3 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3">
                         <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                          <span className="font-mono text-slate-400 text-[11px] w-5 text-center shrink-0">
+                          <span className="font-mono text-slate-400 text-[11px] w-5 text-center shrink-0 tabular-nums">
                             {index + 1}.
                           </span>
                           {isRelation ? (
                             <span title="Связан со справочником" className="p-1 rounded bg-blue-100 dark:bg-blue-950 text-blue-600 dark:text-blue-400 shrink-0">
-                              <Lock className="w-3.5 h-3.5" />
+                              <Link2 className="w-3.5 h-3.5" />
                             </span>
                           ) : col.type === 'select' ? (
                             <span title="Выпадающий список" className="p-1 rounded bg-purple-100 dark:bg-purple-950 text-purple-600 dark:text-purple-400 shrink-0">
@@ -484,7 +496,7 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
                             </div>
                           )}
 
-                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono shrink-0">
+                          <span className="text-[10px] px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono shrink-0">
                             {col.type}
                           </span>
 
@@ -496,7 +508,6 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
                         </div>
 
                         <div className="flex items-center gap-2 shrink-0">
-                          {/* Width Editor */}
                           <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700" title="Ширина столбца в пикселях">
                             <span className="text-[10px] text-slate-400">Ширина:</span>
                             <input
@@ -506,7 +517,7 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
                               step={10}
                               value={col.width || 180}
                               onChange={(e) => handleWidthChange(col.id, e.target.value)}
-                              className="w-12 bg-transparent text-right font-mono text-[11px] font-semibold text-slate-700 dark:text-slate-200 outline-hidden"
+                              className="w-12 bg-transparent text-right font-mono tabular-nums text-[11px] font-semibold text-slate-700 dark:text-slate-200 outline-hidden"
                             />
                             <span className="text-[10px] text-slate-400">px</span>
                           </div>
@@ -546,16 +557,33 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
                         </div>
                       </div>
 
-                      {/* Inline Delete Confirmation Bar (works everywhere without browser confirm dialogs) */}
-                      {isDeleting && (
+                      {/* Inline Delete Confirmation Bar with Integrity Impact Warning */}
+                      {isDeleting && impact && (
                         <div className="px-4 py-2.5 bg-red-50/90 dark:bg-red-950/40 border-t border-red-200 dark:border-red-900 flex flex-wrap items-center justify-between gap-2 animate-in fade-in duration-100">
-                          <div className="flex items-center gap-2 text-red-800 dark:text-red-200 text-[11px]">
-                            <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
-                            <span>
-                              {dependentTabs.length > 0
-                                ? `ВНИМАНИЕ! Столбец используется как мастер в: ${dependentTabs.map((t) => t.name).join(', ')}. При удалении связь будет разорвана.`
-                                : `Удалить столбец «${col.name}» из вкладки «${currentTab.name}»?`}
-                            </span>
+                          <div className="flex items-start gap-2 text-red-800 dark:text-red-200 text-[11px] flex-1 min-w-[220px]">
+                            <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                            <div className="space-y-0.5">
+                              {impact.affectedTabs.length > 0 || impact.affectedTagsCount > 0 ? (
+                                <>
+                                  <div className="font-semibold">
+                                    Внимание: удаление столбца затронет зависимости!
+                                  </div>
+                                  {impact.affectedTabs.length > 0 && (
+                                    <div>
+                                      Связанные столбцы будут откреплены (преобразованы в текст с сохранением значений) в:{' '}
+                                      {impact.affectedTabs.map((t) => `${t.tabName} (${t.affectedRowCount} зап.)`).join(', ')}.
+                                    </div>
+                                  )}
+                                  {impact.affectedTagsCount > 0 && (
+                                    <div>
+                                      Будут автоматически удалены привязанные теги шаблонов ({impact.affectedTagsCount} шт.).
+                                    </div>
+                                  )}
+                                </>
+                              ) : (
+                                <span>Удалить столбец «{col.name}» из вкладки «{currentTab.name}»?</span>
+                              )}
+                            </div>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
                             <button
@@ -584,7 +612,7 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end px-6 py-3.5 bg-slate-50/60 dark:bg-slate-850 border-t border-slate-200 dark:border-slate-800 text-xs shrink-0">
+        <div className="flex items-center justify-end px-6 py-3.5 bg-slate-50/60 dark:bg-slate-800/40 border-t border-slate-200 dark:border-slate-800 text-xs shrink-0">
           <button
             type="button"
             onClick={onClose}

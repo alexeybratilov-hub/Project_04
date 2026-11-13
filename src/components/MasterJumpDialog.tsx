@@ -1,5 +1,5 @@
-import React from 'react';
-import { AlertCircle, ArrowRight, Lock, X } from 'lucide-react';
+import React, { useEffect } from 'react';
+import { AlertCircle, ArrowRight, Link2, X } from 'lucide-react';
 import { Tab } from '../types/database';
 
 interface MasterJumpDialogProps {
@@ -21,6 +21,15 @@ export const MasterJumpDialog: React.FC<MasterJumpDialogProps> = ({
   currentValue,
   attemptCount
 }) => {
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const isReinforced = attemptCount >= 2;
@@ -32,7 +41,7 @@ export const MasterJumpDialog: React.FC<MasterJumpDialogProps> = ({
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/40">
           <div className="flex items-center gap-2.5">
             <div className={`p-2 rounded-lg ${isReinforced ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400' : 'bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-400'}`}>
-              <Lock className="w-4 h-4" />
+              <Link2 className="w-4 h-4" />
             </div>
             <div>
               <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
@@ -81,7 +90,7 @@ export const MasterJumpDialog: React.FC<MasterJumpDialogProps> = ({
         </div>
 
         {/* Actions */}
-        <div className="flex items-center justify-end gap-3 px-5 py-3.5 bg-slate-50/60 dark:bg-slate-850 border-t border-slate-100 dark:border-slate-800">
+        <div className="flex items-center justify-end gap-3 px-5 py-3.5 bg-slate-50/60 dark:bg-slate-800/40 border-t border-slate-100 dark:border-slate-800">
           <button
             onClick={onClose}
             className="px-3.5 py-2 text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"

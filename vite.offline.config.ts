@@ -16,7 +16,9 @@ export default defineConfig({
   },
   define: {
     'process.env.NODE_ENV': JSON.stringify('production'),
-    'import.meta': JSON.stringify({}),
+    'import.meta': JSON.stringify({
+      env: { MODE: 'production', PROD: true, DEV: false, BASE_URL: './' }
+    }),
   },
   build: {
     outDir: 'dist-offline',

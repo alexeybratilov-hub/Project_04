@@ -47,13 +47,21 @@ export const TabBar: React.FC<TabBarProps> = ({
 
   // Height modes: 'auto' (all rows visible), or numeric height in px
   const [isAutoHeight, setIsAutoHeight] = useState<boolean>(() => {
-    const saved = localStorage.getItem('ot_tabbar_auto');
-    return saved !== null ? saved === 'true' : true;
+    try {
+      const saved = localStorage.getItem('ot_tabbar_auto');
+      return saved !== null ? saved === 'true' : true;
+    } catch {
+      return true;
+    }
   });
 
   const [tabBarHeight, setTabBarHeight] = useState<number>(() => {
-    const saved = localStorage.getItem('ot_tabbar_height');
-    return saved ? parseInt(saved, 10) : 84;
+    try {
+      const saved = localStorage.getItem('ot_tabbar_height');
+      return saved ? parseInt(saved, 10) : 84;
+    } catch {
+      return 84;
+    }
   });
 
   const [isResizing, setIsResizing] = useState(false);
@@ -61,11 +69,19 @@ export const TabBar: React.FC<TabBarProps> = ({
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    localStorage.setItem('ot_tabbar_auto', String(isAutoHeight));
+    try {
+      localStorage.setItem('ot_tabbar_auto', String(isAutoHeight));
+    } catch {
+      // Ignore storage access errors in restricted file:// policies
+    }
   }, [isAutoHeight]);
 
   useEffect(() => {
-    localStorage.setItem('ot_tabbar_height', String(tabBarHeight));
+    try {
+      localStorage.setItem('ot_tabbar_height', String(tabBarHeight));
+    } catch {
+      // Ignore storage access errors in restricted file:// policies
+    }
   }, [tabBarHeight]);
 
   useEffect(() => {
@@ -193,7 +209,7 @@ export const TabBar: React.FC<TabBarProps> = ({
               className={`group relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer border ${
                 isActive
                   ? 'bg-white dark:bg-slate-800 text-blue-700 dark:text-blue-400 border-blue-400/70 dark:border-blue-600/80 shadow-xs font-semibold ring-1 ring-blue-500/20'
-                  : 'bg-white/60 dark:bg-slate-850/70 text-slate-700 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800 border-slate-300/80 dark:border-slate-700/80 hover:border-slate-400'
+                  : 'bg-white/60 dark:bg-slate-800/60 text-slate-700 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800 border-slate-300/80 dark:border-slate-700/80 hover:border-slate-400'
               } ${isDragging ? 'opacity-40 scale-95' : ''} ${
                 isDropTarget ? 'ring-2 ring-blue-600 border-blue-600 bg-blue-50 dark:bg-blue-950/60' : ''
               }`}
@@ -264,7 +280,7 @@ export const TabBar: React.FC<TabBarProps> = ({
           <button
             type="button"
             onClick={onAddTab}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 text-slate-600 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 hover:border-blue-400 dark:hover:border-blue-500 bg-white/40 dark:bg-slate-850/40 hover:bg-white dark:hover:bg-slate-800 transition-colors text-xs font-medium"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 text-slate-600 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 hover:border-blue-400 dark:hover:border-blue-500 bg-white/40 dark:bg-slate-800/40 hover:bg-white dark:hover:bg-slate-800 transition-colors text-xs font-medium"
             title="Создать новую вкладку (максимум 20)"
           >
             <Plus className="w-3.5 h-3.5 text-blue-600" />

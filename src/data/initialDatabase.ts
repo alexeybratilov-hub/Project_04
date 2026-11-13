@@ -305,12 +305,13 @@ export const INITIAL_ENTITY: LegalEntity = {
   tags: INITIAL_TAGS,
   templates: BUILT_IN_TEMPLATES,
   llmLogs: INITIAL_LLM_LOGS,
+  generatedDocs: [],
   createdAt: '2026-03-01T09:00:00.000Z',
   updatedAt: '2026-03-01T09:00:00.000Z'
 };
 
 export const INITIAL_DATABASE_STATE: DatabaseState = {
-  version: '1.2.0',
+  version: '1.3.0',
   lastSaved: new Date().toISOString(),
   activeEntityId: INITIAL_ENTITY.id,
   entities: [INITIAL_ENTITY],
@@ -318,13 +319,18 @@ export const INITIAL_DATABASE_STATE: DatabaseState = {
   tabs: INITIAL_TABS,
   tags: INITIAL_TAGS,
   templates: BUILT_IN_TEMPLATES,
+  generatedDocs: [],
   llmConfig: {
+    providerId: 'ollama',
+    providerKind: 'local',
+    apiFormat: 'ollama',
     endpoint: 'http://localhost:11434',
     model: 'qwen2.5:7b',
+    apiKey: '',
     timeoutMs: 45000,
     temperature: 0.3,
     status: 'idle',
-    availableModels: ['qwen2.5:7b', 'llama3.1:8b', 'mistral:7b', 'deepseek-r1:8b']
+    availableModels: ['qwen2.5:7b', 'qwen2.5:14b', 'llama3.1:8b', 'mistral:7b', 'gemma2:9b', 'deepseek-r1:8b']
   },
   llmLogs: INITIAL_LLM_LOGS,
   settings: {

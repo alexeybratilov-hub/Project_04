@@ -32,6 +32,8 @@ export default defineConfig(() => {
         },
         workbox: {
           maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
+          navigateFallbackDenylist: [/^\/download\//, /^\/api\//, /^\/app\.html$/],
+          globIgnores: ['**/app.html', '**/download/**'],
         },
       }),
     ],

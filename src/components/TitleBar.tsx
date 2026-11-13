@@ -1,15 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  HardDrive, Sun, Moon, Download, Minus, Square, X, Check, Laptop,
-  Building2, ChevronDown, Plus, Copy, Edit2, Trash2
+  HardDrive, Sun, Moon, Check, AlertTriangle,
+  Building2, ChevronDown, Plus, Copy, Edit2, Trash2,
+  RefreshCw, Usb
 } from 'lucide-react';
 import { AppSettings, LegalEntity } from '../types/database';
+import { SaveStatusState } from '../services/storageService';
+import { StorageMode } from '../services/localApiClient';
 
 interface TitleBarProps {
   settings: AppSettings;
   onUpdateSettings: (settings: Partial<AppSettings>) => void;
   onOpenPortableModal: () => void;
   lastSaved: string;
+  saveStatus?: SaveStatusState;
+  storageMode?: StorageMode;
+  onRetrySave?: () => void;
   entities: LegalEntity[];
   activeEntity: LegalEntity;
   onSelectEntity: (entityId: string) => void;
@@ -19,16 +25,14 @@ interface TitleBarProps {
   onDeleteEntity: (entityId: string) => void;
 }
 
-interface BeforeInstallPromptEvent extends Event {
-  prompt: () => Promise<void>;
-  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
-}
-
 export const TitleBar: React.FC<TitleBarProps> = ({
   settings,
   onUpdateSettings,
   onOpenPortableModal,
   lastSaved,
+  saveStatus = 'saved',
+  storageMode = 'web-preview',
+  onRetrySave,
   entities,
   activeEntity,
   onSelectEntity,
@@ -37,25 +41,9 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onOpenCloneEntity,
   onDeleteEntity
 }) => {
-  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [isStandalone, setIsStandalone] = useState(false);
   const [isEntityMenuOpen, setIsEntityMenuOpen] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const entityMenuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const standaloneCheck = window.matchMedia('(display-mode: standalone)').matches ||
-      (window.navigator as any).standalone === true;
-    setIsStandalone(standaloneCheck);
-
-    const handleBeforeInstall = (e: Event) => {
-      e.preventDefault();
-      setDeferredPrompt(e as BeforeInstallPromptEvent);
-    };
-
-    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
-    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
-  }, []);
 
   useEffect(() => {
     const handleOutside = (e: MouseEvent) => {
@@ -64,22 +52,19 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         setConfirmDeleteId(null);
       }
     };
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsEntityMenuOpen(false);
+        setConfirmDeleteId(null);
+      }
+    };
     document.addEventListener('mousedown', handleOutside);
-    return () => document.removeEventListener('mousedown', handleOutside);
+    window.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleOutside);
+      window.removeEventListener('keydown', handleEsc);
+    };
   }, []);
-
-  const handleInstallApp = async () => {
-    if (!deferredPrompt) {
-      onOpenPortableModal();
-      return;
-    }
-    await deferredPrompt.prompt();
-    const choice = await deferredPrompt.userChoice;
-    if (choice.outcome === 'accepted') {
-      setIsStandalone(true);
-      setDeferredPrompt(null);
-    }
-  };
 
   const toggleTheme = () => {
     const nextTheme = settings.theme === 'dark' ? 'light' : 'dark';
@@ -91,9 +76,17 @@ export const TitleBar: React.FC<TitleBarProps> = ({
     }
   };
 
+  const formattedTime = (() => {
+    try {
+      return new Date(lastSaved).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return '';
+    }
+  })();
+
   return (
     <header className="h-10 bg-slate-900 text-slate-200 select-none flex items-center justify-between gap-4 px-3 border-b border-slate-800 text-xs shrink-0 z-50 relative">
-      {/* Left: Brand + Prominent Legal Entity Switcher */}
+      {/* Left Zone: Brand + Legal Entity Switcher */}
       <div className="flex items-center gap-3 min-w-0">
         <div className="flex items-center gap-2 shrink-0">
           <div className="w-5 h-5 rounded bg-blue-600 flex items-center justify-center text-white font-bold text-[10px]">
@@ -106,7 +99,6 @@ export const TitleBar: React.FC<TitleBarProps> = ({
 
         <span className="text-slate-700 hidden sm:inline" aria-hidden="true">|</span>
 
-        {/* Active Legal Entity Selector */}
         <div className="relative" ref={entityMenuRef}>
           <button
             type="button"
@@ -114,7 +106,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
               setIsEntityMenuOpen((v) => !v);
               setConfirmDeleteId(null);
             }}
-            className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-750 border border-slate-700/80 text-slate-100 transition-colors max-w-[280px] sm:max-w-[340px] cursor-pointer"
+            className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700/80 text-slate-100 transition-colors max-w-[260px] sm:max-w-[340px] cursor-pointer"
             title="Переключить организацию или открыть карточку юрлица"
           >
             <Building2 className="w-3.5 h-3.5 text-blue-400 shrink-0" />
@@ -131,12 +123,12 @@ export const TitleBar: React.FC<TitleBarProps> = ({
 
           {isEntityMenuOpen && (
             <div className="fixed sm:absolute top-10 sm:top-full left-2 sm:left-0 mt-1 w-[360px] max-w-[calc(100vw-16px)] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-[120] overflow-hidden text-slate-800 dark:text-slate-100 animate-in fade-in zoom-in-95 duration-100">
-              <div className="px-3.5 py-2.5 bg-slate-50 dark:bg-slate-850 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
+              <div className="px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
                 <div>
                   <div className="font-semibold text-xs text-slate-900 dark:text-slate-100">
                     Организации ({entities.length})
                   </div>
-                  <div className="text-[11px] text-slate-500">
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
                     Отдельные базы данных · общая нормативка
                   </div>
                 </div>
@@ -166,7 +158,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                       className={`px-3 py-2.5 transition-colors ${
                         isActive
                           ? 'bg-blue-50/70 dark:bg-blue-950/30'
-                          : 'hover:bg-slate-50 dark:hover:bg-slate-850/60'
+                          : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
                       }`}
                     >
                       <div className="flex items-start justify-between gap-2">
@@ -267,7 +259,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                 })}
               </div>
 
-              <div className="px-3 py-2 bg-slate-50 dark:bg-slate-850 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2 text-[11px]">
+              <div className="px-3 py-2 bg-slate-50 dark:bg-slate-800/60 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2 text-[11px]">
                 <button
                   type="button"
                   onClick={() => {
@@ -296,109 +288,83 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         </div>
       </div>
 
-      {/* Center: Save indicator */}
-      <div className="hidden lg:flex items-center gap-2 text-[11px] text-slate-400 shrink-0">
-        <span className="flex items-center gap-1 text-slate-300 whitespace-nowrap">
-          <Check className="w-3 h-3 text-emerald-400" />
-          <span>Сохранено</span>
-        </span>
-        <span className="text-slate-600" aria-hidden="true">·</span>
-        <span className="text-[10px] text-slate-400 font-mono tabular-nums">
-          {new Date(lastSaved).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
-        </span>
+      {/* Center Zone: Honest Save Status */}
+      <div className="hidden md:flex items-center gap-2 text-[11px] shrink-0">
+        {saveStatus === 'saving' ? (
+          <span className="flex items-center gap-1.5 text-blue-300 whitespace-nowrap">
+            <RefreshCw className="w-3 h-3 animate-spin" />
+            <span>Сохранение...</span>
+          </span>
+        ) : saveStatus === 'usb_disconnected' ? (
+          <div className="flex items-center gap-2 text-red-300 whitespace-nowrap">
+            <Usb className="w-3.5 h-3.5 text-red-400" />
+            <span className="font-medium">Носитель отключён</span>
+            {onRetrySave && (
+              <button
+                type="button"
+                onClick={onRetrySave}
+                className="px-2 py-0.5 bg-red-600 hover:bg-red-500 text-white rounded text-[10px] font-semibold cursor-pointer"
+              >
+                Повторить
+              </button>
+            )}
+          </div>
+        ) : saveStatus === 'error' || saveStatus === 'conflict' ? (
+          <div className="flex items-center gap-2 text-amber-300 whitespace-nowrap">
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+            <span className="font-medium">
+              {saveStatus === 'conflict' ? 'Конфликт версии файла' : 'Ошибка сохранения'}
+            </span>
+            {onRetrySave && (
+              <button
+                type="button"
+                onClick={onRetrySave}
+                className="px-2 py-0.5 bg-amber-600 hover:bg-amber-500 text-white rounded text-[10px] font-semibold cursor-pointer"
+              >
+                Повторить
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 text-slate-400">
+            <span className="flex items-center gap-1 text-slate-300 whitespace-nowrap">
+              <Check className="w-3 h-3 text-emerald-400" />
+              <span>
+                {storageMode === 'native-fs' ? 'Записано на диск' : 'Сохранено в браузере'}
+              </span>
+            </span>
+            {formattedTime && (
+              <>
+                <span className="text-slate-600" aria-hidden="true">·</span>
+                <span className="text-[10px] text-slate-400 font-mono tabular-nums">
+                  {formattedTime}
+                </span>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Right: Quick Actions + Windows Controls */}
-      <div className="flex items-center gap-1 shrink-0">
-        {!isStandalone && (
-          <button
-            type="button"
-            onClick={handleInstallApp}
-            className="hidden xl:flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-blue-300 hover:text-white hover:bg-slate-800 rounded transition-colors whitespace-nowrap"
-            title="Установить как десктопное приложение Windows"
-          >
-            <Laptop className="w-3.5 h-3.5 text-blue-400" />
-            <span>PWA</span>
-          </button>
-        )}
-
-        <button
-          type="button"
-          onClick={() => {
-            const a = document.createElement('a');
-            a.href = '/download/OT-Baza.exe';
-            a.download = 'OT-Baza.exe';
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-          }}
-          className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded transition-colors shadow-xs whitespace-nowrap"
-          title="Скачать автономный OT-Baza.exe для Windows 10/11"
-        >
-          <Download className="w-3.5 h-3.5 text-white" />
-          <span>Скачать .EXE</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => {
-            const a = document.createElement('a');
-            a.href = '/download/OT-Baza-Windows.zip';
-            a.download = 'OT-Baza-Windows.zip';
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-          }}
-          className="hidden sm:flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-slate-300 hover:text-white hover:bg-slate-800 rounded transition-colors whitespace-nowrap"
-          title="Скачать в ZIP-архиве (OT-Baza.exe + файлы базы данных)"
-        >
-          <Download className="w-3.5 h-3.5 text-emerald-400" />
-          <span>.ZIP</span>
-        </button>
-
+      {/* Right Zone: Clean Portable Modal Trigger & Theme Switcher */}
+      <div className="flex items-center gap-1.5 shrink-0">
         <button
           type="button"
           onClick={onOpenPortableModal}
-          className="flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-slate-300 hover:text-white hover:bg-slate-800 rounded transition-colors whitespace-nowrap"
-          title="Параметры портативной папки и скрипты"
+          className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-slate-300 hover:text-white hover:bg-slate-800 rounded transition-colors whitespace-nowrap cursor-pointer"
+          title="Портативная версия для Windows (OT-Baza.exe и папка базы данных)"
         >
           <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
-          <span className="hidden md:inline">Папка / Скрипты</span>
+          <span className="hidden sm:inline">Портативная сборка</span>
         </button>
 
         <button
           type="button"
           onClick={toggleTheme}
-          className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition-colors"
+          className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition-colors cursor-pointer"
           title={settings.theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'}
         >
           {settings.theme === 'dark' ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <Moon className="w-3.5 h-3.5" />}
         </button>
-
-        <div className="hidden sm:flex items-center ml-1 border-l border-slate-800 pl-1">
-          <button
-            type="button"
-            className="w-7 h-7 flex items-center justify-center text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
-            title="Свернуть"
-          >
-            <Minus className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            className="w-7 h-7 flex items-center justify-center text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
-            title="Развернуть"
-          >
-            <Square className="w-3 h-3" />
-          </button>
-          <button
-            type="button"
-            onClick={() => window.close()}
-            className="w-7 h-7 flex items-center justify-center text-slate-400 hover:bg-red-600 hover:text-white transition-colors"
-            title="Закрыть окно"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
       </div>
     </header>
   );

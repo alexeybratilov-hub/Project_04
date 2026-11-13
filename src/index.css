@@ -2,10 +2,32 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @layer base {
-  body {
-    font-family: 'Manrope', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  :root {
+    --surface-canvas: #f8fafc;
+    --surface-panel: #ffffff;
+    --surface-subtle: #f1f5f9;
+    --border-hairline: #e2e8f0;
+    --text-primary: #0f172a;
+    --text-muted: #64748b;
+    --accent-primary: #2563eb;
   }
-  
+
+  .dark {
+    --surface-canvas: #0f172a;
+    --surface-panel: #0f172a;
+    --surface-subtle: #1e293b;
+    --border-hairline: #1e293b;
+    --text-primary: #f1f5f9;
+    --text-muted: #94a3b8;
+    --accent-primary: #3b82f6;
+  }
+
+  body {
+    font-family: 'Manrope', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+    background-color: var(--surface-canvas);
+    color: var(--text-primary);
+  }
+
   code, pre, .font-mono {
     font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     font-variant-numeric: tabular-nums;
@@ -37,4 +59,13 @@
 
 .dark ::-webkit-scrollbar-thumb:hover {
   background: #475569;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }

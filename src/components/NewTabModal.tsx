@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  X, Plus, Key, Link2, Check, Table, 
-  Trash2, ShieldCheck, Lock
+import {
+  X, Plus, Key, Link2, Check, Table,
+  Trash2
 } from 'lucide-react';
 import { Column, ColumnType, Tab } from '../types/database';
+import { createUniqueId } from '../services/integrityService';
 
 interface NewTabModalProps {
   isOpen: boolean;
@@ -60,6 +61,15 @@ export const NewTabModal: React.FC<NewTabModalProps> = ({
     }
   }, [isOpen, existingTabs.length, masterTabs.length]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const isLinkSelected = (masterTabId: string, masterColumnId: string) =>
@@ -103,7 +113,7 @@ export const NewTabModal: React.FC<NewTabModalProps> = ({
           if (!seenNames.has(lower)) {
             seenNames.add(lower);
             columns.push({
-              id: `col_${Date.now()}_rel_${idx}`,
+              id: createUniqueId('col_rel'),
               name: mCol.name,
               type: 'relation',
               width: mCol.width || 190,
@@ -118,12 +128,12 @@ export const NewTabModal: React.FC<NewTabModalProps> = ({
     }
 
     // 2. Add custom columns (skipping duplicates if already pulled from master)
-    extraCols.forEach((ec, idx) => {
+    extraCols.forEach((ec) => {
       const lower = ec.name.trim().toLowerCase();
       if (!seenNames.has(lower) && ec.name.trim()) {
         seenNames.add(lower);
         columns.push({
-          id: `col_${Date.now()}_c_${idx}`,
+          id: createUniqueId('col'),
           name: ec.name.trim(),
           type: ec.type,
           width: 180
@@ -133,7 +143,7 @@ export const NewTabModal: React.FC<NewTabModalProps> = ({
 
     if (columns.length === 0) {
       columns.push({
-        id: `col_${Date.now()}_0`,
+        id: createUniqueId('col'),
         name: 'Наименование',
         type: 'text',
         width: 200
@@ -203,7 +213,7 @@ export const NewTabModal: React.FC<NewTabModalProps> = ({
               <label className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border cursor-pointer transition-colors ${
                 isMaster
                   ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-400 dark:border-amber-700 text-amber-900 dark:text-amber-200'
-                  : 'bg-slate-50 dark:bg-slate-850 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'
+                  : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'
               }`}>
                 <input
                   type="checkbox"
@@ -280,7 +290,7 @@ export const NewTabModal: React.FC<NewTabModalProps> = ({
                                 className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] cursor-pointer transition-all select-none ${
                                   checked
                                     ? 'bg-blue-600 text-white border-blue-600 font-medium shadow-xs'
-                                    : 'bg-slate-50 dark:bg-slate-850 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-blue-400'
+                                    : 'bg-slate-50 dark:bg-slate-800/50 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-blue-400'
                                 }`}
                               >
                                 <input
@@ -289,7 +299,7 @@ export const NewTabModal: React.FC<NewTabModalProps> = ({
                                   onChange={() => toggleMasterLink(mTab.id, mCol.id)}
                                   className="hidden"
                                 />
-                                <Lock className={`w-3 h-3 ${checked ? 'text-white' : 'text-slate-400'}`} />
+                                <Link2 className={`w-3 h-3 ${checked ? 'text-white' : 'text-slate-400'}`} />
                                 <span>{mCol.name}</span>
                               </label>
                             );
@@ -304,7 +314,7 @@ export const NewTabModal: React.FC<NewTabModalProps> = ({
           )}
 
           {/* Extra Own Columns */}
-          <div className="p-4 bg-slate-50 dark:bg-slate-850 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
+          <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
             <h3 className="font-semibold text-slate-800 dark:text-slate-200">
               Дополнительные столбцы таблицы:
             </h3>

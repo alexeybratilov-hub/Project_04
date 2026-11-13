@@ -29,6 +29,7 @@ export interface AttachedDoc {
   sizeFormatted: string;
   contentSnippet?: string;
   dataBase64?: string;
+  storageFileName?: string; // safe filename inside ./normatives/ when running under OT-Baza.exe
   relatedTabName?: string; // optional hint for which module/tab topic this normative pertains to
 }
 
@@ -54,16 +55,27 @@ export interface DocumentTemplate {
   id: string;
   name: string;
   tabId: string;
+  category?: string;
   fileName: string;
   namingPattern: string; // e.g. "{ФИО}_инструктаж_2026.docx"
   contentTemplate: string;
   tableRepeatField?: string;
   isBuiltIn?: boolean;
+  isArchived?: boolean;
+  archivedAt?: string;
+  archivedFromTabName?: string;
 }
 
+export type LLMProviderKind = 'local' | 'api';
+export type LLMApiFormat = 'ollama' | 'openai' | 'anthropic' | 'gemini';
+
 export interface LLMConfig {
-  endpoint: string; // default http://localhost:11434
+  providerId: string;
+  providerKind: LLMProviderKind;
+  apiFormat: LLMApiFormat;
+  endpoint: string;
   model: string;
+  apiKey?: string;
   timeoutMs: number;
   temperature: number;
   status: 'idle' | 'testing' | 'connected' | 'error';
@@ -82,6 +94,24 @@ export interface LLMGenerationLog {
   promptSummary: string;
   outputSnippet: string;
   fullOutput: string;
+}
+
+export interface GeneratedDocRecord {
+  id: string;
+  title: string;
+  fileName: string;
+  category: string;
+  format: 'docx' | 'pdf';
+  createdAt: string;
+  dateFormatted: string;
+  relativePath: string;
+  isArchived: boolean;
+  archivedAt?: string;
+  archiveDateFolder?: string;
+  sourceTabName?: string;
+  rowIdentifier?: string;
+  sizeFormatted: string;
+  dataBase64?: string;
 }
 
 export interface LegalEntityProfile {
@@ -107,6 +137,7 @@ export interface LegalEntity {
   tags: Tag[];
   templates: DocumentTemplate[];
   llmLogs: LLMGenerationLog[];
+  generatedDocs: GeneratedDocRecord[];
   createdAt: string;
   updatedAt: string;
 }
@@ -129,6 +160,7 @@ export interface DatabaseState {
   tabs: Tab[];
   tags: Tag[];
   templates: DocumentTemplate[];
+  generatedDocs: GeneratedDocRecord[];
   llmConfig: LLMConfig;
   llmLogs: LLMGenerationLog[];
   settings: AppSettings;

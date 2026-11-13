@@ -1,5 +1,5 @@
-import React from 'react';
-import { X, HelpCircle, ShieldCheck, Keyboard, HardDrive, Cpu, FileSpreadsheet } from 'lucide-react';
+import React, { useEffect } from 'react';
+import { X, HelpCircle, ShieldCheck, Keyboard, HardDrive, Cpu } from 'lucide-react';
 
 interface HelpModalProps {
   isOpen: boolean;
@@ -7,6 +7,15 @@ interface HelpModalProps {
 }
 
 export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   return (
@@ -55,7 +64,7 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
               <span>2. Портативное исполнение (Portable)</span>
             </h3>
             <p>
-              Приложение работает на любой машине с Windows 10/11 без установки и без интернета. База данных, нормативные документы и сгенерированные приказы сохраняются в локальном хранилище. Для переноса на другой ПК достаточно скопировать файл резервной копии или запустить <code className="font-mono text-blue-600">Запустить_ОТ_База.bat</code>.
+              Автономный исполняемый файл <code className="font-mono text-blue-600">OT-Baza.exe</code> работает на Windows 10/11 без установки и без интернета (может запускаться напрямую с USB-накопителя). Все данные записываются атомарно в <code className="font-mono text-blue-600">./data/ot_database.json</code>, а прикреплённые нормативы и документы сохраняются в подпапках рядом с программой.
             </p>
           </div>
 
@@ -89,16 +98,16 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
           <div className="space-y-2">
             <h3 className="font-semibold text-sm text-slate-900 dark:text-slate-100 flex items-center gap-2">
               <Cpu className="w-4 h-4 text-indigo-600" />
-              <span>4. Локальный ИИ (Ollama)</span>
+              <span>4. LLM-провайдеры и генерация документов</span>
             </h3>
             <p>
-              Приложение поддерживает локальную языковую модель (Qwen 2.5, Llama 3.1) для автосоставления инструкций и приказов. При недоступности LLM система продолжает полноценно работать в штатном режиме таблиц и теговой генерации документов Word/PDF.
+              В меню «LLM-Сервер» можно выбрать локальный сервер (Ollama, LM Studio, vLLM) или облачный API (OpenAI, Claude, Gemini, DeepSeek, OpenRouter, Groq). Если LLM не подключена, система продолжает полноценно работать в штатном режиме таблиц и прямой генерации документов Word (.docx) и PDF по тегам.
             </p>
           </div>
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end px-6 py-3.5 bg-slate-50/60 dark:bg-slate-850 border-t border-slate-200 dark:border-slate-800 text-xs">
+        <div className="flex items-center justify-end px-6 py-3.5 bg-slate-50/60 dark:bg-slate-800/40 border-t border-slate-200 dark:border-slate-800 text-xs">
           <button
             onClick={onClose}
             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"

@@ -77,6 +77,15 @@ export const LegalEntityModal: React.FC<LegalEntityModalProps> = ({
     }
   }, [isOpen, mode, targetEntity, entities]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const updateField = (key: keyof LegalEntityProfile, value: string) => {
@@ -171,7 +180,7 @@ export const LegalEntityModal: React.FC<LegalEntityModalProps> = ({
 
           {/* Clone selector for new or cloned entity */}
           {mode !== 'edit' && entities.length > 0 && (
-            <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-850/50 space-y-3">
+            <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/50 space-y-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <div className="font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">

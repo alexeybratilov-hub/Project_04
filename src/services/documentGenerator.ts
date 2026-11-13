@@ -1,12 +1,53 @@
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, Table, TableRow, TableCell, WidthType } from 'docx';
+import { Document, Packer, Paragraph, TextRun, AlignmentType } from 'docx';
 import jsPDF from 'jspdf';
 import { DocumentTemplate, LegalEntityProfile, Row, Tab, Tag } from '../types/database';
+import { DEJAVU_SANS_BOLD_B64, DEJAVU_SANS_REGULAR_B64 } from '../data/cyrillicFont';
+import { localApiClient } from './localApiClient';
 
 export interface GeneratedDocumentResult {
   fileName: string;
   docxBlob: Blob;
   pdfBlob: Blob;
   textPreview: string;
+}
+
+function registerCyrillicFonts(doc: jsPDF): void {
+  doc.addFileToVFS('DejaVuSans.ttf', DEJAVU_SANS_REGULAR_B64);
+  doc.addFont('DejaVuSans.ttf', 'DejaVuSans', 'normal');
+  doc.addFileToVFS('DejaVuSans-Bold.ttf', DEJAVU_SANS_BOLD_B64);
+  doc.addFont('DejaVuSans-Bold.ttf', 'DejaVuSans', 'bold');
+}
+
+/**
+ * Find the best matching row in `otherTab` for the given source `row` in `currentTab`
+ * considering ALL relation columns linking `currentTab` -> `otherTab`.
+ */
+function findMatchingMasterRow(row: Row, currentTab: Tab, otherTab: Tab): Row | undefined {
+  const relCols = currentTab.columns.filter((c) => c.relation?.masterTabId === otherTab.id);
+  if (relCols.length === 0) return undefined;
+
+  const filledRelCols = relCols.filter(
+    (c) => row[c.id] !== undefined && row[c.id] !== null && String(row[c.id]).trim() !== ''
+  );
+  if (filledRelCols.length === 0) return undefined;
+
+  // Prefer strict simultaneous match on all filled relation columns
+  const exactAll = otherTab.rows.find((mr) =>
+    filledRelCols.every(
+      (rc) =>
+        String(mr[rc.relation!.masterColumnId] ?? '').trim().toLowerCase() ===
+        String(row[rc.id] ?? '').trim().toLowerCase()
+    )
+  );
+  if (exactAll) return exactAll;
+
+  // Fallback to first matching relation column
+  const firstRel = filledRelCols[0];
+  return otherTab.rows.find(
+    (mr) =>
+      String(mr[firstRel.relation!.masterColumnId] ?? '').trim().toLowerCase() ===
+      String(row[firstRel.id] ?? '').trim().toLowerCase()
+  );
 }
 
 export const documentGenerator = {
@@ -23,33 +64,27 @@ export const documentGenerator = {
   ): string {
     let resolved = templateContent;
 
-    // 1. Resolve tags configured in the tag pool
+    // 1. Resolve tags configured in the entity tag pool
     tags.forEach((tag) => {
       let value = '';
       if (tag.tabId === currentTab.id) {
         value = row[tag.columnId] !== undefined ? String(row[tag.columnId]) : '';
       } else {
-        // If tag belongs to another tab, try to find a relation or lookup
         const otherTab = allTabs.find((t) => t.id === tag.tabId);
         if (otherTab) {
-          // Look if current tab has a related column that matches otherTab
-          const relCol = currentTab.columns.find((c) => c.relation?.masterTabId === otherTab.id);
-          if (relCol && row[relCol.id]) {
-            const masterRow = otherTab.rows.find((mr) => mr[relCol.relation!.masterColumnId] === row[relCol.id]);
-            if (masterRow && masterRow[tag.columnId] !== undefined) {
-              value = String(masterRow[tag.columnId]);
-            }
+          const masterRow = findMatchingMasterRow(row, currentTab, otherTab);
+          if (masterRow && masterRow[tag.columnId] !== undefined) {
+            value = String(masterRow[tag.columnId]);
           }
         }
       }
 
-      // Replace both exact tag name and variations
       const escapedTag = tag.name.replace(/[{}]/g, '\\$&');
       const regex = new RegExp(escapedTag, 'g');
       resolved = resolved.replace(regex, value);
     });
 
-    // 2. Also resolve directly by column names: e.g. {Должность}, {ФИО работника}
+    // 2. Resolve directly by current tab column names: e.g. {Должность}, {ФИО работника}
     currentTab.columns.forEach((col) => {
       const val = row[col.id] !== undefined ? String(row[col.id]) : '';
       const colTag1 = `{${col.name}}`;
@@ -60,8 +95,8 @@ export const documentGenerator = {
     // 3. Resolve Legal Entity requisites if provided
     if (entityProfile) {
       resolved = resolved
-        .replaceAll('{Организация}', entityProfile.shortName || entityProfile.fullName)
-        .replaceAll('{Организация_полное}', entityProfile.fullName || entityProfile.shortName)
+        .replaceAll('{Организация}', entityProfile.shortName || entityProfile.fullName || '')
+        .replaceAll('{Организация_полное}', entityProfile.fullName || entityProfile.shortName || '')
         .replaceAll('{ИНН}', entityProfile.inn || '')
         .replaceAll('{КПП}', entityProfile.kpp || '')
         .replaceAll('{ОГРН}', entityProfile.ogrn || '')
@@ -95,7 +130,6 @@ export const documentGenerator = {
   ): string {
     let base = pattern || 'Документ_{id}.docx';
     base = documentGenerator.resolveTemplateTags(base, row, currentTab, allTabs, tags, entityProfile);
-    // Sanitize filename
     base = base.replace(/[/\\?%*:|"<>]/g, '_').trim();
     if (!base.toLowerCase().endsWith('.' + extension)) {
       base = base.replace(/\.(docx|pdf)$/i, '') + '.' + extension;
@@ -107,7 +141,7 @@ export const documentGenerator = {
    * Generate native DOCX document from text content
    */
   async generateDocx(
-    title: string,
+    _title: string,
     resolvedText: string
   ): Promise<Blob> {
     const lines = resolvedText.split('\n');
@@ -120,7 +154,6 @@ export const documentGenerator = {
         return;
       }
 
-      // Detect header style
       const isHeader = trimmed === trimmed.toUpperCase() && trimmed.length < 80 && !trimmed.includes('{');
       if (isHeader) {
         paragraphs.push(
@@ -129,7 +162,7 @@ export const documentGenerator = {
               new TextRun({
                 text: trimmed,
                 bold: true,
-                size: 24, // 12pt
+                size: 24,
                 font: 'Times New Roman'
               })
             ],
@@ -143,7 +176,7 @@ export const documentGenerator = {
             children: [
               new TextRun({
                 text: line,
-                size: 22, // 11pt
+                size: 22,
                 font: 'Times New Roman'
               })
             ],
@@ -159,10 +192,10 @@ export const documentGenerator = {
           properties: {
             page: {
               margin: {
-                top: 1134, // ~2cm
-                right: 850, // ~1.5cm
+                top: 1134,
+                right: 850,
                 bottom: 1134,
-                left: 1700 // ~3cm for archival binding
+                left: 1700
               }
             }
           },
@@ -175,10 +208,10 @@ export const documentGenerator = {
   },
 
   /**
-   * Generate native PDF document from text content
+   * Generate native PDF document with embedded Cyrillic font (DejaVuSans)
    */
   async generatePdf(
-    title: string,
+    _title: string,
     resolvedText: string
   ): Promise<Blob> {
     const doc = new jsPDF({
@@ -187,8 +220,8 @@ export const documentGenerator = {
       format: 'a4'
     });
 
-    // Simple UTF-8 text flow
-    doc.setFont('helvetica', 'normal');
+    registerCyrillicFonts(doc);
+    doc.setFont('DejaVuSans', 'normal');
     doc.setFontSize(10);
 
     const marginX = 20;
@@ -211,13 +244,12 @@ export const documentGenerator = {
         continue;
       }
 
-      // Check if title
-      const isTitle = rawLine === rawLine.toUpperCase() && rawLine.length < 60;
+      const isTitle = rawLine.trim() === rawLine.trim().toUpperCase() && rawLine.trim().length < 70;
       if (isTitle) {
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(11);
+        doc.setFont('DejaVuSans', 'bold');
+        doc.setFontSize(10.5);
       } else {
-        doc.setFont('helvetica', 'normal');
+        doc.setFont('DejaVuSans', 'normal');
         doc.setFontSize(9.5);
       }
 
@@ -236,9 +268,46 @@ export const documentGenerator = {
   },
 
   /**
-   * Download a generated Blob
+   * Convert Blob to base64 data URI payload (capped safely for browser fallback)
    */
-  downloadBlob(blob: Blob, filename: string): void {
+  async blobToBase64(blob: Blob): Promise<string> {
+    if (typeof FileReader !== 'undefined') {
+      return await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const res = typeof reader.result === 'string' ? reader.result : '';
+          const commaIdx = res.indexOf(',');
+          resolve(commaIdx >= 0 ? res.slice(commaIdx + 1) : res);
+        };
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(blob);
+      });
+    }
+    const buf = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) {
+      bin += String.fromCharCode(bytes[i]);
+    }
+    return btoa(bin);
+  },
+
+  /**
+   * Download a generated Blob and optionally mirror to ./documents/<relativePath> in native EXE mode
+   */
+  async saveAndDownloadBlob(
+    blob: Blob,
+    filename: string,
+    saveToDisk = true,
+    diskRelativePath?: string
+  ): Promise<{ savedToDisk: boolean }> {
+    let savedToDisk = false;
+    if (saveToDisk && localApiClient.isNative()) {
+      const targetPath = diskRelativePath || filename;
+      const res = await localApiClient.saveFileToBucket('documents', targetPath, blob);
+      savedToDisk = res.ok;
+    }
+
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -247,5 +316,10 @@ export const documentGenerator = {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return { savedToDisk };
+  },
+
+  downloadBlob(blob: Blob, filename: string): void {
+    void documentGenerator.saveAndDownloadBlob(blob, filename, true);
   }
 };

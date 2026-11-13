@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Usb, AlertTriangle, RefreshCw, Download } from 'lucide-react';
 import { TitleBar } from './components/TitleBar';
 import { MenuBar } from './components/MenuBar';
 import { TabBar } from './components/TabBar';
@@ -13,7 +14,7 @@ import { MasterJumpDialog } from './components/MasterJumpDialog';
 import { ExcelImportModal } from './components/ExcelImportModal';
 import { RelationsSchemaModal } from './components/RelationsSchemaModal';
 import { TagsModal } from './components/TagsModal';
-import { TemplateGeneratorModal } from './components/TemplateGeneratorModal';
+import { TemplatesModal, TemplatesModalScope } from './components/TemplatesModal';
 import { NormativeDocsModal } from './components/NormativeDocsModal';
 import { LLMStudioModal } from './components/LLMStudioModal';
 import { WindowsPortableModal } from './components/WindowsPortableModal';
@@ -23,30 +24,68 @@ import { HelpModal } from './components/HelpModal';
 import { NewTabModal } from './components/NewTabModal';
 import { MasterDependenciesModal } from './components/MasterDependenciesModal';
 import { LegalEntityModal, LegalEntityModalMode } from './components/LegalEntityModal';
+import { GeneratedDocsModal } from './components/GeneratedDocsModal';
+import { RecordGeneratedDocPayload } from './components/LLMStudioModal';
+import { ConfirmDialog } from './components/ui/ConfirmDialog';
+import { useToast } from './components/ui/ToastProvider';
 
 import { Column, DatabaseState, LegalEntity, LegalEntityProfile, Row, Tab } from './types/database';
 import {
   CloneEntityMode,
+  NativeBootstrapResult,
+  SaveStatusState,
   cloneLegalEntity,
   createIsolatedEmptyEntity,
   normalizeDatabaseState,
   storageService
 } from './services/storageService';
+import { localApiClient, StorageMode } from './services/localApiClient';
+import { createUniqueId, integrityService } from './services/integrityService';
 import { excelService } from './services/excelService';
+import { documentGenerator } from './services/documentGenerator';
+import {
+  archiveExistingDocManually,
+  formatBytesReadable,
+  registerGeneratedDocument
+} from './services/generatedDocsService';
 
 export default function App() {
+  const { showToast } = useToast();
+
+  const [storageMode, setStorageMode] = useState<StorageMode>(() => storageService.getMode());
+  const [isBootstrapping, setIsBootstrapping] = useState<boolean>(() => localApiClient.isNative());
   const [dbState, setDbState] = useState<DatabaseState>(() => storageService.loadDatabase());
   const [activeTabId, setActiveTabId] = useState<string>(() => dbState.tabs[0]?.id || 'tab_positions');
   const [highlightedRowId, setHighlightedRowId] = useState<string | null>(null);
 
+  // Selection & Grid action signals (used by MenuBar & Ctrl+F)
+  const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
+  const [focusSearchSignal, setFocusSearchSignal] = useState(0);
+  const [deleteSelectedSignal, setDeleteSelectedSignal] = useState(0);
+
+  // Disk persistence tracking & recovery banner state
+  const [saveStatus, setSaveStatus] = useState<SaveStatusState>('saved');
+  const [saveErrorMessage, setSaveErrorMessage] = useState<string | null>(null);
+  const [usbDisconnected, setUsbDisconnected] = useState<boolean>(false);
+  const [migrationCandidate, setMigrationCandidate] =
+    useState<NativeBootstrapResult['migrationCandidate'] | null>(null);
+
+  const latestDbRef = useRef<DatabaseState>(dbState);
+  latestDbRef.current = dbState;
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+
   // Modals state
   const [isExcelImportOpen, setIsExcelImportOpen] = useState(false);
   const [isRelationsSchemaOpen, setIsRelationsSchemaOpen] = useState(false);
+  const [isRelationsAuditMode, setIsRelationsAuditMode] = useState(false);
   const [isTagsModalOpen, setIsTagsModalOpen] = useState(false);
-  const [isTemplateGeneratorOpen, setIsTemplateGeneratorOpen] = useState(false);
+  const [isTemplatesModalOpen, setIsTemplatesModalOpen] = useState(false);
+  const [templatesModalScope, setTemplatesModalScope] = useState<TemplatesModalScope>('tab');
+  const [isGeneratedDocsOpen, setIsGeneratedDocsOpen] = useState(false);
   const [templateSelectedRowIds, setTemplateSelectedRowIds] = useState<string[] | undefined>(undefined);
   const [isNormativeDocsOpen, setIsNormativeDocsOpen] = useState(false);
   const [isLLMStudioOpen, setIsLLMStudioOpen] = useState(false);
+  const [llmInitialSubTab, setLlmInitialSubTab] = useState<'generate' | 'settings' | 'history'>('generate');
   const [llmTargetRowId, setLlmTargetRowId] = useState<string | undefined>(undefined);
   const [isWindowsPortableOpen, setIsWindowsPortableOpen] = useState(false);
   const [isColumnEditorOpen, setIsColumnEditorOpen] = useState(false);
@@ -55,6 +94,11 @@ export default function App() {
   const [isNewTabModalOpen, setIsNewTabModalOpen] = useState(false);
   const [masterDepsTabId, setMasterDepsTabId] = useState<string | null>(null);
   const [pendingDeleteTabId, setPendingDeleteTabId] = useState<string | null>(null);
+  const [pendingMasterRowDelete, setPendingMasterRowDelete] = useState<{
+    tabId: string;
+    rowIds: string[];
+    summary: string;
+  } | null>(null);
 
   // Legal Entity Modal state (create / edit card / clone)
   const [entityModalState, setEntityModalState] = useState<{
@@ -83,46 +127,147 @@ export default function App() {
     attemptCount: 0
   });
 
+  // Sequential persistence engine (prevents concurrent PUT races and revision 409 on rapid edits)
+  const persistState = useCallback(
+    (targetState: DatabaseState, notifySuccess = false) => {
+      setSaveStatus('saving');
+      saveQueueRef.current = saveQueueRef.current
+        .then(async () => {
+          const res = await storageService.saveDatabaseAsync(targetState);
+          if (res.ok) {
+            setSaveStatus('saved');
+            setSaveErrorMessage(null);
+            setUsbDisconnected(false);
+            if (notifySuccess) {
+              showToast('База данных успешно сохранена.', 'success');
+            }
+          } else {
+            const nextStatus: SaveStatusState = res.usbDisconnected
+              ? 'usb_disconnected'
+              : res.isConflict
+                ? 'conflict'
+                : 'error';
+            setSaveStatus(nextStatus);
+            setUsbDisconnected(Boolean(res.usbDisconnected));
+            setSaveErrorMessage(res.message || 'Ошибка сохранения базы данных');
+            showToast(res.message || 'Не удалось сохранить изменения', 'error');
+          }
+        })
+        .catch((err: any) => {
+          setSaveStatus('error');
+          setSaveErrorMessage(err?.message || 'Непредвиденная ошибка сохранения');
+        });
+    },
+    [showToast]
+  );
+
+  // Bootstrap disk DB + legacy migration check on mount
+  useEffect(() => {
+    let cancelled = false;
+    const init = async () => {
+      const res = await storageService.bootstrapDatabase();
+      if (cancelled) return;
+
+      setStorageMode(res.mode);
+      setDbState(res.state);
+      latestDbRef.current = res.state;
+      setActiveTabId((prev) =>
+        res.state.tabs.some((t) => t.id === prev) ? prev : res.state.tabs[0]?.id || 'tab_positions'
+      );
+
+      if (res.migrationCandidate) {
+        setMigrationCandidate(res.migrationCandidate);
+      }
+      if (res.health?.restoredFromBackup) {
+        showToast(
+          'Основной файл ot_database.json был повреждён — данные восстановлены из резервной копии.',
+          'warning'
+        );
+      } else if (res.health?.corruptedWarning || res.loadError) {
+        setSaveStatus(res.health?.usbDisconnected ? 'usb_disconnected' : 'error');
+        setSaveErrorMessage(
+          res.loadError || res.health?.message || 'Ошибка чтения базы данных с диска'
+        );
+        showToast(res.loadError || 'Внимание: ошибка чтения файла базы данных.', 'error');
+      }
+
+      setIsBootstrapping(false);
+    };
+    void init();
+    return () => {
+      cancelled = true;
+    };
+  }, [showToast]);
+
+  // Native heartbeat (detects USB disconnect / missing storage folder) + shutdown notification
+  useEffect(() => {
+    if (storageMode !== 'native-fs') return;
+
+    const timer = window.setInterval(async () => {
+      const hb = await localApiClient.heartbeat();
+      if (hb.usbDisconnected) {
+        setUsbDisconnected(true);
+        setSaveStatus('usb_disconnected');
+        setSaveErrorMessage(hb.error || 'Потерян доступ к папке ./data на носителе');
+      } else if (hb.ok) {
+        setUsbDisconnected(false);
+      }
+    }, 4000);
+
+    const handleBeforeUnload = () => {
+      localApiClient.notifyShutdown();
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [storageMode]);
+
   const activeEntity =
     dbState.entities.find((e) => e.id === dbState.activeEntityId) || dbState.entities[0];
 
-  // Save database helper: keeps active entity inside entities[] synced with top-level tabs/tags/templates/llmLogs
-  const updateDbState = useCallback((updater: (prev: DatabaseState) => DatabaseState) => {
-    setDbState((prev) => {
-      const updated = updater(prev);
-      const now = new Date().toISOString();
+  // Unified database state updater + disk persistence
+  const updateDbState = useCallback(
+    (updater: (prev: DatabaseState) => DatabaseState) => {
+      setDbState((prev) => {
+        const updated = updater(prev);
+        const now = new Date().toISOString();
 
-      // If updater directly changed activeEntityId or entities array explicitly (entity CRUD/switch), trust it;
-      // otherwise synchronize top-level tabs/tags/templates/llmLogs back into the active entity record.
-      const entityExplicitlyChanged =
-        updated.activeEntityId !== prev.activeEntityId || updated.entities !== prev.entities;
+        const entityExplicitlyChanged =
+          updated.activeEntityId !== prev.activeEntityId || updated.entities !== prev.entities;
 
-      const syncedEntities = entityExplicitlyChanged
-        ? updated.entities
-        : updated.entities.map((ent) =>
-            ent.id === updated.activeEntityId
-              ? {
-                  ...ent,
-                  tabs: updated.tabs,
-                  tags: updated.tags,
-                  templates: updated.templates,
-                  llmLogs: updated.llmLogs,
-                  updatedAt: now
-                }
-              : ent
-          );
+        const syncedEntities = entityExplicitlyChanged
+          ? updated.entities
+          : updated.entities.map((ent) =>
+              ent.id === updated.activeEntityId
+                ? {
+                    ...ent,
+                    tabs: updated.tabs,
+                    tags: updated.tags,
+                    templates: updated.templates,
+                    generatedDocs: updated.generatedDocs,
+                    llmLogs: updated.llmLogs,
+                    updatedAt: now
+                  }
+                : ent
+            );
 
-      const finalState: DatabaseState = {
-        ...updated,
-        entities: syncedEntities,
-        lastSaved: now
-      };
-      storageService.saveDatabase(finalState);
-      return finalState;
-    });
-  }, []);
+        const finalState: DatabaseState = {
+          ...updated,
+          entities: syncedEntities,
+          lastSaved: now
+        };
+        latestDbRef.current = finalState;
+        persistState(finalState);
+        return finalState;
+      });
+    },
+    [persistState]
+  );
 
-  // Sync theme with document element on mount
+  // Sync theme with document element
   useEffect(() => {
     if (dbState.settings.theme === 'dark') {
       document.documentElement.classList.add('dark');
@@ -131,33 +276,15 @@ export default function App() {
     }
   }, [dbState.settings.theme]);
 
-  // Global Keyboard Shortcuts (Ctrl+S, Ctrl+N, Ctrl+F)
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-        e.preventDefault();
-        storageService.saveDatabase(dbState);
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
-        e.preventDefault();
-        handleAddRow();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [dbState, activeTabId]);
-
   const currentTab = dbState.tabs.find((t) => t.id === activeTabId) || dbState.tabs[0];
 
   // ===================== CRUD OPERATIONS =====================
 
-  // Add new row to current tab
-  const handleAddRow = () => {
+  const handleAddRow = useCallback(() => {
     if (!currentTab) return;
-    const newRowId = `row_${Date.now()}`;
+    const newRowId = createUniqueId('row');
     const newRow: Row = { id: newRowId };
 
-    // Fill defaults
     currentTab.columns.forEach((col) => {
       if (col.type === 'boolean') newRow[col.id] = false;
       else if (col.type === 'number') newRow[col.id] = 0;
@@ -169,16 +296,35 @@ export default function App() {
       ...prev,
       tabs: prev.tabs.map((t) => (t.id === currentTab.id ? { ...t, rows: [newRow, ...t.rows] } : t))
     }));
-  };
+  }, [currentTab, updateDbState]);
 
-  // Update single cell with cascade update to dependent tabs if master column (ТЗ 2.3)
+  // Global Keyboard Shortcuts (Ctrl+S, Ctrl+N, Ctrl+F)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        persistState(latestDbRef.current, true);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        handleAddRow();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        setFocusSearchSignal((n) => n + 1);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleAddRow, persistState]);
+
+  // Update single cell with cascade update to dependent tabs if master column
   const handleUpdateCell = (rowId: string, columnId: string, newValue: any) => {
     if (!currentTab) return;
     const oldRow = currentTab.rows.find((r) => r.id === rowId);
     const oldValue = oldRow ? oldRow[columnId] : undefined;
 
     updateDbState((prev) => {
-      // 1. Update the cell in current tab
       let updatedTabs = prev.tabs.map((t) => {
         if (t.id !== currentTab.id) return t;
         return {
@@ -187,7 +333,6 @@ export default function App() {
         };
       });
 
-      // 2. Cascade synchronization: if current tab & column is a MASTER for other tabs
       if (oldValue !== undefined && oldValue !== newValue && String(oldValue).trim() !== '') {
         updatedTabs = updatedTabs.map((depTab) => {
           let hasRelation = false;
@@ -197,7 +342,6 @@ export default function App() {
 
           if (matchingCols.length === 0) return depTab;
 
-          // Cascade replace old values with new value
           const updatedRows = depTab.rows.map((depRow) => {
             const rowCopy = { ...depRow };
             matchingCols.forEach((relCol) => {
@@ -217,7 +361,7 @@ export default function App() {
     });
   };
 
-  // Update multiple cells on a single row (for cascading dependent dropdowns)
+  // Update multiple cells on a single row
   const handleUpdateRowMulti = (rowId: string, patch: Record<string, any>) => {
     if (!currentTab) return;
     updateDbState((prev) => ({
@@ -230,32 +374,61 @@ export default function App() {
     }));
   };
 
-  // Add bulk rows from clipboard paste
-  const handleAddBulkRows = (newRows: Row[]) => {
+  // Insert rows from inline Excel paste at clicked row offset (shifting lower rows down)
+  const handleInsertBulkRows = (newRows: Row[], insertIndex?: number) => {
     if (!currentTab || newRows.length === 0) return;
     updateDbState((prev) => ({
       ...prev,
-      tabs: prev.tabs.map((t) =>
-        t.id === currentTab.id ? { ...t, rows: [...newRows, ...t.rows] } : t
-      )
+      tabs: prev.tabs.map((t) => {
+        if (t.id !== currentTab.id) return t;
+        const idx =
+          insertIndex !== undefined
+            ? Math.max(0, Math.min(t.rows.length, insertIndex))
+            : t.rows.length;
+        const nextRows = [...t.rows];
+        nextRows.splice(idx, 0, ...newRows);
+        return { ...t, rows: nextRows };
+      })
     }));
+    showToast(`Вставлено строк из Excel: ${newRows.length}`, 'success');
   };
 
-  // Delete rows
-  const handleDeleteRows = (rowIds: string[]) => {
-    if (!currentTab) return;
+  // Execute row deletion directly
+  const executeRowDelete = (tabId: string, rowIds: string[]) => {
     const rowIdSet = new Set(rowIds);
     updateDbState((prev) => ({
       ...prev,
       tabs: prev.tabs.map((t) =>
-        t.id === currentTab.id ? { ...t, rows: t.rows.filter((r) => !rowIdSet.has(r.id)) } : t
+        t.id === tabId ? { ...t, rows: t.rows.filter((r) => !rowIdSet.has(r.id)) } : t
       )
     }));
+    setSelectedRowIds((prev) => {
+      const next = new Set(prev);
+      rowIds.forEach((id) => next.delete(id));
+      return next;
+    });
+  };
+
+  // Delete rows with Master reference impact check
+  const handleDeleteRows = (rowIds: string[]) => {
+    if (!currentTab || rowIds.length === 0) return;
+
+    const impact = integrityService.getRowDeleteImpact(currentTab, rowIds, dbState.tabs);
+    if (impact.totalAffectedRows > 0) {
+      const summary = impact.affectedTabs
+        .map((t) => `«${t.tabName}» (${t.affectedRowCount} строк)`)
+        .join(', ');
+      setPendingMasterRowDelete({ tabId: currentTab.id, rowIds, summary });
+      return;
+    }
+
+    executeRowDelete(currentTab.id, rowIds);
   };
 
   // Open New Tab wizard modal
   const handleAddTab = () => {
     if (dbState.tabs.length >= 20) {
+      showToast('Достигнут лимит вкладок (максимум 20).', 'warning');
       return;
     }
     setIsNewTabModalOpen(true);
@@ -273,7 +446,7 @@ export default function App() {
     columns: Column[];
     openMasterDepsAfter?: boolean;
   }) => {
-    const newTabId = `tab_${Date.now()}`;
+    const newTabId = createUniqueId('tab');
     const newTab: Tab = {
       id: newTabId,
       name,
@@ -313,25 +486,78 @@ export default function App() {
     }));
   };
 
-  // Request delete tab (uses in-app confirmation modal instead of window.confirm)
+  // Request delete tab
   const handleDeleteTab = (tabId: string) => {
-    if (dbState.tabs.length <= 1) return;
+    if (dbState.tabs.length <= 1) {
+      showToast('В базе должна оставаться хотя бы одна вкладка.', 'warning');
+      return;
+    }
     setPendingDeleteTabId(tabId);
   };
 
-  const confirmExecuteDeleteTab = () => {
+  const confirmExecuteDeleteTab = async (mode: 'archive' | 'purge') => {
     if (!pendingDeleteTabId) return;
     const tabId = pendingDeleteTabId;
     setPendingDeleteTabId(null);
 
-    updateDbState((prev) => {
-      const nextTabs = prev.tabs.filter((t) => t.id !== tabId);
-      return { ...prev, tabs: nextTabs };
-    });
-    const remaining = dbState.tabs.filter((t) => t.id !== tabId);
-    if (remaining.length > 0 && activeTabId === tabId) {
-      setActiveTabId(remaining[0].id);
+    const snapshot = latestDbRef.current;
+    const tabToDel = snapshot.tabs.find((t) => t.id === tabId);
+    const remainingBeforeUpdate = snapshot.tabs.filter((t) => t.id !== tabId);
+
+    // Handle generatedDocs attached to deleted tab (archive into АРХИВ/<dd.mm.yyyy>/ or delete physically)
+    let nextGeneratedDocs = snapshot.generatedDocs || [];
+    if (tabToDel) {
+      const matchingDocs = nextGeneratedDocs.filter((d) => d.sourceTabName === tabToDel.name);
+      if (mode === 'archive') {
+        for (const doc of matchingDocs) {
+          if (!doc.isArchived) {
+            const archived = archiveExistingDocManually(nextGeneratedDocs, doc.id);
+            nextGeneratedDocs = archived.nextDocs;
+            if (archived.transition && localApiClient.isNative()) {
+              await localApiClient.moveDocumentInBucket(
+                archived.transition.fromPath,
+                archived.transition.toPath
+              );
+            }
+          }
+        }
+      } else {
+        for (const doc of matchingDocs) {
+          if (localApiClient.isNative()) {
+            await localApiClient.deleteFileFromBucket('documents', doc.relativePath);
+          }
+        }
+        nextGeneratedDocs = nextGeneratedDocs.filter((d) => d.sourceTabName !== tabToDel.name);
+      }
     }
+
+    updateDbState((prev) => {
+      const filtered = prev.tabs.filter((t) => t.id !== tabId);
+      const cleanedTabs = integrityService.cleanReferencesAfterTabDelete(filtered, tabId);
+      const cleanedTags = integrityService.pruneOrphanedTags(prev.tags, cleanedTabs);
+      const nextTemplates =
+        mode === 'archive'
+          ? integrityService.archiveTabTemplates(prev.templates, tabId, tabToDel?.name || 'Удалённая вкладка')
+          : integrityService.deleteTabTemplates(prev.templates, tabId);
+
+      return {
+        ...prev,
+        tabs: cleanedTabs,
+        tags: cleanedTags,
+        templates: nextTemplates,
+        generatedDocs: nextGeneratedDocs
+      };
+    });
+
+    if (remainingBeforeUpdate.length > 0 && activeTabId === tabId) {
+      setActiveTabId(remainingBeforeUpdate[0].id);
+    }
+    showToast(
+      mode === 'archive'
+        ? 'Вкладка удалена, связанные шаблоны и документы перенесены в архив.'
+        : 'Вкладка, привязанные шаблоны и связанные данные удалены.',
+      'info'
+    );
   };
 
   // Apply Master table status and push/sync column links across target tables
@@ -352,7 +578,6 @@ export default function App() {
         let updatedCols = [...t.columns];
         let updatedRows = [...t.rows];
 
-        // 1. Revert any existing relations pointing to this master if unchecked
         updatedCols = updatedCols.map((col) => {
           if (
             col.type === 'relation' &&
@@ -365,7 +590,6 @@ export default function App() {
           return col;
         });
 
-        // 2. Link matching columns or add missing ones with identical name & type 'relation'
         chosenMasterColIds.forEach((mColId) => {
           const mCol = masterTab.columns.find((mc) => mc.id === mColId);
           if (!mCol) return;
@@ -391,7 +615,7 @@ export default function App() {
               relation: { masterTabId, masterColumnId: mColId }
             };
           } else {
-            const newColId = `col_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+            const newColId = createUniqueId('col');
             updatedCols.push({
               id: newColId,
               name: mCol.name,
@@ -418,7 +642,14 @@ export default function App() {
         const newCols = [...t.columns, newCol];
         const updatedRows = t.rows.map((r) => ({
           ...r,
-          [newCol.id]: r[newCol.id] !== undefined ? r[newCol.id] : (newCol.type === 'boolean' ? false : newCol.type === 'number' ? 0 : '')
+          [newCol.id]:
+            r[newCol.id] !== undefined
+              ? r[newCol.id]
+              : newCol.type === 'boolean'
+                ? false
+                : newCol.type === 'number'
+                  ? 0
+                  : ''
         }));
         return {
           ...t,
@@ -445,14 +676,13 @@ export default function App() {
     }));
   };
 
-  // ===================== RELATION PROTECTION =====================
+  // ===================== RELATION NAVIGATION =====================
 
   const handleAttemptEditRelation = (column: Column, row: Row) => {
     if (!column.relation) return;
     const masterTab = dbState.tabs.find((t) => t.id === column.relation?.masterTabId);
     const currentValue = row[column.id];
 
-    // Find target row in master
     let targetMasterRowId: string | undefined;
     if (masterTab && currentValue) {
       const match = masterTab.rows.find(
@@ -486,7 +716,7 @@ export default function App() {
   // ===================== EXCEL IMPORT COMMITS =====================
 
   const handleCommitImportNewTab = (sheetName: string, columns: Column[], rows: Record<string, any>[]) => {
-    const newTabId = `tab_import_${Date.now()}`;
+    const newTabId = createUniqueId('tab_imp');
     const newTab: Tab = {
       id: newTabId,
       name: sheetName.slice(0, 30),
@@ -500,6 +730,7 @@ export default function App() {
       tabs: [...prev.tabs, newTab]
     }));
     setActiveTabId(newTabId);
+    showToast(`Импортирована новая вкладка «${newTab.name}» (${rows.length} строк).`, 'success');
   };
 
   const handleCommitImportExistingTab = (tabId: string, rows: Record<string, any>[]) => {
@@ -507,6 +738,7 @@ export default function App() {
       ...prev,
       tabs: prev.tabs.map((t) => (t.id === tabId ? { ...t, rows: [...t.rows, ...(rows as Row[])] } : t))
     }));
+    showToast(`Добавлено строк из Excel: ${rows.length}`, 'success');
   };
 
   // ===================== LEGAL ENTITIES OPERATIONS =====================
@@ -524,6 +756,7 @@ export default function App() {
         tabs: nextTarget.tabs,
         tags: nextTarget.tags,
         templates: nextTarget.templates,
+        generatedDocs: nextTarget.generatedDocs || [],
         llmLogs: nextTarget.llmLogs || []
       };
     });
@@ -532,6 +765,7 @@ export default function App() {
     setHighlightedRowId(null);
     setPendingDeleteTabId(null);
     setMasterDepsTabId(null);
+    setSelectedRowIds(new Set());
   };
 
   const handleSaveLegalEntity = ({
@@ -556,6 +790,7 @@ export default function App() {
             : ent
         )
       }));
+      showToast(`Реквизиты «${profile.shortName}» обновлены.`, 'success');
       return;
     }
 
@@ -575,10 +810,13 @@ export default function App() {
       tabs: newEntity.tabs,
       tags: newEntity.tags,
       templates: newEntity.templates,
+      generatedDocs: newEntity.generatedDocs || [],
       llmLogs: newEntity.llmLogs
     }));
     setActiveTabId(newEntity.tabs[0]?.id || '');
     setHighlightedRowId(null);
+    setSelectedRowIds(new Set());
+    showToast(`Организация «${profile.shortName}» добавлена.`, 'success');
   };
 
   const handleDeleteEntity = (entityId: string) => {
@@ -596,22 +834,131 @@ export default function App() {
       tabs: nextActive.tabs,
       tags: nextActive.tags,
       templates: nextActive.templates,
+      generatedDocs: nextActive.generatedDocs || [],
       llmLogs: nextActive.llmLogs
     }));
 
     if (dbState.activeEntityId === entityId) {
       setActiveTabId(nextActive.tabs[0]?.id || '');
+      setSelectedRowIds(new Set());
+    }
+    showToast('Юридическое лицо удалено из базы.', 'info');
+  };
+
+  // ===================== GENERATED DOCS & ARCHIVE LIFECYCLE =====================
+
+  const handleRecordGeneratedDoc = async (payload: RecordGeneratedDocPayload) => {
+    const dataBase64 =
+      !localApiClient.isNative() && payload.blob.size <= 1_500_000
+        ? await documentGenerator.blobToBase64(payload.blob)
+        : undefined;
+
+    const regResult = registerGeneratedDocument(latestDbRef.current.generatedDocs || [], {
+      id: createUniqueId('gdoc'),
+      title: payload.title,
+      fileName: payload.fileName,
+      category: payload.category,
+      format: payload.format,
+      sourceTabName: payload.sourceTabName,
+      rowIdentifier: payload.rowIdentifier,
+      sizeFormatted: formatBytesReadable(payload.blob.size),
+      dataBase64
+    });
+
+    if (localApiClient.isNative()) {
+      for (const transition of regResult.archivedTransitions) {
+        const moveRes = await localApiClient.moveDocumentInBucket(
+          transition.fromPath,
+          transition.toPath
+        );
+        if (!moveRes.ok) {
+          showToast(
+            moveRes.message || `Не удалось перенести старую версию в ${transition.toPath}`,
+            'warning'
+          );
+        }
+      }
+    }
+
+    await documentGenerator.saveAndDownloadBlob(
+      payload.blob,
+      regResult.newRecord.fileName,
+      true,
+      regResult.newRecord.relativePath
+    );
+
+    updateDbState((prev) => ({
+      ...prev,
+      generatedDocs: regResult.nextDocs
+    }));
+
+    if (regResult.archivedTransitions.length > 0) {
+      const folder = regResult.archivedTransitions[0].archivedRecord.archiveDateFolder;
+      showToast(
+        `Предыдущая версия перенесена в «${payload.category}/АРХИВ/${folder}»`,
+        'info'
+      );
     }
   };
 
+  const handleArchiveDoc = async (docId: string) => {
+    const result = archiveExistingDocManually(latestDbRef.current.generatedDocs || [], docId);
+    if (!result.transition) return;
+
+    if (localApiClient.isNative()) {
+      const moveRes = await localApiClient.moveDocumentInBucket(
+        result.transition.fromPath,
+        result.transition.toPath
+      );
+      if (!moveRes.ok) {
+        showToast(moveRes.message || 'Не удалось перенести файл в папку АРХИВ на диске', 'error');
+        return;
+      }
+    }
+
+    updateDbState((prev) => ({
+      ...prev,
+      generatedDocs: result.nextDocs
+    }));
+    showToast(
+      `Документ перенесён в «${result.transition.archivedRecord.category}/АРХИВ/${result.transition.archivedRecord.archiveDateFolder}»`,
+      'info'
+    );
+  };
+
+  const handleDeleteDoc = async (docId: string) => {
+    const target = (latestDbRef.current.generatedDocs || []).find((d) => d.id === docId);
+    if (target && localApiClient.isNative()) {
+      await localApiClient.deleteFileFromBucket('documents', target.relativePath);
+    }
+    updateDbState((prev) => ({
+      ...prev,
+      generatedDocs: (prev.generatedDocs || []).filter((d) => d.id !== docId)
+    }));
+    showToast('Документ удалён из реестра', 'info');
+  };
+
+  if (isBootstrapping) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen w-screen bg-slate-900 text-slate-200 gap-3 text-xs">
+        <RefreshCw className="w-6 h-6 animate-spin text-blue-400" />
+        <div className="font-semibold text-sm">Загрузка базы данных ОТ-База...</div>
+        <div className="text-slate-400 font-mono">./data/ot_database.json</div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-screen w-screen bg-slate-100 dark:bg-slate-900 text-slate-800 dark:text-slate-100 overflow-hidden font-sans">
-      {/* 1. Windows Native Titlebar with Legal Entity Switcher & Controls */}
+      {/* 1. Header with Legal Entity Switcher & Save Status */}
       <TitleBar
         settings={dbState.settings}
         onUpdateSettings={(newSettings) => updateDbState((p) => ({ ...p, settings: { ...p.settings, ...newSettings } }))}
         onOpenPortableModal={() => setIsWindowsPortableOpen(true)}
         lastSaved={dbState.lastSaved}
+        saveStatus={saveStatus}
+        storageMode={storageMode}
+        onRetrySave={() => persistState(latestDbRef.current, true)}
         entities={dbState.entities}
         activeEntity={activeEntity}
         onSelectEntity={handleSelectEntity}
@@ -621,33 +968,85 @@ export default function App() {
         onDeleteEntity={handleDeleteEntity}
       />
 
-      {/* 2. Windows Native Menubar */}
+      {/* 2. Menu Bar */}
       <MenuBar
-        onSave={() => storageService.saveDatabase(dbState)}
+        onSave={() => persistState(latestDbRef.current, true)}
         onExportExcel={() => excelService.exportTabToXlsx(currentTab, dbState.tabs)}
         onFullBackup={() => setIsBackupOpen(true)}
         onRestore={() => setIsBackupOpen(true)}
         onOpenPortableModal={() => setIsWindowsPortableOpen(true)}
         onAddRow={handleAddRow}
-        onDeleteSelectedRows={() => {}}
-        onFocusSearch={() => {}}
+        onDeleteSelectedRows={() => setDeleteSelectedSignal((n) => n + 1)}
+        selectedRowsCount={selectedRowIds.size}
+        onFocusSearch={() => setFocusSearchSignal((n) => n + 1)}
         onAddTab={handleAddTab}
         onOpenColumnEditor={() => setIsColumnEditorOpen(true)}
-        onOpenRelationsSchema={() => setIsRelationsSchemaOpen(true)}
-        onOpenTagsModal={() => setIsTagsModalOpen(true)}
-        onOpenTemplateGenerator={() => {
-          setTemplateSelectedRowIds(undefined);
-          setIsTemplateGeneratorOpen(true);
+        onOpenRelationsSchema={() => {
+          setIsRelationsAuditMode(false);
+          setIsRelationsSchemaOpen(true);
         }}
+        onAuditRelations={() => {
+          setIsRelationsAuditMode(true);
+          setIsRelationsSchemaOpen(true);
+        }}
+        onOpenTagsModal={() => setIsTagsModalOpen(true)}
+        onOpenAllTemplates={() => {
+          setTemplateSelectedRowIds(undefined);
+          setTemplatesModalScope('all');
+          setIsTemplatesModalOpen(true);
+        }}
+        onOpenGeneratedDocs={() => setIsGeneratedDocsOpen(true)}
+        generatedDocsCount={dbState.generatedDocs.length}
         onOpenNormativeDocs={() => setIsNormativeDocsOpen(true)}
         onOpenLLMStudio={() => {
           setLlmTargetRowId(undefined);
+          setLlmInitialSubTab('generate');
           setIsLLMStudioOpen(true);
         }}
+        onOpenLLMSettings={() => {
+          setLlmTargetRowId(undefined);
+          setLlmInitialSubTab('settings');
+          setIsLLMStudioOpen(true);
+        }}
+        llmConfig={dbState.llmConfig}
         onOpenHelp={() => setIsHelpOpen(true)}
       />
 
-      {/* 3. Multi-Tab Navigation Bar with drag-reorder, adjustable height, wrapping, and non-clipping popups */}
+      {/* Persistent Recovery Banner for USB Disconnect / Write Error / Revision Conflict */}
+      {(saveStatus === 'usb_disconnected' || saveStatus === 'error' || saveStatus === 'conflict') && (
+        <div className="px-4 py-2 bg-red-600 text-white text-xs flex flex-wrap items-center justify-between gap-2 shrink-0 z-30">
+          <div className="flex items-center gap-2 font-medium">
+            {saveStatus === 'usb_disconnected' ? (
+              <Usb className="w-4 h-4 shrink-0" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+            )}
+            <span>
+              {saveErrorMessage || 'Ошибка записи на диск. Подключите носитель и повторите сохранение.'}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => persistState(latestDbRef.current, true)}
+              className="px-2.5 py-1 bg-white text-red-700 hover:bg-red-50 rounded font-semibold flex items-center gap-1 cursor-pointer"
+            >
+              <RefreshCw className="w-3 h-3" />
+              <span>Повторить запись</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => storageService.exportDatabaseToFile(latestDbRef.current)}
+              className="px-2.5 py-1 bg-red-800 hover:bg-red-900 text-white rounded font-medium flex items-center gap-1 cursor-pointer"
+            >
+              <Download className="w-3 h-3" />
+              <span>Скачать копию JSON</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 3. Multi-Tab Navigation Bar */}
       <TabBar
         tabs={dbState.tabs}
         activeTabId={activeTabId}
@@ -672,8 +1071,15 @@ export default function App() {
           currentTab={currentTab}
           allTabs={dbState.tabs}
           sharedNormativeCount={dbState.normativeDocs.length}
+          tabTemplatesCount={
+            dbState.templates.filter((tpl) => !tpl.isArchived && tpl.tabId === currentTab.id).length
+          }
+          selectedRowIds={selectedRowIds}
+          onSelectedRowIdsChange={setSelectedRowIds}
+          focusSearchSignal={focusSearchSignal}
+          deleteSelectedSignal={deleteSelectedSignal}
           onAddRow={handleAddRow}
-          onAddBulkRows={handleAddBulkRows}
+          onInsertBulkRows={handleInsertBulkRows}
           onUpdateCell={handleUpdateCell}
           onUpdateRowMulti={handleUpdateRowMulti}
           onDeleteRows={handleDeleteRows}
@@ -681,12 +1087,14 @@ export default function App() {
           onExportExcel={() => excelService.exportTabToXlsx(currentTab, dbState.tabs)}
           onOpenColumnEditor={() => setIsColumnEditorOpen(true)}
           onOpenNormativeDocs={() => setIsNormativeDocsOpen(true)}
-          onOpenTemplateGenerator={(selectedRowIds) => {
-            setTemplateSelectedRowIds(selectedRowIds);
-            setIsTemplateGeneratorOpen(true);
+          onOpenTemplates={(ids) => {
+            setTemplateSelectedRowIds(ids);
+            setTemplatesModalScope('tab');
+            setIsTemplatesModalOpen(true);
           }}
           onOpenLLMStudio={(rowId) => {
             setLlmTargetRowId(rowId);
+            setLlmInitialSubTab('generate');
             setIsLLMStudioOpen(true);
           }}
           onAttemptEditRelation={handleAttemptEditRelation}
@@ -696,21 +1104,25 @@ export default function App() {
         />
       )}
 
-      {/* 5. Windows Desktop Status Bar */}
+      {/* 5. Desktop Status Bar */}
       {currentTab && (
         <StatusBar
           currentTab={currentTab}
-          totalTabsCount={dbState.tabs.length}
+          entityName={activeEntity.profile.shortName || activeEntity.profile.fullName}
+          storageMode={storageMode}
+          usbDisconnected={usbDisconnected}
           databaseDirectory={dbState.settings.databaseDirectory}
           llmConfig={dbState.llmConfig}
-          onOpenLLMStudio={() => setIsLLMStudioOpen(true)}
+          onOpenLLMStudio={() => {
+            setLlmInitialSubTab('settings');
+            setIsLLMStudioOpen(true);
+          }}
           onOpenPortableModal={() => setIsWindowsPortableOpen(true)}
         />
       )}
 
       {/* ===================== MODALS ===================== */}
 
-      {/* Linked Column Edit Prevention Dialog (ТЗ 2.3) */}
       <MasterJumpDialog
         isOpen={masterJumpInfo.isOpen}
         onClose={() => setMasterJumpInfo((prev) => ({ ...prev, isOpen: false }))}
@@ -721,7 +1133,6 @@ export default function App() {
         attemptCount={masterJumpInfo.attemptCount}
       />
 
-      {/* Excel Import Dialog (ТЗ 2.2) */}
       <ExcelImportModal
         isOpen={isExcelImportOpen}
         onClose={() => setIsExcelImportOpen(false)}
@@ -731,15 +1142,28 @@ export default function App() {
         onCommitImportExistingTab={handleCommitImportExistingTab}
       />
 
-      {/* Relational Schema Diagram (ТЗ 2.3) */}
       <RelationsSchemaModal
         isOpen={isRelationsSchemaOpen}
         onClose={() => setIsRelationsSchemaOpen(false)}
         tabs={dbState.tabs}
-        onSelectTab={(tabId) => setActiveTabId(tabId)}
+        tags={dbState.tags}
+        initialAuditOpen={isRelationsAuditMode}
+        onSelectTab={(tabId, rowId) => {
+          setActiveTabId(tabId);
+          if (rowId) {
+            setHighlightedRowId(rowId);
+            setTimeout(() => setHighlightedRowId(null), 3500);
+          }
+        }}
+        onRepairReferences={() => {
+          updateDbState((p) => {
+            const repaired = integrityService.repairBrokenReferences(p.tabs, p.tags);
+            return { ...p, tabs: repaired.tabs, tags: repaired.tags };
+          });
+          showToast('Разорванные связи переведены в текст, битые теги очищены.', 'success');
+        }}
       />
 
-      {/* Tag Pool Directory (ТЗ 2.4) */}
       <TagsModal
         isOpen={isTagsModalOpen}
         onClose={() => setIsTagsModalOpen(false)}
@@ -749,10 +1173,10 @@ export default function App() {
         onSaveTags={(newTags) => updateDbState((p) => ({ ...p, tags: newTags }))}
       />
 
-      {/* Document Template Engine (.docx & PDF) (ТЗ 2.5) */}
-      <TemplateGeneratorModal
-        isOpen={isTemplateGeneratorOpen}
-        onClose={() => setIsTemplateGeneratorOpen(false)}
+      <TemplatesModal
+        isOpen={isTemplatesModalOpen}
+        onClose={() => setIsTemplatesModalOpen(false)}
+        initialScope={templatesModalScope}
         templates={dbState.templates}
         currentTab={currentTab}
         allTabs={dbState.tabs}
@@ -760,13 +1184,27 @@ export default function App() {
         entityProfile={activeEntity.profile}
         selectedRowIds={templateSelectedRowIds}
         onOpenTagsModal={() => {
-          setIsTemplateGeneratorOpen(false);
+          setIsTemplatesModalOpen(false);
           setIsTagsModalOpen(true);
         }}
         onSaveTemplates={(newTemplates) => updateDbState((p) => ({ ...p, templates: newTemplates }))}
+        onRecordGeneratedDoc={handleRecordGeneratedDoc}
       />
 
-      {/* Shared Normative Documents Library across all Legal Entities */}
+      <GeneratedDocsModal
+        isOpen={isGeneratedDocsOpen}
+        onClose={() => setIsGeneratedDocsOpen(false)}
+        generatedDocs={dbState.generatedDocs}
+        entityProfile={activeEntity.profile}
+        onArchiveDoc={handleArchiveDoc}
+        onDeleteDoc={handleDeleteDoc}
+        onOpenTemplates={() => {
+          setTemplateSelectedRowIds(undefined);
+          setTemplatesModalScope('all');
+          setIsTemplatesModalOpen(true);
+        }}
+      />
+
       <NormativeDocsModal
         isOpen={isNormativeDocsOpen}
         onClose={() => setIsNormativeDocsOpen(false)}
@@ -777,22 +1215,23 @@ export default function App() {
         }
       />
 
-      {/* LLM Generation Studio (Ollama) (ТЗ 2.7) */}
       <LLMStudioModal
         isOpen={isLLMStudioOpen}
+        initialSubTab={llmInitialSubTab}
         onClose={() => setIsLLMStudioOpen(false)}
         currentTab={currentTab}
         allTabs={dbState.tabs}
         tags={dbState.tags}
+        entityProfile={activeEntity.profile}
         sharedNormativeDocs={dbState.normativeDocs}
         llmConfig={dbState.llmConfig}
         llmLogs={dbState.llmLogs}
         selectedRowId={llmTargetRowId}
         onSaveLLMConfig={(newConfig) => updateDbState((p) => ({ ...p, llmConfig: newConfig }))}
         onAddLLMLog={(newLog) => updateDbState((p) => ({ ...p, llmLogs: [newLog, ...p.llmLogs] }))}
+        onRecordGeneratedDoc={handleRecordGeneratedDoc}
       />
 
-      {/* Windows Portable USB Setup and .BAT Downloader (ТЗ 1.1) */}
       <WindowsPortableModal
         isOpen={isWindowsPortableOpen}
         onClose={() => setIsWindowsPortableOpen(false)}
@@ -800,15 +1239,15 @@ export default function App() {
         onUpdateSettings={(newSettings) => updateDbState((p) => ({ ...p, settings: { ...p.settings, ...newSettings } }))}
       />
 
-      {/* Column Structure Editor (ТЗ 2.1) */}
       <ColumnEditorModal
         isOpen={isColumnEditorOpen}
         onClose={() => setIsColumnEditorOpen(false)}
         currentTab={currentTab}
         allTabs={dbState.tabs}
+        tags={dbState.tags}
         onUpdateColumns={(tabId, newCols) => {
           updateDbState((p) => {
-            const nextTabs = p.tabs.map((t) => {
+            const withDefaults = p.tabs.map((t) => {
               if (t.id !== tabId) return t;
               const updatedRows = t.rows.map((r) => {
                 const rowCopy = { ...r };
@@ -821,12 +1260,19 @@ export default function App() {
               });
               return { ...t, columns: newCols, rows: updatedRows };
             });
-            return { ...p, tabs: nextTabs };
+
+            const cleanedTabs = integrityService.cleanReferencesAfterColumnsUpdate(
+              withDefaults,
+              tabId,
+              newCols
+            );
+            const cleanedTags = integrityService.pruneOrphanedTags(p.tags, cleanedTabs);
+
+            return { ...p, tabs: cleanedTabs, tags: cleanedTags };
           });
         }}
       />
 
-      {/* Backup & Restore Modal (ТЗ 2.8) */}
       <BackupModal
         isOpen={isBackupOpen}
         onClose={() => setIsBackupOpen(false)}
@@ -834,22 +1280,28 @@ export default function App() {
         onRestoreDatabase={(restored) => {
           const normalized = normalizeDatabaseState(restored);
           setDbState(normalized);
+          latestDbRef.current = normalized;
+          persistState(normalized, true);
           if (normalized.tabs[0]) setActiveTabId(normalized.tabs[0].id);
         }}
-        onResetDatabase={() => {
-          const reset = storageService.resetDatabase();
-          setDbState(reset);
-          if (reset.tabs[0]) setActiveTabId(reset.tabs[0].id);
+        onResetDatabase={async () => {
+          const { state, saveResult } = await storageService.resetDatabaseAsync();
+          setDbState(state);
+          latestDbRef.current = state;
+          if (state.tabs[0]) setActiveTabId(state.tabs[0].id);
+          if (saveResult.ok) {
+            showToast('База данных сброшена к исходному состоянию.', 'info');
+          } else {
+            showToast(saveResult.message || 'Не удалось сбросить файл базы', 'error');
+          }
         }}
       />
 
-      {/* Help & Documentation Modal */}
       <HelpModal
         isOpen={isHelpOpen}
         onClose={() => setIsHelpOpen(false)}
       />
 
-      {/* Legal Entity Card / Create / Clone Modal */}
       <LegalEntityModal
         isOpen={entityModalState.isOpen}
         mode={entityModalState.mode}
@@ -859,7 +1311,6 @@ export default function App() {
         onSaveEntity={handleSaveLegalEntity}
       />
 
-      {/* New Tab Creation Modal (asks about Master dependencies) */}
       <NewTabModal
         isOpen={isNewTabModalOpen}
         onClose={() => setIsNewTabModalOpen(false)}
@@ -867,7 +1318,6 @@ export default function App() {
         onCreateTab={handleCreateTabFromModal}
       />
 
-      {/* Master Dependencies Configurator Modal */}
       <MasterDependenciesModal
         isOpen={Boolean(masterDepsTabId)}
         onClose={() => setMasterDepsTabId(null)}
@@ -876,38 +1326,141 @@ export default function App() {
         onApplyDependencies={handleApplyMasterDependencies}
       />
 
-      {/* Non-blocking Tab Delete Confirmation Modal */}
+      {/* Master Row Delete Impact Confirmation */}
+      <ConfirmDialog
+        isOpen={Boolean(pendingMasterRowDelete)}
+        danger
+        title="Удаление записей из мастер-таблицы"
+        description={
+          pendingMasterRowDelete
+            ? `Вы удаляете записи мастер-справочника, на которые ссылаются зависимые таблицы: ${pendingMasterRowDelete.summary}. После удаления в этих ячейках потребуется выбрать актуальное значение. Продолжить?`
+            : ''
+        }
+        confirmLabel="Удалить записи"
+        cancelLabel="Отмена"
+        onConfirm={() => {
+          if (pendingMasterRowDelete) {
+            executeRowDelete(pendingMasterRowDelete.tabId, pendingMasterRowDelete.rowIds);
+          }
+          setPendingMasterRowDelete(null);
+        }}
+        onCancel={() => setPendingMasterRowDelete(null)}
+      />
+
+      {/* Legacy localStorage -> Disk Migration Dialog */}
+      <ConfirmDialog
+        isOpen={Boolean(migrationCandidate)}
+        title="Обнаружены данные в кэше браузера"
+        description={
+          migrationCandidate
+            ? `На диске (./data/ot_database.json) найдено записей: ${migrationCandidate.diskRowsCount}, а в кэше браузера от предыдущей веб-версии — ${migrationCandidate.legacyRowsCount}. Перенести данные из браузера на диск (с заменой файла) или использовать файл с диска?`
+            : ''
+        }
+        confirmLabel="Перенести из браузера на диск"
+        cancelLabel="Оставить файл с диска"
+        onConfirm={() => {
+          if (migrationCandidate) {
+            setDbState(migrationCandidate.legacyState);
+            latestDbRef.current = migrationCandidate.legacyState;
+            persistState(migrationCandidate.legacyState, true);
+            if (migrationCandidate.legacyState.tabs[0]) {
+              setActiveTabId(migrationCandidate.legacyState.tabs[0].id);
+            }
+          }
+          storageService.clearLegacyLocalStorageMarker();
+          setMigrationCandidate(null);
+        }}
+        onCancel={() => {
+          storageService.clearLegacyLocalStorageMarker();
+          setMigrationCandidate(null);
+          showToast('Используется единая база на диске ./data/ot_database.json', 'info');
+        }}
+      />
+
+      {/* Non-blocking Tab Delete Confirmation Modal with Relations, Templates & Archive/Delete Choice */}
       {pendingDeleteTabId && (() => {
         const tabToDel = dbState.tabs.find((t) => t.id === pendingDeleteTabId);
         if (!tabToDel) return null;
-        const depTabs = dbState.tabs.filter((t) =>
-          t.id !== pendingDeleteTabId && t.columns.some((c) => c.relation?.masterTabId === pendingDeleteTabId)
+        const impact = integrityService.getTabDeleteImpact(
+          pendingDeleteTabId,
+          dbState.tabs,
+          dbState.tags,
+          dbState.templates,
+          dbState.generatedDocs
         );
         return (
           <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
-            <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 p-5 space-y-4 text-xs">
-              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                Удаление вкладки «{tabToDel.name}»
-              </h3>
-              <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
-                {depTabs.length > 0
-                  ? `ВНИМАНИЕ! Вкладка является мастер-источником для: ${depTabs.map((t) => t.name).join(', ')}. При удалении связанные столбцы потеряют источник данных!`
-                  : `Вы действительно хотите удалить вкладку «${tabToDel.name}» и все её записи (${tabToDel.rows.length})?`}
-              </p>
-              <div className="flex items-center justify-end gap-2 pt-2">
+            <div className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 p-5 space-y-4 text-xs">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    Удаление таблицы «{tabToDel.name}»
+                  </h3>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Записей в таблице: <span className="font-mono tabular-nums">{tabToDel.rows.length}</span>
+                  </p>
+                </div>
+              </div>
+
+              <div className="text-slate-600 dark:text-slate-300 leading-relaxed space-y-2 bg-slate-50 dark:bg-slate-800/40 p-3.5 rounded-lg border border-slate-200 dark:border-slate-800">
+                {impact.affectedTabs.length > 0 && (
+                  <p className="text-red-700 dark:text-red-300 font-medium">
+                    • Потеря связей: таблица используется как мастер для{' '}
+                    <strong>{impact.affectedTabs.map((t) => `${t.tabName} (${t.affectedRowCount} зап.)`).join(', ')}</strong>.
+                    Связанные столбцы станут обычным текстом.
+                  </p>
+                )}
+
+                {(impact.affectedTemplatesCount ?? 0) > 0 ? (
+                  <p className="text-red-700 dark:text-red-300 font-medium">
+                    • Привязанные шаблоны ({impact.affectedTemplatesCount} шт.):{' '}
+                    <strong>{impact.affectedTemplateNames?.join(', ')}</strong> — помимо потери связей, будут удалены или архивированы.
+                  </p>
+                ) : (
+                  <p>
+                    • Помимо возможных связей с другими вкладками, к этой таблице могут быть привязаны шаблоны и сформированные документы.
+                  </p>
+                )}
+
+                {impact.affectedTagsCount > 0 && (
+                  <p className="text-amber-700 dark:text-amber-300">
+                    • Теги шаблонов ({impact.affectedTagsCount} шт.) этой таблицы будут очищены.
+                  </p>
+                )}
+
+                {(impact.affectedDocsCount ?? 0) > 0 && (
+                  <p className="text-slate-700 dark:text-slate-300">
+                    • Сформированные документы по этой таблице: <strong className="font-mono tabular-nums">{impact.affectedDocsCount}</strong> шт.
+                  </p>
+                )}
+              </div>
+
+              <div className="p-3 rounded-lg bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/70 text-amber-950 dark:text-amber-200 font-medium">
+                Удалить все связанные данные или переместить в архив?
+              </div>
+
+              <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
                 <button
                   type="button"
                   onClick={() => setPendingDeleteTabId(null)}
-                  className="px-3.5 py-1.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-lg font-medium hover:bg-slate-200"
+                  className="px-3.5 py-1.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-lg font-medium hover:bg-slate-200 cursor-pointer"
                 >
                   Отмена
                 </button>
                 <button
                   type="button"
-                  onClick={confirmExecuteDeleteTab}
-                  className="px-4 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold"
+                  onClick={() => void confirmExecuteDeleteTab('purge')}
+                  className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold cursor-pointer"
                 >
-                  Удалить вкладку
+                  Нет — удалить всё
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void confirmExecuteDeleteTab('archive')}
+                  className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold cursor-pointer"
+                >
+                  Да — переместить в архив
                 </button>
               </div>
             </div>

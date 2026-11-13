@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
-import { 
-  X, Upload, FileSpreadsheet, AlertCircle, 
-  Check, ArrowRight, Table as TableIcon, RefreshCw, AlertTriangle
+import React, { useState, useEffect } from 'react';
+import {
+  X, Upload, FileSpreadsheet, AlertCircle,
+  Check, ArrowRight, Table as TableIcon, RefreshCw
 } from 'lucide-react';
 import { Column, Tab } from '../types/database';
 import { excelService, ParsedExcelSheet, ValidationDiscrepancy } from '../services/excelService';
+import { createUniqueId } from '../services/integrityService';
 
 interface ExcelImportModalProps {
   isOpen: boolean;
@@ -31,6 +32,26 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
   const [columnMapping, setColumnMapping] = useState<Record<string, string>>({}); // tabColumnId -> fileHeader
   const [discrepancies, setDiscrepancies] = useState<ValidationDiscrepancy[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setSelectedFile(null);
+      setParsedSheets(null);
+      setActiveSheetName('');
+      setColumnMapping({});
+      setDiscrepancies([]);
+      setErrorMsg(null);
+    }
+  }, [isOpen, currentTab?.id]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -85,8 +106,8 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
     if (mode === 'new') {
       // Create new tab as-is
       const newColumns = currentSheetData.suggestedColumns;
-      const rowsWithIds = currentSheetData.rawRows.map((r, i) => {
-        const rowObj: Record<string, any> = { id: `row_import_${Date.now()}_${i}` };
+      const rowsWithIds = currentSheetData.rawRows.map((r) => {
+        const rowObj: Record<string, any> = { id: createUniqueId('row_imp') };
         newColumns.forEach((c) => {
           rowObj[c.id] = r[c.name] ?? '';
         });
@@ -110,8 +131,8 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
       }
 
       // Map rows to target tab column IDs
-      const mappedRows = currentSheetData.rawRows.map((fileRow, i) => {
-        const rowObj: Record<string, any> = { id: `row_imp_${Date.now()}_${i}` };
+      const mappedRows = currentSheetData.rawRows.map((fileRow) => {
+        const rowObj: Record<string, any> = { id: createUniqueId('row_imp') };
         currentTab.columns.forEach((col) => {
           const fileHeader = columnMapping[col.id];
           rowObj[col.id] = fileHeader ? fileRow[fileHeader] : '';
@@ -184,7 +205,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
               Выберите файл таблицы:
             </label>
             <div className="flex items-center justify-center w-full">
-              <label className="flex flex-col items-center justify-center w-full h-28 border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-blue-500 dark:hover:border-blue-500 rounded-xl cursor-pointer bg-slate-50 dark:bg-slate-850/60 hover:bg-blue-50/30 transition-all">
+              <label className="flex flex-col items-center justify-center w-full h-28 border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-blue-500 dark:hover:border-blue-500 rounded-xl cursor-pointer bg-slate-50 dark:bg-slate-800/50 hover:bg-blue-50/30 transition-all">
                 <div className="flex flex-col items-center justify-center pt-5 pb-6">
                   <Upload className="w-7 h-7 text-slate-400 mb-2" />
                   <p className="text-xs text-slate-700 dark:text-slate-300 font-medium">
@@ -260,7 +281,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
 
               {/* Column Mapping (in Existing Tab Mode) */}
               {mode === 'existing' && (
-                <div className="border border-slate-200 dark:border-slate-800 rounded-lg p-4 bg-slate-50/50 dark:bg-slate-850/40 space-y-3">
+                <div className="border border-slate-200 dark:border-slate-800 rounded-lg p-4 bg-slate-50/50 dark:bg-slate-800/40 space-y-3">
                   <h3 className="text-xs font-semibold text-slate-800 dark:text-slate-200">
                     Сопоставление столбцов вкладки со столбцами из файла:
                   </h3>
@@ -317,7 +338,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                     </thead>
                     <tbody className="divide-y divide-slate-200/80 dark:divide-slate-800">
                       {currentSheetData.rawRows.slice(0, 5).map((row, i) => (
-                        <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-850">
+                        <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
                           {currentSheetData.headers.map((h) => (
                             <td key={h} className="px-3 py-1.5 border-r border-slate-200/60 dark:border-slate-800 whitespace-nowrap text-slate-800 dark:text-slate-200">
                               {String(row[h] ?? '')}
@@ -334,7 +355,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
         </div>
 
         {/* Footer Actions */}
-        <div className="flex items-center justify-between px-6 py-4 bg-slate-50/60 dark:bg-slate-850 border-t border-slate-200 dark:border-slate-800 shrink-0 text-xs">
+        <div className="flex items-center justify-between px-6 py-4 bg-slate-50/60 dark:bg-slate-800/40 border-t border-slate-200 dark:border-slate-800 shrink-0 text-xs">
           <div className="text-slate-500">
             {currentSheetData && (
               <span>Строк к импорту: <strong className="font-mono text-slate-800 dark:text-slate-200">{currentSheetData.rawRows.length}</strong></span>
