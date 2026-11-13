@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <linearGradient id="crossGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="104" fill="url(#bgGrad)"/>
+  <path d="M256 74 L404 138 C404 278 340 376 256 426 C172 376 108 278 108 138 Z" fill="url(#shieldGrad)" stroke="#3b82f6" stroke-width="8" stroke-linejoin="round"/>
+  <!-- Safety Cross / Database Nodes -->
+  <path d="M228 170 H284 V226 H340 V282 H284 V338 H228 V282 H172 V226 H228 Z" fill="#ffffff" opacity="0.95"/>
+  <circle cx="256" cy="254" r="20" fill="url(#crossGrad)"/>
+  <!-- Relational Connection Dots -->
+  <circle cx="160" cy="380" r="14" fill="#38bdf8"/>
+  <circle cx="352" cy="380" r="14" fill="#38bdf8"/>
+  <line x1="174" y1="380" x2="338" y2="380" stroke="#38bdf8" stroke-width="4" stroke-dasharray="6,6"/>
+</svg>

@@ -1,0 +1,6 @@
+{
+  "name": "ОТ-База — База данных по охране труда",
+  "description": "Автономное десктопное приложение для специалиста по охране труда: таблицы с реляционными связями, импорт Excel, генерация документов Word/PDF по тегам, нормативные акты и интеграция с локальной LLM (Ollama).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
