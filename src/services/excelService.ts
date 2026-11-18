@@ -16,6 +16,31 @@ export interface ValidationDiscrepancy {
   reason?: string;
 }
 
+export interface ImportDuplicateAnalysis {
+  duplicateAgainstExistingIndices: number[];
+  duplicateWithinFileIndices: number[];
+  uniqueIndices: number[];
+  duplicateColumnMappings: Array<{ fileHeader: string; columnNames: string[] }>;
+}
+
+function normalizeHeaderName(value: string): string {
+  return value.trim().toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ');
+}
+
+function tokenizeHeader(value: string): string[] {
+  return normalizeHeaderName(value)
+    .split(/[^a-zа-я0-9]+/i)
+    .filter(Boolean);
+}
+
+function normalizeCellForDupCheck(val: any): string {
+  return String(val ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/\s+/g, ' ');
+}
+
 export const excelService = {
   /**
    * Parse uploaded Excel or CSV file
@@ -115,6 +140,164 @@ export const excelService = {
     });
 
     return result;
+  },
+
+  /**
+   * Auto-map tab columns to Excel file headers with strict priority:
+   * 1) Exact normalized match (ignoring case, whitespace, ё/е)
+   * 2) Token subset or longest-common substring match scored globally without reusing a header
+   */
+  autoMapColumns(columns: Column[], fileHeaders: string[]): Record<string, string> {
+    const mapping: Record<string, string> = {};
+    const usedHeaders = new Set<string>();
+    const unmappedCols: Column[] = [];
+
+    // Pass 1: exact normalized match
+    columns.forEach((col) => {
+      const colNorm = normalizeHeaderName(col.name);
+      if (!colNorm) {
+        unmappedCols.push(col);
+        return;
+      }
+      const exact = fileHeaders.find(
+        (h) => !usedHeaders.has(h) && normalizeHeaderName(h) === colNorm
+      );
+      if (exact) {
+        mapping[col.id] = exact;
+        usedHeaders.add(exact);
+      } else {
+        unmappedCols.push(col);
+      }
+    });
+
+    // Pass 2: scored fuzzy match (token overlap / substring) over remaining unused headers
+    const candidates: Array<{ colId: string; header: string; score: number }> = [];
+    unmappedCols.forEach((col) => {
+      const colNorm = normalizeHeaderName(col.name);
+      const colTokens = tokenizeHeader(col.name);
+      if (!colNorm) return;
+
+      fileHeaders.forEach((header) => {
+        if (usedHeaders.has(header)) return;
+        const headerNorm = normalizeHeaderName(header);
+        const headerTokens = tokenizeHeader(header);
+        if (!headerNorm) return;
+
+        const minLen = Math.min(colNorm.length, headerNorm.length);
+        const allColTokensInHeader =
+          colTokens.length > 0 && colTokens.every((t) => headerTokens.includes(t));
+        const allHeaderTokensInCol =
+          headerTokens.length > 0 && headerTokens.every((t) => colTokens.includes(t));
+
+        let score = 0;
+        if (allColTokensInHeader || allHeaderTokensInCol) {
+          score = 80 - Math.abs(headerNorm.length - colNorm.length);
+        } else if (
+          minLen >= 3 &&
+          (headerNorm.includes(colNorm) || colNorm.includes(headerNorm))
+        ) {
+          score = 40 - Math.abs(headerNorm.length - colNorm.length);
+        }
+
+        if (score > 0) {
+          candidates.push({ colId: col.id, header, score });
+        }
+      });
+    });
+
+    candidates.sort((a, b) => b.score - a.score);
+    candidates.forEach((c) => {
+      if (!mapping[c.colId] && !usedHeaders.has(c.header)) {
+        mapping[c.colId] = c.header;
+        usedHeaders.add(c.header);
+      }
+    });
+
+    return mapping;
+  },
+
+  /**
+   * Analyze duplicate mappings and duplicate rows (both within the Excel sheet and against existing tab rows)
+   */
+  analyzeImportDuplicates(
+    rawRows: Record<string, any>[],
+    columnMapping: Record<string, string>,
+    targetTab: Tab,
+    mode: 'existing' | 'new',
+    fileHeaders: string[]
+  ): ImportDuplicateAnalysis {
+    const duplicateColumnMappings: Array<{ fileHeader: string; columnNames: string[] }> = [];
+
+    if (mode === 'existing') {
+      const byHeader = new Map<string, string[]>();
+      targetTab.columns.forEach((col) => {
+        const h = columnMapping[col.id];
+        if (!h) return;
+        const list = byHeader.get(h) || [];
+        list.push(col.name);
+        byHeader.set(h, list);
+      });
+      byHeader.forEach((columnNames, fileHeader) => {
+        if (columnNames.length > 1) {
+          duplicateColumnMappings.push({ fileHeader, columnNames });
+        }
+      });
+    }
+
+    const activePairs: Array<{ existingKey: string; incomingKey: string }> =
+      mode === 'existing'
+        ? targetTab.columns
+            .filter((col) => Boolean(columnMapping[col.id]))
+            .map((col) => ({ existingKey: col.id, incomingKey: columnMapping[col.id] }))
+        : fileHeaders.map((h) => ({ existingKey: h, incomingKey: h }));
+
+    if (activePairs.length === 0) {
+      return {
+        duplicateAgainstExistingIndices: [],
+        duplicateWithinFileIndices: [],
+        uniqueIndices: rawRows.map((_, idx) => idx),
+        duplicateColumnMappings
+      };
+    }
+
+    const existingSignatures = new Set<string>();
+    if (mode === 'existing') {
+      targetTab.rows.forEach((row) => {
+        const parts = activePairs.map((p) => normalizeCellForDupCheck(row[p.existingKey]));
+        if (parts.some((p) => p !== '')) {
+          existingSignatures.add(parts.join('\u0001'));
+        }
+      });
+    }
+
+    const seenInFile = new Set<string>();
+    const duplicateAgainstExistingIndices: number[] = [];
+    const duplicateWithinFileIndices: number[] = [];
+    const uniqueIndices: number[] = [];
+
+    rawRows.forEach((row, idx) => {
+      const parts = activePairs.map((p) => normalizeCellForDupCheck(row[p.incomingKey]));
+      if (!parts.some((p) => p !== '')) {
+        uniqueIndices.push(idx);
+        return;
+      }
+      const sig = parts.join('\u0001');
+      if (mode === 'existing' && existingSignatures.has(sig)) {
+        duplicateAgainstExistingIndices.push(idx);
+      } else if (seenInFile.has(sig)) {
+        duplicateWithinFileIndices.push(idx);
+      } else {
+        seenInFile.add(sig);
+        uniqueIndices.push(idx);
+      }
+    });
+
+    return {
+      duplicateAgainstExistingIndices,
+      duplicateWithinFileIndices,
+      uniqueIndices,
+      duplicateColumnMappings
+    };
   },
 
   /**

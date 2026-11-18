@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Upload, FileSpreadsheet, Check, ArrowRight, Table as TableIcon, RefreshCw
 } from 'lucide-react';
@@ -30,6 +30,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
   const [parsedSheets, setParsedSheets] = useState<Record<string, ParsedExcelSheet> | null>(null);
   const [activeSheetName, setActiveSheetName] = useState<string>('');
   const [columnMapping, setColumnMapping] = useState<Record<string, string>>({}); // tabColumnId -> fileHeader
+  const [skipDuplicates, setSkipDuplicates] = useState<boolean>(true);
   const [discrepancies, setDiscrepancies] = useState<ValidationDiscrepancy[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -39,10 +40,23 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
       setParsedSheets(null);
       setActiveSheetName('');
       setColumnMapping({});
+      setSkipDuplicates(true);
       setDiscrepancies([]);
       setErrorMsg(null);
     }
   }, [isOpen, currentTab?.id]);
+
+  const handleSelectSheet = (sheetName: string, sheetsMap: Record<string, ParsedExcelSheet> | null = parsedSheets) => {
+    setActiveSheetName(sheetName);
+    setDiscrepancies([]);
+    setErrorMsg(null);
+    const sheet = sheetsMap?.[sheetName];
+    if (sheet) {
+      setColumnMapping(excelService.autoMapColumns(currentTab.columns, sheet.headers));
+    } else {
+      setColumnMapping({});
+    }
+  };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -61,23 +75,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
       }
       setParsedSheets(sheets);
       const firstSheet = sheetNames[0];
-      setActiveSheetName(firstSheet);
-
-      // Auto-map columns if existing mode
-      const initialMap: Record<string, string> = {};
-      const fileHeaders = sheets[firstSheet].headers;
-
-      currentTab.columns.forEach((col) => {
-        // Find exact or normalized match
-        const colNorm = col.name.trim().toLowerCase();
-        const matched = fileHeaders.find(
-          (h) => h.trim().toLowerCase() === colNorm || h.toLowerCase().includes(colNorm) || colNorm.includes(h.toLowerCase())
-        );
-        if (matched) {
-          initialMap[col.id] = matched;
-        }
-      });
-      setColumnMapping(initialMap);
+      handleSelectSheet(firstSheet, sheets);
     } catch (err: any) {
       setErrorMsg(err.message || 'Ошибка парсинга файла Excel');
     } finally {
@@ -87,15 +85,57 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
 
   const currentSheetData = parsedSheets && activeSheetName ? parsedSheets[activeSheetName] : null;
 
+  const duplicateAnalysis = useMemo(() => {
+    if (!currentSheetData) {
+      return {
+        duplicateAgainstExistingIndices: [] as number[],
+        duplicateWithinFileIndices: [] as number[],
+        uniqueIndices: [] as number[],
+        duplicateColumnMappings: [] as Array<{ fileHeader: string; columnNames: string[] }>
+      };
+    }
+    return excelService.analyzeImportDuplicates(
+      currentSheetData.rawRows,
+      columnMapping,
+      currentTab,
+      mode,
+      currentSheetData.headers
+    );
+  }, [currentSheetData, columnMapping, currentTab, mode]);
+
+  const duplicateHeaderSet = useMemo(
+    () => new Set(duplicateAnalysis.duplicateColumnMappings.map((d) => d.fileHeader)),
+    [duplicateAnalysis.duplicateColumnMappings]
+  );
+
+  const totalDuplicatesCount =
+    duplicateAnalysis.duplicateAgainstExistingIndices.length +
+    duplicateAnalysis.duplicateWithinFileIndices.length;
+
+  const effectiveImportCount = currentSheetData
+    ? skipDuplicates
+      ? duplicateAnalysis.uniqueIndices.length
+      : currentSheetData.rawRows.length
+    : 0;
+
   const handleCommit = () => {
     if (!currentSheetData) return;
     setErrorMsg(null);
     setDiscrepancies([]);
 
+    const rowsToImport = skipDuplicates
+      ? duplicateAnalysis.uniqueIndices.map((idx) => currentSheetData.rawRows[idx])
+      : currentSheetData.rawRows;
+
+    if (rowsToImport.length === 0) {
+      setErrorMsg('Все строки файла являются дубликатами. Снимите отметку пропуска дублей или выберите другой лист/файл.');
+      return;
+    }
+
     if (mode === 'new') {
       // Create new tab as-is
       const newColumns = currentSheetData.suggestedColumns;
-      const rowsWithIds = currentSheetData.rawRows.map((r) => {
+      const rowsWithIds = rowsToImport.map((r) => {
         const rowObj: Record<string, any> = { id: createUniqueId('row_imp') };
         newColumns.forEach((c) => {
           rowObj[c.id] = r[c.name] ?? '';
@@ -107,7 +147,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
     } else {
       // Validate linked columns in existing tab
       const errors = excelService.validateLinkedColumns(
-        currentSheetData.rawRows,
+        rowsToImport,
         columnMapping,
         currentTab,
         allTabs
@@ -120,7 +160,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
       }
 
       // Map rows to target tab column IDs
-      const mappedRows = currentSheetData.rawRows.map((fileRow) => {
+      const mappedRows = rowsToImport.map((fileRow) => {
         const rowObj: Record<string, any> = { id: createUniqueId('row_imp') };
         currentTab.columns.forEach((col) => {
           const fileHeader = columnMapping[col.id];
@@ -143,7 +183,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
       icon={<FileSpreadsheet className="w-5 h-5" />}
       iconTone="emerald"
       title="Импорт данных из Excel / CSV"
-      subtitle="Поддержка файлов .xlsx, .xlsm, .csv с автоматической валидацией связей"
+      subtitle="Поддержка файлов .xlsx, .xlsm, .csv (UTF-8 / Windows-1251) с автоматической валидацией связей"
       footer={
         <div className="w-full flex items-center justify-between gap-3">
           <div className="text-slate-500">
@@ -151,8 +191,13 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
               <span>
                 Строк к импорту:{' '}
                 <strong className="font-mono text-slate-800 dark:text-slate-200">
-                  {currentSheetData.rawRows.length}
+                  {effectiveImportCount}
                 </strong>
+                {totalDuplicatesCount > 0 && skipDuplicates && (
+                  <span className="ml-1.5 text-[11px] text-amber-700 dark:text-amber-300">
+                    (из {currentSheetData.rawRows.length}, пропущено дублей: {totalDuplicatesCount})
+                  </span>
+                )}
               </span>
             )}
           </div>
@@ -164,7 +209,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
               variant="primary"
               size="md"
               onClick={handleCommit}
-              disabled={!currentSheetData || currentSheetData.rawRows.length === 0}
+              disabled={!currentSheetData || effectiveImportCount === 0}
               icon={<Check className="w-4 h-4" />}
             >
               Выполнить импорт
@@ -214,7 +259,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                 <p className="text-xs text-slate-700 dark:text-slate-300 font-medium">
                   {selectedFile ? selectedFile.name : 'Нажмите для выбора файла или перетащите его сюда'}
                 </p>
-                <p className="text-[11px] text-slate-400 mt-0.5">XLSX, XLSM или CSV (UTF-8)</p>
+                <p className="text-[11px] text-slate-400 mt-0.5">XLSX, XLSM или CSV (UTF-8 и Windows-1251)</p>
               </div>
               <input
                 type="file"
@@ -266,7 +311,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                       key={sName}
                       variant={activeSheetName === sName ? 'primary' : 'secondary'}
                       size="xs"
-                      onClick={() => setActiveSheetName(sName)}
+                      onClick={() => handleSelectSheet(sName)}
                     >
                       {sName}
                     </AppButton>
@@ -275,15 +320,84 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
               </div>
             )}
 
+            {/* Duplicate column mappings warning */}
+            {duplicateAnalysis.duplicateColumnMappings.length > 0 && (
+              <StatusBanner
+                variant="warning"
+                compact
+                title="Дублирующее сопоставление столбцов файла"
+              >
+                <div className="space-y-0.5 text-[11px]">
+                  {duplicateAnalysis.duplicateColumnMappings.map((d) => (
+                    <div key={d.fileHeader}>
+                      Столбец файла «<strong>{d.fileHeader}</strong>» назначен сразу нескольким полям таблицы:{' '}
+                      {d.columnNames.join(', ')}.
+                    </div>
+                  ))}
+                </div>
+              </StatusBanner>
+            )}
+
+            {/* Duplicate rows warning & skip toggle */}
+            {totalDuplicatesCount > 0 && (
+              <StatusBanner
+                variant="warning"
+                compact
+                title={`Обнаружены дублирующие строки (${totalDuplicatesCount})`}
+              >
+                <div className="space-y-2 text-[11px]">
+                  <p>
+                    {duplicateAnalysis.duplicateAgainstExistingIndices.length > 0 && (
+                      <span>
+                        Совпадают с уже имеющимися строками таблицы:{' '}
+                        <strong>{duplicateAnalysis.duplicateAgainstExistingIndices.length}</strong>
+                        {'. '}
+                      </span>
+                    )}
+                    {duplicateAnalysis.duplicateWithinFileIndices.length > 0 && (
+                      <span>
+                        Повторяются внутри импортируемого файла:{' '}
+                        <strong>{duplicateAnalysis.duplicateWithinFileIndices.length}</strong>.
+                      </span>
+                    )}
+                  </p>
+                  <label className="inline-flex items-center gap-2 cursor-pointer font-medium text-amber-900 dark:text-amber-200 select-none">
+                    <input
+                      type="checkbox"
+                      checked={skipDuplicates}
+                      onChange={(e) => setSkipDuplicates(e.target.checked)}
+                      className="rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+                    />
+                    <span>Пропускать дублирующие строки при импорте (добавить только {duplicateAnalysis.uniqueIndices.length})</span>
+                  </label>
+                </div>
+              </StatusBanner>
+            )}
+
             {/* Column Mapping (in Existing Tab Mode) */}
             {mode === 'existing' && (
               <div className="border border-slate-200 dark:border-slate-800 rounded-lg p-4 bg-slate-50/50 dark:bg-slate-800/40 space-y-3">
-                <h3 className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                  Сопоставление столбцов вкладки со столбцами из файла:
-                </h3>
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                    Сопоставление столбцов вкладки со столбцами из файла:
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setColumnMapping(
+                        excelService.autoMapColumns(currentTab.columns, currentSheetData.headers)
+                      )
+                    }
+                    className="text-[11px] font-medium text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                  >
+                    Автосопоставить заново
+                  </button>
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
                   {currentTab.columns.map((col) => {
                     const isRelation = col.type === 'relation';
+                    const mappedHeader = columnMapping[col.id] || '';
+                    const isDupMapping = Boolean(mappedHeader && duplicateHeaderSet.has(mappedHeader));
                     return (
                       <div key={col.id} className="flex items-center justify-between gap-2 p-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg">
                         <div className="truncate flex-1">
@@ -297,7 +411,8 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                         <ArrowRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                         <AppSelect
                           compact
-                          value={columnMapping[col.id] || ''}
+                          error={isDupMapping}
+                          value={mappedHeader}
                           onChange={(e) => setColumnMapping({ ...columnMapping, [col.id]: e.target.value })}
                           className="!w-44 truncate"
                         >

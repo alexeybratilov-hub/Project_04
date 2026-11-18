@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Cpu, Play, Download, RefreshCw, FileText, Sparkles,
-  AlertCircle, CheckCircle2, Eye, EyeOff, Info
+  AlertCircle, CheckCircle2, Eye, EyeOff, Info, Copy, Check
 } from 'lucide-react';
 import { AttachedDoc, LegalEntityProfile, LLMConfig, LLMGenerationLog, Tab, Tag } from '../types/database';
 import { ollamaService } from '../services/ollamaService';
@@ -18,6 +18,15 @@ import {
   StatusBanner,
   useToast
 } from './ui';
+
+const DOC_TYPE_PRESETS = [
+  'Инструкция по охране труда (ИОТ)',
+  'Приказ о назначении ответственных лиц по ОТ',
+  'Положение о системе управления охраной труда (СУОТ)',
+  'Протокол проверки знаний требований охраны труда',
+  'Акт расследования обстоятельств микротравмы',
+  'Программа первичного инструктажа на рабочем месте'
+] as const;
 
 export interface RecordGeneratedDocPayload {
   title: string;
@@ -69,7 +78,8 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
   const [targetRowId, setTargetRowId] = useState<string>(
     selectedRowId || currentTab.rows[0]?.id || ''
   );
-  const [docType, setDocType] = useState<string>('Инструкция по охране труда (ИОТ)');
+  const [docType, setDocType] = useState<string>(DOC_TYPE_PRESETS[0]);
+  const [customDocType, setCustomDocType] = useState<string>('');
   const [customInstructions, setCustomInstructions] = useState<string>(
     'Разработать подробную инструкцию по охране труда с учетом вредных производственных факторов по результатам СОУТ и норм Приказа Минтруда №772н.'
   );
@@ -80,6 +90,8 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
   const [isTestingConnection, setIsTestingConnection] = useState<boolean>(false);
   const [localConfig, setLocalConfig] = useState<LLMConfig>(normalizedPropConfig);
   const [showApiKey, setShowApiKey] = useState<boolean>(false);
+  const [selectedLog, setSelectedLog] = useState<LLMGenerationLog | null>(null);
+  const [copiedLogId, setCopiedLogId] = useState<string | null>(null);
   const [connectionFeedback, setConnectionFeedback] = useState<{
     type: 'idle' | 'testing' | 'success' | 'error';
     message: string;
@@ -97,6 +109,8 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
       const norm = normalizeLLMConfig(llmConfig);
       setActiveTab(initialSubTab);
       setLocalConfig(norm);
+      setSelectedLog(null);
+      setCopiedLogId(null);
       setTargetRowId(selectedRowId || currentTab.rows[0]?.id || '');
       if (norm.status === 'error' && norm.errorMessage) {
         setConnectionFeedback({ type: 'error', message: norm.errorMessage });
@@ -214,12 +228,39 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
     }
   };
 
+  const isSettingsDirty = useMemo(
+    () => JSON.stringify(localConfig) !== JSON.stringify(normalizedPropConfig),
+    [localConfig, normalizedPropConfig]
+  );
+
+  const effectiveDocType = docType === '__custom__' ? customDocType.trim() : docType;
+
+  const handleCancelSettings = () => {
+    const norm = normalizeLLMConfig(llmConfig);
+    setLocalConfig(norm);
+    if (norm.status === 'error' && norm.errorMessage) {
+      setConnectionFeedback({ type: 'error', message: norm.errorMessage });
+    } else if (norm.status === 'connected') {
+      setConnectionFeedback({
+        type: 'success',
+        message: `Подключено (${norm.lastChecked || 'активно'}) · модель ${norm.model}`
+      });
+    } else {
+      setConnectionFeedback({ type: 'idle', message: '' });
+    }
+    showToast('Несохранённые изменения настроек LLM отменены', 'info');
+  };
+
   const handleSaveSettingsOnly = () => {
     onSaveLLMConfig(localConfig);
     showToast(`Настройки провайдера «${currentPreset.name}» сохранены`, 'success');
   };
 
   const handleRunGeneration = async () => {
+    if (!effectiveDocType) {
+      showToast('Укажите название своего типа документа', 'warning');
+      return;
+    }
     if (!targetRow) {
       showToast('Выберите строку таблицы для генерации', 'warning');
       return;
@@ -230,7 +271,7 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
       const result = await ollamaService.generateDocument({
         tab: currentTab,
         row: targetRow,
-        templateTitle: docType,
+        templateTitle: effectiveDocType,
         templateRequirements: customInstructions,
         attachedDocs: includeNormativeDocs ? docsPool : [],
         tags,
@@ -246,12 +287,12 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
       const newLog: LLMGenerationLog = {
         id: createUniqueId('log'),
         timestamp: new Date().toLocaleString('ru-RU'),
-        templateName: docType,
+        templateName: effectiveDocType,
         tabName: currentTab.name,
         rowIdentifier: String(targetRow.emp_fio || targetRow.pos_title || targetRow.id),
         modelUsed: result.modelUsed,
         promptSummary: customInstructions.slice(0, 100),
-        outputSnippet: result.text.slice(0, 150) + '...',
+        outputSnippet: result.text.slice(0, 150) + (result.text.length > 150 ? '...' : ''),
         fullOutput: result.text
       };
       onAddLLMLog(newLog);
@@ -269,7 +310,7 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
   };
 
   const buildDocFileName = (ext: 'docx' | 'pdf') => {
-    const cleanTitle = docType.replace(/[/\\?%*:|"<>]/g, '_').trim();
+    const cleanTitle = (effectiveDocType || 'Документ_ОТ').replace(/[/\\?%*:|"<>]/g, '_').trim();
     const rowLabel = targetRow
       ? String(targetRow.emp_fio || targetRow.pos_title || targetRow.fac_name || '').trim()
       : '';
@@ -279,12 +320,13 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
 
   const handleDownloadDocx = async () => {
     if (!generatedText) return;
+    const title = effectiveDocType || 'Документ_ОТ';
     const filename = buildDocFileName('docx');
-    const blob = await documentGenerator.generateDocx(docType, generatedText);
-    const category = inferDocumentCategory(docType, currentTab.name);
+    const blob = await documentGenerator.generateDocx(title, generatedText);
+    const category = inferDocumentCategory(title, currentTab.name);
     if (onRecordGeneratedDoc) {
       await onRecordGeneratedDoc({
-        title: docType,
+        title,
         fileName: filename,
         category,
         format: 'docx',
@@ -302,12 +344,13 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
 
   const handleDownloadPdf = async () => {
     if (!generatedText) return;
+    const title = effectiveDocType || 'Документ_ОТ';
     const filename = buildDocFileName('pdf');
-    const blob = await documentGenerator.generatePdf(docType, generatedText);
-    const category = inferDocumentCategory(docType, currentTab.name);
+    const blob = await documentGenerator.generatePdf(title, generatedText);
+    const category = inferDocumentCategory(title, currentTab.name);
     if (onRecordGeneratedDoc) {
       await onRecordGeneratedDoc({
-        title: docType,
+        title,
         fileName: filename,
         category,
         format: 'pdf',
@@ -323,12 +366,61 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
     showToast(`PDF «${filename}» сохранен в категорию «${category}»`, 'success');
   };
 
+  const getLogFullText = (log: LLMGenerationLog): string =>
+    log.fullOutput && log.fullOutput.trim() ? log.fullOutput : log.outputSnippet || '';
+
+  const handleCopyLog = (log: LLMGenerationLog) => {
+    const text = getLogFullText(log);
+    if (!text) return;
+    navigator.clipboard?.writeText(text);
+    setCopiedLogId(log.id);
+    setTimeout(() => setCopiedLogId((prev) => (prev === log.id ? null : prev)), 1500);
+    showToast('Полный текст генерации скопирован в буфер обмена', 'success');
+  };
+
+  const handleExportLogTxt = async (log: LLMGenerationLog) => {
+    const text = getLogFullText(log);
+    const safeTitle = `${log.templateName}_${log.rowIdentifier}`
+      .replace(/[/\\?%*:|"<>]/g, '_')
+      .trim() || 'llm_document';
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    await documentGenerator.saveAndDownloadBlob(blob, `${safeTitle}.txt`, false);
+    showToast(`Файл «${safeTitle}.txt» экспортирован`, 'success');
+  };
+
+  const handleExportLogDocx = async (log: LLMGenerationLog) => {
+    const text = getLogFullText(log);
+    const safeTitle = `${log.templateName}_${log.rowIdentifier}`
+      .replace(/[/\\?%*:|"<>]/g, '_')
+      .trim() || 'llm_document';
+    const blob = await documentGenerator.generateDocx(log.templateName, text);
+    await documentGenerator.saveAndDownloadBlob(blob, `${safeTitle}.docx`, true);
+    showToast(`DOCX «${safeTitle}.docx» сформирован из журнала`, 'success');
+  };
+
+  const handleLoadLogToStudio = (log: LLMGenerationLog) => {
+    const text = getLogFullText(log);
+    if ((DOC_TYPE_PRESETS as readonly string[]).includes(log.templateName)) {
+      setDocType(log.templateName);
+    } else {
+      setDocType('__custom__');
+      setCustomDocType(log.templateName);
+    }
+    setGeneratedText(text);
+    setResultModelUsed(log.modelUsed);
+    setSelectedLog(null);
+    setActiveTab('generate');
+    showToast('Документ из журнала загружен в редактор студии', 'info');
+  };
+
   return (
-    <AppModal
-      isOpen={isOpen}
-      onClose={onClose}
-      size="6xl"
-      heightClass="max-h-[94vh]"
+    <>
+      <AppModal
+        isOpen={isOpen}
+        onClose={onClose}
+        closeOnEscape={!selectedLog}
+        size="6xl"
+        heightClass="max-h-[94vh]"
       icon={<Cpu className="w-5 h-5" />}
       iconTone="indigo"
       title={
@@ -426,13 +518,23 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                   onChange={(e) => setDocType(e.target.value)}
                   className="font-medium"
                 >
-                  <option value="Инструкция по охране труда (ИОТ)">Инструкция по охране труда (ИОТ)</option>
-                  <option value="Приказ о назначении ответственных лиц по ОТ">Приказ о назначении ответственных по ОТ</option>
-                  <option value="Положение о системе управления охраной труда (СУОТ)">Положение о СУОТ</option>
-                  <option value="Протокол проверки знаний требований охраны труда">Протокол проверки знаний ОТ</option>
-                  <option value="Акт расследования обстоятельств микротравмы">Акт расследования микротравмы</option>
-                  <option value="Программа первичного инструктажа на рабочем месте">Программа первичного инструктажа</option>
+                  {DOC_TYPE_PRESETS.map((presetTitle) => (
+                    <option key={presetTitle} value={presetTitle}>
+                      {presetTitle}
+                    </option>
+                  ))}
+                  <option value="__custom__">Свой тип документа (указать вручную...)</option>
                 </AppSelect>
+                {docType === '__custom__' && (
+                  <AppInput
+                    type="text"
+                    compact
+                    value={customDocType}
+                    onChange={(e) => setCustomDocType(e.target.value)}
+                    placeholder="Например: Наряд-допуск на работы на высоте"
+                    autoFocus
+                  />
+                )}
               </div>
 
               <div className="space-y-1.5">
@@ -766,9 +868,19 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                   <AppButton
                     variant="secondary"
                     size="md"
+                    disabled={!isSettingsDirty}
                     onClick={handleSaveSettingsOnly}
                   >
                     Сохранить настройки
+                  </AppButton>
+
+                  <AppButton
+                    variant="ghost"
+                    size="md"
+                    disabled={!isSettingsDirty}
+                    onClick={handleCancelSettings}
+                  >
+                    Отмена
                   </AppButton>
                 </div>
 
@@ -830,9 +942,16 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
 
         {activeTab === 'history' && (
           <div className="flex-1 overflow-y-auto p-6 space-y-4 text-xs">
-            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-              Журнал генераций ИИ ({llmLogs.length})
-            </h3>
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                Журнал генераций ИИ ({llmLogs.length})
+              </h3>
+              {llmLogs.length > 0 && (
+                <span className="text-[11px] text-slate-500">
+                  Нажмите на запись или кнопку просмотра, чтобы открыть, скопировать или экспортировать полный текст
+                </span>
+              )}
+            </div>
 
             {llmLogs.length === 0 ? (
               <p className="text-center text-slate-400 py-12">Журнал генераций для этой организации пуст</p>
@@ -841,30 +960,70 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                 <table className="w-full border-collapse">
                   <thead className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold text-left">
                     <tr>
-                      <th className="px-4 py-2.5 border-r border-slate-200 dark:border-slate-700">Дата и время</th>
-                      <th className="px-4 py-2.5 border-r border-slate-200 dark:border-slate-700">Шаблон/Тип</th>
-                      <th className="px-4 py-2.5 border-r border-slate-200 dark:border-slate-700">Объект / Сотрудник</th>
-                      <th className="px-4 py-2.5 border-r border-slate-200 dark:border-slate-700">Провайдер / Модель</th>
-                      <th className="px-4 py-2.5">Фрагмент документа</th>
+                      <th className="px-3.5 py-2.5 border-r border-slate-200 dark:border-slate-700">Дата и время</th>
+                      <th className="px-3.5 py-2.5 border-r border-slate-200 dark:border-slate-700">Шаблон/Тип</th>
+                      <th className="px-3.5 py-2.5 border-r border-slate-200 dark:border-slate-700">Объект / Сотрудник</th>
+                      <th className="px-3.5 py-2.5 border-r border-slate-200 dark:border-slate-700">Провайдер / Модель</th>
+                      <th className="px-3.5 py-2.5 border-r border-slate-200 dark:border-slate-700">Фрагмент документа</th>
+                      <th className="px-3.5 py-2.5 text-center w-28">Действия</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200/80 dark:divide-slate-800 bg-white dark:bg-slate-900">
                     {llmLogs.map((log) => (
-                      <tr key={log.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                        <td className="px-4 py-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap text-slate-500 tabular-nums">
+                      <tr
+                        key={log.id}
+                        onClick={() => setSelectedLog(log)}
+                        className="hover:bg-slate-50 dark:hover:bg-slate-800/40 cursor-pointer"
+                      >
+                        <td className="px-3.5 py-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono whitespace-nowrap text-slate-500 tabular-nums">
                           {log.timestamp}
                         </td>
-                        <td className="px-4 py-2.5 border-r border-slate-200/60 dark:border-slate-800 font-medium text-slate-900 dark:text-slate-100">
+                        <td className="px-3.5 py-2.5 border-r border-slate-200/60 dark:border-slate-800 font-medium text-slate-900 dark:text-slate-100">
                           {log.templateName}
                         </td>
-                        <td className="px-4 py-2.5 border-r border-slate-200/60 dark:border-slate-800 text-slate-700 dark:text-slate-300">
+                        <td className="px-3.5 py-2.5 border-r border-slate-200/60 dark:border-slate-800 text-slate-700 dark:text-slate-300">
                           {log.rowIdentifier}
                         </td>
-                        <td className="px-4 py-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono text-indigo-600 dark:text-indigo-400">
+                        <td className="px-3.5 py-2.5 border-r border-slate-200/60 dark:border-slate-800 font-mono text-indigo-600 dark:text-indigo-400">
                           {log.modelUsed}
                         </td>
-                        <td className="px-4 py-2.5 text-slate-500 font-mono text-[11px] truncate max-w-xs">
+                        <td className="px-3.5 py-2.5 border-r border-slate-200/60 dark:border-slate-800 text-slate-500 font-mono text-[11px] truncate max-w-xs">
                           {log.outputSnippet}
+                        </td>
+                        <td
+                          className="px-2 py-2 text-center whitespace-nowrap"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <div className="inline-flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedLog(log)}
+                              className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/60 rounded cursor-pointer"
+                              title="Просмотреть полный текст"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleCopyLog(log)}
+                              className="p-1.5 text-slate-500 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/60 rounded cursor-pointer"
+                              title="Копировать полный текст"
+                            >
+                              {copiedLogId === log.id ? (
+                                <Check className="w-3.5 h-3.5 text-emerald-600" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleExportLogTxt(log)}
+                              className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/60 rounded cursor-pointer"
+                              title="Экспорт полного текста в .TXT"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -874,6 +1033,86 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
             )}
           </div>
         )}
-    </AppModal>
+      </AppModal>
+
+      {/* Full Output Log Viewer Modal */}
+      <AppModal
+        isOpen={Boolean(selectedLog)}
+        onClose={() => setSelectedLog(null)}
+        layer="nested"
+        size="4xl"
+        heightClass="max-h-[88vh]"
+        icon={<FileText className="w-5 h-5" />}
+        iconTone="indigo"
+        title={selectedLog ? selectedLog.templateName : 'Запись журнала LLM'}
+        subtitle={
+          selectedLog
+            ? `${selectedLog.timestamp} · ${selectedLog.tabName}: ${selectedLog.rowIdentifier} · ${selectedLog.modelUsed}`
+            : ''
+        }
+        footer={
+          selectedLog && (
+            <div className="w-full flex flex-wrap items-center justify-between gap-2">
+              <span className="text-[11px] font-mono text-slate-500 tabular-nums">
+                Символов: {getLogFullText(selectedLog).length}
+              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <AppButton
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => handleCopyLog(selectedLog)}
+                  icon={
+                    copiedLogId === selectedLog.id ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-600" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5" />
+                    )
+                  }
+                >
+                  Копировать текст
+                </AppButton>
+                <AppButton
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => handleExportLogTxt(selectedLog)}
+                  icon={<Download className="w-3.5 h-3.5" />}
+                >
+                  Экспорт .TXT
+                </AppButton>
+                <AppButton
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => handleExportLogDocx(selectedLog)}
+                  icon={<Download className="w-3.5 h-3.5" />}
+                >
+                  Скачать .DOCX
+                </AppButton>
+                <AppButton
+                  variant="primary"
+                  size="sm"
+                  onClick={() => handleLoadLogToStudio(selectedLog)}
+                  icon={<Sparkles className="w-3.5 h-3.5" />}
+                >
+                  Открыть в редакторе
+                </AppButton>
+              </div>
+            </div>
+          )
+        }
+      >
+        {selectedLog && (
+          <div className="flex-1 overflow-y-auto p-6 space-y-3 text-xs">
+            {selectedLog.promptSummary && (
+              <div className="p-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 rounded-lg text-[11px] text-slate-600 dark:text-slate-300">
+                <span className="font-semibold">Требования запроса:</span> {selectedLog.promptSummary}
+              </div>
+            )}
+            <pre className="w-full p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl font-serif text-slate-800 dark:text-slate-200 text-xs leading-relaxed whitespace-pre-wrap select-text">
+              {getLogFullText(selectedLog)}
+            </pre>
+          </div>
+        )}
+      </AppModal>
+    </>
   );
 };

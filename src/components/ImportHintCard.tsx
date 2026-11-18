@@ -56,7 +56,7 @@ export const ImportHintCard: React.FC<ImportHintCardProps> = ({ currentTab }) =>
               <li><strong className="text-slate-700 dark:text-slate-300">Даты:</strong> 2026-05-14 или 14.05.2026</li>
               <li><strong className="text-slate-700 dark:text-slate-300">Логические:</strong> «Да» / «Нет» или 1 / 0</li>
               <li><strong className="text-slate-700 dark:text-slate-300">Числа:</strong> точка или запятая, без пробелов</li>
-              <li><strong className="text-slate-700 dark:text-slate-300">CSV файл:</strong> строго в кодировке UTF-8</li>
+              <li><strong className="text-slate-700 dark:text-slate-300">CSV файл:</strong> UTF-8 или Windows-1251 (автоопределение из Excel)</li>
             </ul>
           </div>
 

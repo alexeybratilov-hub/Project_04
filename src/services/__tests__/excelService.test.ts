@@ -166,4 +166,55 @@ describe('excelService', () => {
     expect(invalidTupleRes.ok).toBe(false);
     expect(invalidTupleRes.discrepancies.length).toBeGreaterThan(0);
   });
+
+  it('T-33: prioritizes exact normalized matches over substring matches and avoids duplicate header auto-mapping', () => {
+    const tabCols = [
+      { id: 'c_date', name: 'Дата', type: 'date' as const },
+      { id: 'c_med', name: 'Дата медосмотра', type: 'date' as const },
+      { id: 'c_fio', name: 'ФИО', type: 'text' as const },
+      { id: 'c_note', name: 'Примечание', type: 'text' as const }
+    ];
+    const fileHeaders = ['Дата медосмотра', 'Дата', 'ФИО сотрудника', 'Примечание_1'];
+
+    const mapping = excelService.autoMapColumns(tabCols, fileHeaders);
+    expect(mapping['c_date']).toBe('Дата');
+    expect(mapping['c_med']).toBe('Дата медосмотра');
+    expect(mapping['c_fio']).toBe('ФИО сотрудника');
+    expect(mapping['c_note']).toBe('Примечание_1');
+    expect(new Set(Object.values(mapping)).size).toBe(4);
+  });
+
+  it('T-33: detects duplicate column mappings, duplicates against existing rows, and duplicates within Excel file', () => {
+    const tabWithRows: Tab = {
+      ...empTab,
+      rows: [{ id: 'r1', c_fio: 'Иванов И.И.', c_pos: 'Сварщик', c_dept: 'Цех 1' }]
+    };
+
+    const rawRows = [
+      { ФИО: 'иванов   и.и.', Должность: 'Сварщик', Подразделение: 'Цех 1' }, // dup of existing
+      { ФИО: 'Петров П.П.', Должность: 'Слесарь', Подразделение: 'Цех 2' },   // unique
+      { ФИО: 'Петров П.П.', Должность: 'Слесарь', Подразделение: 'Цех 2' }    // dup within file
+    ];
+
+    const dupAnalysis = excelService.analyzeImportDuplicates(
+      rawRows,
+      { c_fio: 'ФИО', c_pos: 'ФИО', c_dept: 'Подразделение' },
+      tabWithRows,
+      'existing',
+      ['ФИО', 'Должность', 'Подразделение']
+    );
+    expect(dupAnalysis.duplicateColumnMappings).toHaveLength(1);
+    expect(dupAnalysis.duplicateColumnMappings[0].fileHeader).toBe('ФИО');
+
+    const rowDupAnalysis = excelService.analyzeImportDuplicates(
+      rawRows,
+      { c_fio: 'ФИО', c_pos: 'Должность', c_dept: 'Подразделение' },
+      tabWithRows,
+      'existing',
+      ['ФИО', 'Должность', 'Подразделение']
+    );
+    expect(rowDupAnalysis.duplicateAgainstExistingIndices).toEqual([0]);
+    expect(rowDupAnalysis.duplicateWithinFileIndices).toEqual([2]);
+    expect(rowDupAnalysis.uniqueIndices).toEqual([1]);
+  });
 });
