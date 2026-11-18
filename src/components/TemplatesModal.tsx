@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   X, FileText, Download, BookOpen, Eye, FileDown, RefreshCw,
-  Plus, FolderOpen, FolderArchive, Edit2, Trash2, ArchiveRestore, Table2, Check
+  Plus, FolderOpen, FolderArchive, Edit2, Trash2, ArchiveRestore, Table2, Check, AlertTriangle
 } from 'lucide-react';
 import { DocumentTemplate, LegalEntityProfile, Tab, Tag } from '../types/database';
 import { documentGenerator } from '../services/documentGenerator';
@@ -162,9 +162,9 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
     ? getTemplateCategory(currentTemplate)
     : inferDocumentCategory('', boundTab.name);
 
-  const previewText =
+  const previewResolution =
     currentTemplate && targetRow
-      ? documentGenerator.resolveTemplateTags(
+      ? documentGenerator.resolveTemplateTagsWithReport(
           currentTemplate.contentTemplate,
           targetRow,
           boundTab,
@@ -172,11 +172,17 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
           tags,
           entityProfile
         )
-      : currentTemplate
-        ? currentTemplate.contentTemplate
-        : scope === 'tab'
-          ? `К таблице «${currentTab.name}» пока не привязано ни одного шаблона. Нажмите «+ Новый шаблон», чтобы создать шаблон для этой таблицы.`
-          : 'Выберите шаблон из списка слева для просмотра, редактирования или формирования документа.';
+      : null;
+
+  const previewIssues = previewResolution?.issues ?? [];
+
+  const previewText = previewResolution
+    ? previewResolution.text
+    : currentTemplate
+      ? currentTemplate.contentTemplate
+      : scope === 'tab'
+        ? `К таблице «${currentTab.name}» пока не привязано ни одного шаблона. Нажмите «+ Новый шаблон», чтобы создать шаблон для этой таблицы.`
+        : 'Выберите шаблон из списка слева для просмотра, редактирования или формирования документа.';
 
   const previewFileNameDocx =
     currentTemplate && targetRow
@@ -324,13 +330,27 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
           sourceTabName: boundTab.name,
           rowIdentifier: getRowLabel(targetRow, boundTab)
         });
-        showToast(`Файл «${fileName}» сохранён в раздел «${currentCategory}»`, 'success');
+        if (previewIssues.length > 0) {
+          showToast(
+            `Файл «${fileName}» сохранён в «${currentCategory}», но не все теги заполнены: ${previewIssues[0].reason}`,
+            'warning'
+          );
+        } else {
+          showToast(`Файл «${fileName}» сохранён в раздел «${currentCategory}»`, 'success');
+        }
       } else {
         const { savedToDisk } = await documentGenerator.saveAndDownloadBlob(blob, fileName, true);
-        showToast(
-          savedToDisk ? `Файл «${fileName}» сохранён и открыт` : `Файл «${fileName}» сформирован`,
-          'success'
-        );
+        if (previewIssues.length > 0) {
+          showToast(
+            `Файл «${fileName}» сформирован с предупреждением: ${previewIssues[0].reason}`,
+            'warning'
+          );
+        } else {
+          showToast(
+            savedToDisk ? `Файл «${fileName}» сохранён и открыт` : `Файл «${fileName}» сформирован`,
+            'success'
+          );
+        }
       }
     } catch (e: any) {
       showToast(`Ошибка формирования ${format.toUpperCase()}: ${e?.message || 'неизвестная ошибка'}`, 'error');
@@ -352,9 +372,11 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
     }
 
     setIsGenerating(true);
+    let batchIssuesCount = 0;
+    let firstBatchIssue = '';
     try {
       for (const row of rowsToProcess) {
-        const resolvedText = documentGenerator.resolveTemplateTags(
+        const resolved = documentGenerator.resolveTemplateTagsWithReport(
           currentTemplate.contentTemplate,
           row,
           boundTab,
@@ -362,6 +384,11 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
           tags,
           entityProfile
         );
+        if (resolved.issues.length > 0) {
+          batchIssuesCount += resolved.issues.length;
+          if (!firstBatchIssue) firstBatchIssue = resolved.issues[0].reason;
+        }
+        const resolvedText = resolved.text;
         const fileName = documentGenerator.resolveFileName(
           currentTemplate.namingPattern,
           row,
@@ -392,10 +419,17 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
         }
         await new Promise((res) => setTimeout(res, 200));
       }
-      showToast(
-        `Сформировано документов: ${rowsToProcess.length} (${format.toUpperCase()}) в раздел «${currentCategory}»`,
-        'success'
-      );
+      if (batchIssuesCount > 0) {
+        showToast(
+          `Пакет сформирован (${rowsToProcess.length}), но выявлены проблемы связей (${batchIssuesCount}): ${firstBatchIssue}`,
+          'warning'
+        );
+      } else {
+        showToast(
+          `Сформировано документов: ${rowsToProcess.length} (${format.toUpperCase()}) в раздел «${currentCategory}»`,
+          'success'
+        );
+      }
     } catch (e: any) {
       showToast(`Ошибка пакетного формирования: ${e?.message || 'неизвестная ошибка'}`, 'error');
     } finally {
@@ -973,6 +1007,25 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
                     </span>
                   )}
                 </div>
+
+                {previewIssues.length > 0 && (
+                  <div
+                    role="alert"
+                    className="flex items-start gap-2 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-[11px] shrink-0"
+                  >
+                    <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                    <div className="space-y-0.5 min-w-0">
+                      <div className="font-semibold">
+                        Предупреждение о связях ({previewIssues.length}): автоматический выбор неоднозначной или отсутствующей записи отключён
+                      </div>
+                      {previewIssues.map((issue, idx) => (
+                        <div key={`${issue.type}-${issue.tagName}-${idx}`} className="leading-snug">
+                          {issue.reason}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* Preview Body */}
                 <div className="flex-1 overflow-y-auto bg-white dark:bg-slate-900 p-6 rounded-xl border border-slate-200 dark:border-slate-800 font-serif text-slate-800 dark:text-slate-200 text-xs leading-relaxed whitespace-pre-wrap select-text">

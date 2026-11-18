@@ -62,7 +62,147 @@ export interface DeleteImpactSummary {
   totalAffectedRows: number;
 }
 
+export interface AmbiguousCascadeItem {
+  tabId: string;
+  tabName: string;
+  rowId: string;
+  rowNumber: number;
+  columnNames: string[];
+  matchCount: number;
+  reason: string;
+}
+
+export interface MasterCascadeResult {
+  tabs: Tab[];
+  updatedRowsCount: number;
+  ambiguousItems: AmbiguousCascadeItem[];
+  skippedIncompatibleCount: number;
+}
+
+export function normalizeRelationValue(value: unknown): string {
+  return String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
 export const integrityService = {
+  /**
+   * Apply a Master row edit and cascade changes to dependent tabs ONLY when all filled relation columns
+   * on a dependent row uniquely identify the edited Master row (`candidateMasterRows.length === 1 && === oldMasterRow.id`).
+   * Ambiguous (`> 1`) or incompatible (`0`) dependent rows are preserved untouched and reported explicitly.
+   */
+  applyMasterRowCascade(
+    tabs: Tab[],
+    masterTabId: string,
+    rowId: string,
+    patch: Record<string, any>
+  ): MasterCascadeResult {
+    const masterTab = tabs.find((t) => t.id === masterTabId);
+    const oldMasterRow = masterTab?.rows.find((r) => r.id === rowId);
+    if (!masterTab || !oldMasterRow) {
+      return { tabs, updatedRowsCount: 0, ambiguousItems: [], skippedIncompatibleCount: 0 };
+    }
+
+    const newMasterRow: Row = { ...oldMasterRow, ...patch };
+    const changedMasterCols = Object.keys(patch).filter((colId) => {
+      const prevNorm = normalizeRelationValue(oldMasterRow[colId]);
+      if (!prevNorm) return false;
+      return String(oldMasterRow[colId] ?? '') !== String(newMasterRow[colId] ?? '');
+    });
+
+    let updatedRowsCount = 0;
+    const ambiguousItems: AmbiguousCascadeItem[] = [];
+    let skippedIncompatibleCount = 0;
+
+    const updatedTabs = tabs.map((tab) => {
+      if (tab.id === masterTabId) {
+        return {
+          ...tab,
+          rows: tab.rows.map((r) => (r.id === rowId ? newMasterRow : r))
+        };
+      }
+
+      if (changedMasterCols.length === 0) {
+        return tab;
+      }
+
+      const allMasterRelCols = tab.columns.filter(
+        (c) => c.type === 'relation' && c.relation?.masterTabId === masterTabId
+      );
+      if (allMasterRelCols.length === 0) return tab;
+
+      const changedRelCols = allMasterRelCols.filter((c) =>
+        changedMasterCols.includes(c.relation!.masterColumnId)
+      );
+      if (changedRelCols.length === 0) return tab;
+
+      let tabChanged = false;
+      const nextRows = tab.rows.map((depRow, idx) => {
+        const matchedChangedCols = changedRelCols.filter(
+          (rc) =>
+            normalizeRelationValue(depRow[rc.id]) ===
+            normalizeRelationValue(oldMasterRow[rc.relation!.masterColumnId])
+        );
+        if (matchedChangedCols.length === 0) {
+          return depRow;
+        }
+
+        const filledRelCols = allMasterRelCols.filter(
+          (c) => normalizeRelationValue(depRow[c.id]) !== ''
+        );
+        if (filledRelCols.length === 0) {
+          return depRow;
+        }
+
+        const candidateMasterRows = masterTab.rows.filter((mr) =>
+          filledRelCols.every(
+            (rc) =>
+              normalizeRelationValue(mr[rc.relation!.masterColumnId]) ===
+              normalizeRelationValue(depRow[rc.id])
+          )
+        );
+
+        if (candidateMasterRows.length === 1) {
+          if (candidateMasterRows[0].id !== oldMasterRow.id) {
+            // Unambiguously points to a different master row — leave untouched
+            return depRow;
+          }
+
+          const rowCopy = { ...depRow };
+          matchedChangedCols.forEach((rc) => {
+            rowCopy[rc.id] = newMasterRow[rc.relation!.masterColumnId];
+          });
+          tabChanged = true;
+          updatedRowsCount += 1;
+          return rowCopy;
+        }
+
+        if (candidateMasterRows.length > 1) {
+          ambiguousItems.push({
+            tabId: tab.id,
+            tabName: tab.name,
+            rowId: depRow.id,
+            rowNumber: idx + 1,
+            columnNames: matchedChangedCols.map((c) => c.name),
+            matchCount: candidateMasterRows.length,
+            reason: `Строка №${idx + 1} во вкладке «${tab.name}» не обновлена автоматически: найдено ${candidateMasterRows.length} совпадающих записей в «${masterTab.name}» по связям (${filledRelCols.map((c) => c.name).join(', ')}).`
+          });
+          return depRow;
+        }
+
+        skippedIncompatibleCount += 1;
+        return depRow;
+      });
+
+      return tabChanged ? { ...tab, rows: nextRows } : tab;
+    });
+
+    return {
+      tabs: updatedTabs,
+      updatedRowsCount,
+      ambiguousItems,
+      skippedIncompatibleCount
+    };
+  },
+
   /**
    * Perform full referential integrity audit across tabs, relation cells, tags, and templates
    */

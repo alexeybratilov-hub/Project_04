@@ -147,4 +147,190 @@ describe('integrityService', () => {
     expect(purged).toHaveLength(1);
     expect(purged[0].id).toBe('tpl_staff');
   });
+
+  it('T-25: cascades Master edits only across full identifying tuple and does not touch other Master rows sharing only the edited field', () => {
+    const masterTab: Tab = {
+      id: 'tab_positions',
+      name: 'Штатное расписание',
+      isMaster: true,
+      columns: [
+        { id: 'pos_title', name: 'Должность', type: 'text' },
+        { id: 'pos_dept', name: 'Подразделение', type: 'text' }
+      ],
+      rows: [
+        { id: 'm1', pos_title: 'Сварщик', pos_dept: 'Цех 1' },
+        { id: 'm2', pos_title: 'Маляр', pos_dept: 'Цех 1' }
+      ],
+      attachedDocs: []
+    };
+
+    const empTab: Tab = {
+      id: 'tab_employees',
+      name: 'Работники',
+      columns: [
+        { id: 'emp_fio', name: 'ФИО', type: 'text' },
+        {
+          id: 'emp_pos',
+          name: 'Должность',
+          type: 'relation',
+          relation: { masterTabId: 'tab_positions', masterColumnId: 'pos_title' }
+        },
+        {
+          id: 'emp_dept',
+          name: 'Подразделение',
+          type: 'relation',
+          relation: { masterTabId: 'tab_positions', masterColumnId: 'pos_dept' }
+        }
+      ],
+      rows: [
+        { id: 'e1', emp_fio: 'Иванов', emp_pos: 'Сварщик', emp_dept: 'Цех 1' },
+        { id: 'e2', emp_fio: 'Петров', emp_pos: 'Маляр', emp_dept: 'Цех 1' }
+      ],
+      attachedDocs: []
+    };
+
+    // Rename dept on m1 (Сварщик) from 'Цех 1' to 'Цех 2'
+    const res = integrityService.applyMasterRowCascade([masterTab, empTab], 'tab_positions', 'm1', {
+      pos_dept: 'Цех 2'
+    });
+
+    expect(res.updatedRowsCount).toBe(1);
+    expect(res.ambiguousItems).toHaveLength(0);
+    expect(res.skippedIncompatibleCount).toBe(0);
+
+    const nextEmpTab = res.tabs.find((t) => t.id === 'tab_employees')!;
+    expect(nextEmpTab.rows.find((r) => r.id === 'e1')?.emp_dept).toBe('Цех 2');
+    expect(nextEmpTab.rows.find((r) => r.id === 'e2')?.emp_dept).toBe('Цех 1');
+  });
+
+  it('T-25: refuses auto-cascade on ambiguous Master matches (>1) and preserves partial/duplicate dependent rows while updating unambiguous ones', () => {
+    const masterTab: Tab = {
+      id: 'tab_positions',
+      name: 'Штатное расписание',
+      isMaster: true,
+      columns: [
+        { id: 'pos_title', name: 'Должность', type: 'text' },
+        { id: 'pos_dept', name: 'Подразделение', type: 'text' }
+      ],
+      rows: [
+        { id: 'm1', pos_title: 'Инженер', pos_dept: 'Цех 1' },
+        { id: 'm2', pos_title: 'Инженер', pos_dept: 'Офис' }
+      ],
+      attachedDocs: []
+    };
+
+    const empTab: Tab = {
+      id: 'tab_employees',
+      name: 'Работники',
+      columns: [
+        { id: 'emp_fio', name: 'ФИО', type: 'text' },
+        {
+          id: 'emp_pos',
+          name: 'Должность',
+          type: 'relation',
+          relation: { masterTabId: 'tab_positions', masterColumnId: 'pos_title' }
+        },
+        {
+          id: 'emp_dept',
+          name: 'Подразделение',
+          type: 'relation',
+          relation: { masterTabId: 'tab_positions', masterColumnId: 'pos_dept' }
+        }
+      ],
+      rows: [
+        { id: 'e1', emp_fio: 'Иванов', emp_pos: 'Инженер', emp_dept: 'Цех 1' },
+        { id: 'e2', emp_fio: 'Сидоров', emp_pos: 'Инженер', emp_dept: 'Офис' }
+      ],
+      attachedDocs: []
+    };
+
+    // Table with only 1-column link (like tab_med) cannot distinguish m1 vs m2
+    const medTab: Tab = {
+      id: 'tab_med',
+      name: 'Медосмотры',
+      columns: [
+        { id: 'med_worker', name: 'ФИО', type: 'text' },
+        {
+          id: 'med_pos',
+          name: 'Должность',
+          type: 'relation',
+          relation: { masterTabId: 'tab_positions', masterColumnId: 'pos_title' }
+        }
+      ],
+      rows: [{ id: 'med1', med_worker: 'Иванов', med_pos: 'Инженер' }],
+      attachedDocs: []
+    };
+
+    const res = integrityService.applyMasterRowCascade(
+      [masterTab, empTab, medTab],
+      'tab_positions',
+      'm1',
+      { pos_title: 'Ведущий инженер' }
+    );
+
+    expect(res.updatedRowsCount).toBe(1);
+    expect(res.ambiguousItems).toHaveLength(1);
+    expect(res.ambiguousItems[0].tabId).toBe('tab_med');
+    expect(res.ambiguousItems[0].matchCount).toBe(2);
+
+    const nextEmpTab = res.tabs.find((t) => t.id === 'tab_employees')!;
+    expect(nextEmpTab.rows.find((r) => r.id === 'e1')?.emp_pos).toBe('Ведущий инженер');
+    expect(nextEmpTab.rows.find((r) => r.id === 'e2')?.emp_pos).toBe('Инженер');
+
+    const nextMedTab = res.tabs.find((t) => t.id === 'tab_med')!;
+    expect(nextMedTab.rows[0].med_pos).toBe('Инженер');
+  });
+
+  it('T-25: skips incompatible dependent rows (0 full-tuple matches) and cascades unambiguous case/whitespace matches', () => {
+    const masterTab: Tab = {
+      id: 'tab_positions',
+      name: 'Штатное расписание',
+      isMaster: true,
+      columns: [
+        { id: 'pos_title', name: 'Должность', type: 'text' },
+        { id: 'pos_dept', name: 'Подразделение', type: 'text' }
+      ],
+      rows: [{ id: 'm1', pos_title: 'Сварщик', pos_dept: 'Цех 1' }],
+      attachedDocs: []
+    };
+
+    const empTab: Tab = {
+      id: 'tab_employees',
+      name: 'Работники',
+      columns: [
+        { id: 'emp_fio', name: 'ФИО', type: 'text' },
+        {
+          id: 'emp_pos',
+          name: 'Должность',
+          type: 'relation',
+          relation: { masterTabId: 'tab_positions', masterColumnId: 'pos_title' }
+        },
+        {
+          id: 'emp_dept',
+          name: 'Подразделение',
+          type: 'relation',
+          relation: { masterTabId: 'tab_positions', masterColumnId: 'pos_dept' }
+        }
+      ],
+      rows: [
+        // Matches uniquely despite case/extra spaces
+        { id: 'e_norm', emp_fio: 'Иванов', emp_pos: '  сварщик  ', emp_dept: ' цех   1 ' },
+        // Contradictory: dept matches m1 ('Цех 1'), but pos does not exist in master
+        { id: 'e_bad', emp_fio: 'Петров', emp_pos: 'Несуществующая', emp_dept: 'Цех 1' }
+      ],
+      attachedDocs: []
+    };
+
+    const res = integrityService.applyMasterRowCascade([masterTab, empTab], 'tab_positions', 'm1', {
+      pos_dept: 'Цех 2'
+    });
+
+    expect(res.updatedRowsCount).toBe(1);
+    expect(res.skippedIncompatibleCount).toBe(1);
+    expect(res.ambiguousItems).toHaveLength(0);
+
+    const nextEmpTab = res.tabs.find((t) => t.id === 'tab_employees')!;
+    expect(nextEmpTab.rows.find((r) => r.id === 'e_norm')?.emp_dept).toBe('Цех 2');
+    expect(nextEmpTab.rows.find((r) => r.id === 'e_bad')?.emp_dept).toBe('Цех 1');
+  });
 });

@@ -18,70 +18,142 @@ function registerCyrillicFonts(doc: jsPDF): void {
   doc.addFont('DejaVuSans-Bold.ttf', 'DejaVuSans', 'bold');
 }
 
+export interface TemplateResolutionIssue {
+  type: 'ambiguous' | 'not_found' | 'no_relations';
+  tagName: string;
+  masterTabId: string;
+  masterTabName: string;
+  matchCount: number;
+  reason: string;
+}
+
+export interface TemplateResolutionResult {
+  text: string;
+  issues: TemplateResolutionIssue[];
+}
+
+export type MasterRowMatchResult =
+  | { status: 'no_relations' }
+  | { status: 'no_filled_values' }
+  | { status: 'matched'; row: Row }
+  | { status: 'ambiguous'; matches: Row[]; matchedColumns: string[] }
+  | { status: 'not_found'; matchedColumns: string[] };
+
+function normalizeLookupValue(value: unknown): string {
+  return String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
 /**
- * Find the best matching row in `otherTab` for the given source `row` in `currentTab`
- * considering ALL relation columns linking `currentTab` -> `otherTab`.
+ * Find an UNAMBIGUOUS matching row in `otherTab` for the given source `row` in `currentTab`
+ * using the FULL set of filled relation columns linking `currentTab` -> `otherTab`.
+ * Never falls back to single-column partial matching and never picks an arbitrary row on duplicates.
  */
-function findMatchingMasterRow(row: Row, currentTab: Tab, otherTab: Tab): Row | undefined {
-  const relCols = currentTab.columns.filter((c) => c.relation?.masterTabId === otherTab.id);
-  if (relCols.length === 0) return undefined;
-
-  const filledRelCols = relCols.filter(
-    (c) => row[c.id] !== undefined && row[c.id] !== null && String(row[c.id]).trim() !== ''
+export function resolveMasterRowMatch(
+  row: Row,
+  currentTab: Tab,
+  otherTab: Tab
+): MasterRowMatchResult {
+  const relCols = currentTab.columns.filter(
+    (c) => c.type === 'relation' && c.relation?.masterTabId === otherTab.id
   );
-  if (filledRelCols.length === 0) return undefined;
+  if (relCols.length === 0) {
+    return { status: 'no_relations' };
+  }
 
-  // Prefer strict simultaneous match on all filled relation columns
-  const exactAll = otherTab.rows.find((mr) =>
+  const filledRelCols = relCols.filter((c) => normalizeLookupValue(row[c.id]) !== '');
+  if (filledRelCols.length === 0) {
+    return { status: 'no_filled_values' };
+  }
+
+  const matches = otherTab.rows.filter((mr) =>
     filledRelCols.every(
       (rc) =>
-        String(mr[rc.relation!.masterColumnId] ?? '').trim().toLowerCase() ===
-        String(row[rc.id] ?? '').trim().toLowerCase()
+        normalizeLookupValue(mr[rc.relation!.masterColumnId]) ===
+        normalizeLookupValue(row[rc.id])
     )
   );
-  if (exactAll) return exactAll;
 
-  // Fallback to first matching relation column
-  const firstRel = filledRelCols[0];
-  return otherTab.rows.find(
-    (mr) =>
-      String(mr[firstRel.relation!.masterColumnId] ?? '').trim().toLowerCase() ===
-      String(row[firstRel.id] ?? '').trim().toLowerCase()
-  );
+  if (matches.length === 1) {
+    return { status: 'matched', row: matches[0] };
+  }
+
+  const matchedColumns = filledRelCols.map((c) => c.name);
+  if (matches.length > 1) {
+    return { status: 'ambiguous', matches, matchedColumns };
+  }
+
+  return { status: 'not_found', matchedColumns };
 }
 
 export const documentGenerator = {
   /**
-   * Resolve tags in a template string for a specific row (and optional active LegalEntityProfile)
+   * Resolve tags in a template string for a specific row and return both rendered text
+   * and any ambiguity / broken-relation issues encountered during Master lookup.
    */
-  resolveTemplateTags(
+  resolveTemplateTagsWithReport(
     templateContent: string,
     row: Row,
     currentTab: Tab,
     allTabs: Tab[],
     tags: Tag[],
     entityProfile?: LegalEntityProfile
-  ): string {
+  ): TemplateResolutionResult {
     let resolved = templateContent;
+    const issues: TemplateResolutionIssue[] = [];
+    const lookupCache = new Map<string, MasterRowMatchResult>();
 
-    // 1. Resolve tags configured in the entity tag pool
+    // 1. Resolve tags configured in the entity tag pool (only tags actually present in templateContent)
     tags.forEach((tag) => {
+      if (!resolved.includes(tag.name)) return;
+
       let value = '';
       if (tag.tabId === currentTab.id) {
         value = row[tag.columnId] !== undefined ? String(row[tag.columnId]) : '';
       } else {
         const otherTab = allTabs.find((t) => t.id === tag.tabId);
         if (otherTab) {
-          const masterRow = findMatchingMasterRow(row, currentTab, otherTab);
-          if (masterRow && masterRow[tag.columnId] !== undefined) {
-            value = String(masterRow[tag.columnId]);
+          let matchResult = lookupCache.get(otherTab.id);
+          if (!matchResult) {
+            matchResult = resolveMasterRowMatch(row, currentTab, otherTab);
+            lookupCache.set(otherTab.id, matchResult);
+          }
+
+          if (matchResult.status === 'matched') {
+            if (matchResult.row[tag.columnId] !== undefined) {
+              value = String(matchResult.row[tag.columnId]);
+            }
+          } else if (matchResult.status === 'ambiguous') {
+            issues.push({
+              type: 'ambiguous',
+              tagName: tag.name,
+              masterTabId: otherTab.id,
+              masterTabName: otherTab.name,
+              matchCount: matchResult.matches.length,
+              reason: `Для тега ${tag.name} найдено ${matchResult.matches.length} совпадений в таблице «${otherTab.name}» по полям (${matchResult.matchedColumns.join(', ')}). Произвольный выбор запрещён.`
+            });
+          } else if (matchResult.status === 'not_found') {
+            issues.push({
+              type: 'not_found',
+              tagName: tag.name,
+              masterTabId: otherTab.id,
+              masterTabName: otherTab.name,
+              matchCount: 0,
+              reason: `Для тега ${tag.name} не найдена строка в «${otherTab.name}» с полным совпадением полей (${matchResult.matchedColumns.join(', ')}).`
+            });
+          } else if (matchResult.status === 'no_relations') {
+            issues.push({
+              type: 'no_relations',
+              tagName: tag.name,
+              masterTabId: otherTab.id,
+              masterTabName: otherTab.name,
+              matchCount: 0,
+              reason: `Тег ${tag.name} ссылается на «${otherTab.name}», но текущая таблица «${currentTab.name}» не имеет с ней связующих столбцов.`
+            });
           }
         }
       }
 
-      const escapedTag = tag.name.replace(/[{}]/g, '\\$&');
-      const regex = new RegExp(escapedTag, 'g');
-      resolved = resolved.replace(regex, value);
+      resolved = resolved.replaceAll(tag.name, value);
     });
 
     // 2. Resolve directly by current tab column names: e.g. {Должность}, {ФИО работника}
@@ -113,7 +185,28 @@ export const documentGenerator = {
     // 4. Built-in id tag
     resolved = resolved.replaceAll('{id}', row.id || '1');
 
-    return resolved;
+    return { text: resolved, issues };
+  },
+
+  /**
+   * Resolve tags in a template string for a specific row (and optional active LegalEntityProfile)
+   */
+  resolveTemplateTags(
+    templateContent: string,
+    row: Row,
+    currentTab: Tab,
+    allTabs: Tab[],
+    tags: Tag[],
+    entityProfile?: LegalEntityProfile
+  ): string {
+    return documentGenerator.resolveTemplateTagsWithReport(
+      templateContent,
+      row,
+      currentTab,
+      allTabs,
+      tags,
+      entityProfile
+    ).text;
   },
 
   /**

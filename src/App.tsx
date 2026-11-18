@@ -318,60 +318,56 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleAddRow, persistState]);
 
-  // Update single cell with cascade update to dependent tabs if master column
-  const handleUpdateCell = (rowId: string, columnId: string, newValue: any) => {
+  // Update single or multiple cells on a row with strict full-tuple Master cascade
+  const applyRowUpdateWithCascade = (rowId: string, patch: Record<string, any>) => {
     if (!currentTab) return;
-    const oldRow = currentTab.rows.find((r) => r.id === rowId);
-    const oldValue = oldRow ? oldRow[columnId] : undefined;
 
-    updateDbState((prev) => {
-      let updatedTabs = prev.tabs.map((t) => {
-        if (t.id !== currentTab.id) return t;
-        return {
-          ...t,
-          rows: t.rows.map((r) => (r.id === rowId ? { ...r, [columnId]: newValue } : r))
-        };
-      });
+    const previewCascade = integrityService.applyMasterRowCascade(
+      latestDbRef.current.tabs,
+      currentTab.id,
+      rowId,
+      patch
+    );
 
-      if (oldValue !== undefined && oldValue !== newValue && String(oldValue).trim() !== '') {
-        updatedTabs = updatedTabs.map((depTab) => {
-          let hasRelation = false;
-          const matchingCols = depTab.columns.filter(
-            (c) => c.relation?.masterTabId === currentTab.id && c.relation?.masterColumnId === columnId
-          );
+    updateDbState((prev) => ({
+      ...prev,
+      tabs: integrityService.applyMasterRowCascade(prev.tabs, currentTab.id, rowId, patch).tabs
+    }));
 
-          if (matchingCols.length === 0) return depTab;
+    if (previewCascade.ambiguousItems.length > 0) {
+      const first = previewCascade.ambiguousItems[0];
+      const updatedNote =
+        previewCascade.updatedRowsCount > 0
+          ? ` Однозначно обновлено строк: ${previewCascade.updatedRowsCount}.`
+          : '';
+      showToast(
+        `Каскад не выполнен для ${previewCascade.ambiguousItems.length} строк (напр. «${first.tabName}», стр. №${first.rowNumber}): найдено ${first.matchCount} совпадений в «${currentTab.name}».${updatedNote}`,
+        'warning'
+      );
+    } else if (previewCascade.skippedIncompatibleCount > 0) {
+      const updatedNote =
+        previewCascade.updatedRowsCount > 0
+          ? ` Однозначно обновлено строк: ${previewCascade.updatedRowsCount}.`
+          : '';
+      showToast(
+        `Пропущено зависимых строк с несовпадением полного набора связей: ${previewCascade.skippedIncompatibleCount}.${updatedNote}`,
+        'warning'
+      );
+    } else if (previewCascade.updatedRowsCount > 0) {
+      showToast(
+        `Каскадно обновлено зависимых строк: ${previewCascade.updatedRowsCount}`,
+        'info'
+      );
+    }
+  };
 
-          const updatedRows = depTab.rows.map((depRow) => {
-            const rowCopy = { ...depRow };
-            matchingCols.forEach((relCol) => {
-              if (rowCopy[relCol.id] === oldValue) {
-                rowCopy[relCol.id] = newValue;
-                hasRelation = true;
-              }
-            });
-            return rowCopy;
-          });
-
-          return hasRelation ? { ...depTab, rows: updatedRows } : depTab;
-        });
-      }
-
-      return { ...prev, tabs: updatedTabs };
-    });
+  const handleUpdateCell = (rowId: string, columnId: string, newValue: any) => {
+    applyRowUpdateWithCascade(rowId, { [columnId]: newValue });
   };
 
   // Update multiple cells on a single row
   const handleUpdateRowMulti = (rowId: string, patch: Record<string, any>) => {
-    if (!currentTab) return;
-    updateDbState((prev) => ({
-      ...prev,
-      tabs: prev.tabs.map((t) =>
-        t.id === currentTab.id
-          ? { ...t, rows: t.rows.map((r) => (r.id === rowId ? { ...r, ...patch } : r)) }
-          : t
-      )
-    }));
+    applyRowUpdateWithCascade(rowId, patch);
   };
 
   // Insert rows from inline Excel paste at clicked row offset (shifting lower rows down)
