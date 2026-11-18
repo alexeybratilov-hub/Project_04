@@ -339,6 +339,8 @@ export const INITIAL_DATABASE_STATE: DatabaseState = {
     theme: 'light',
     autoSave: true,
     tabBarMode: 'single',
+    rowDensity: 'compact',
+    pageSize: 100,
     lastBackupDate: '2026-03-01'
   }
 };

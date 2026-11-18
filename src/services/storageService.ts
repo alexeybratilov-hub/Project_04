@@ -415,6 +415,9 @@ export function normalizeDatabaseState(raw: any): DatabaseState {
   const activeEntity =
     entities.find((e) => e.id === raw.activeEntityId) || entities[0];
 
+  const allowedPageSizes = new Set([50, 100, 250, 500]);
+  const rawPageSize = Number(raw.settings?.pageSize);
+
   return {
     version: raw.version || '1.3.0',
     lastSaved: raw.lastSaved || new Date().toISOString(),
@@ -430,7 +433,9 @@ export function normalizeDatabaseState(raw: any): DatabaseState {
     settings: {
       ...INITIAL_DATABASE_STATE.settings,
       ...(raw.settings || {}),
-      tabBarMode: raw.settings?.tabBarMode === 'auto' ? 'auto' : 'single'
+      tabBarMode: raw.settings?.tabBarMode === 'auto' ? 'auto' : 'single',
+      rowDensity: raw.settings?.rowDensity === 'normal' ? 'normal' : 'compact',
+      pageSize: allowedPageSizes.has(rawPageSize) ? rawPageSize : 100
     }
   };
 }

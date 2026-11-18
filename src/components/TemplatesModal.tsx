@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   FileText, Download, BookOpen, Eye, FileDown, RefreshCw,
-  Plus, FolderOpen, FolderArchive, Edit2, Trash2, ArchiveRestore, Table2, Check
+  Plus, FolderOpen, FolderArchive, Edit2, Trash2, ArchiveRestore, Table2, Check, AlertTriangle
 } from 'lucide-react';
 import { DocumentTemplate, LegalEntityProfile, Tab, Tag } from '../types/database';
 import { documentGenerator } from '../services/documentGenerator';
@@ -14,6 +14,7 @@ import {
   AppModal,
   AppSelect,
   AppTextarea,
+  ConfirmDialog,
   FormField,
   InlineConfirm,
   StatusBanner,
@@ -67,14 +68,45 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
   const [draftCategory, setDraftCategory] = useState<string>(DOCUMENT_CATEGORIES[0]);
   const [draftNaming, setDraftNaming] = useState('{ФИО}_документ_2026.docx');
   const [draftContent, setDraftContent] = useState('');
+  const [editorInitialDraft, setEditorInitialDraft] = useState<{
+    name: string;
+    tabId: string;
+    category: string;
+    naming: string;
+    content: string;
+  } | null>(null);
+  const [editorErrors, setEditorErrors] = useState<{
+    name?: string;
+    content?: string;
+    summary?: string;
+  }>({});
+  const [pendingDiscardAction, setPendingDiscardAction] = useState<{
+    action: () => void;
+    isClosingModal: boolean;
+  } | null>(null);
 
-  // Reset scope and active template when modal opens
+  const prevOpenRef = useRef(false);
+  const isSavingEditorRef = useRef(false);
+
+  // Reset scope and active template strictly when modal opens
   useEffect(() => {
-    if (!isOpen) return;
+    const justOpened = isOpen && !prevOpenRef.current;
+    prevOpenRef.current = isOpen;
+
+    if (!isOpen) {
+      isSavingEditorRef.current = false;
+      return;
+    }
+    if (!justOpened) return;
+
     setScope(initialScope);
     setSelectedSection('ALL');
     setEditorMode('none');
+    setEditorInitialDraft(null);
+    setEditorErrors({});
+    setPendingDiscardAction(null);
     setConfirmDeleteId(null);
+    isSavingEditorRef.current = false;
 
     const activeTemplates = templates.filter((t) => !t.isArchived);
     const preferred =
@@ -86,21 +118,56 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
 
     setSelectedTemplateId(preferred?.id || '');
     setIsBatchMode(Boolean(selectedRowIds && selectedRowIds.length > 1));
-  }, [isOpen, initialScope, currentTab.id]);
+  }, [isOpen, initialScope, currentTab.id, templates, selectedRowIds]);
 
-  // Esc exits template sub-editor without closing the modal (AppModal handles main Esc via closeOnEscape)
+  const isEditorDirty = useMemo(() => {
+    if (!isOpen || editorMode === 'none' || !editorInitialDraft) return false;
+    return (
+      draftName !== editorInitialDraft.name ||
+      draftTabId !== editorInitialDraft.tabId ||
+      draftCategory !== editorInitialDraft.category ||
+      draftNaming !== editorInitialDraft.naming ||
+      draftContent !== editorInitialDraft.content
+    );
+  }, [
+    isOpen,
+    editorMode,
+    editorInitialDraft,
+    draftName,
+    draftTabId,
+    draftCategory,
+    draftNaming,
+    draftContent
+  ]);
+
+  const requestGuardedAction = useCallback(
+    (action: () => void, isClosingModal = false) => {
+      if (isEditorDirty) {
+        setPendingDiscardAction({ action, isClosingModal });
+      } else {
+        action();
+      }
+    },
+    [isEditorDirty]
+  );
+
+  // Esc exits template sub-editor (with dirty-guard) without closing the modal
   useEffect(() => {
-    if (!isOpen || editorMode === 'none') return;
+    if (!isOpen || editorMode === 'none' || pendingDiscardAction) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
-        setEditorMode('none');
+        requestGuardedAction(() => {
+          setEditorMode('none');
+          setEditorInitialDraft(null);
+          setEditorErrors({});
+        });
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, editorMode]);
+  }, [isOpen, editorMode, pendingDiscardAction, requestGuardedAction]);
 
   const getTemplateCategory = (tpl: DocumentTemplate): string => {
     if (tpl.category && tpl.category.trim()) return tpl.category;
@@ -228,64 +295,111 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
   };
 
   const openCreateForm = () => {
-    setEditorMode('create');
-    setDraftName('');
-    setDraftTabId(currentTab.id);
-    setDraftCategory(inferDocumentCategory('', currentTab.name));
-    setDraftNaming('{ФИО}_документ_2026.docx');
-    setDraftContent('');
+    requestGuardedAction(() => {
+      const initial = {
+        name: '',
+        tabId: currentTab.id,
+        category: inferDocumentCategory('', currentTab.name),
+        naming: '{ФИО}_документ_2026.docx',
+        content: ''
+      };
+      setEditorMode('create');
+      setDraftName(initial.name);
+      setDraftTabId(initial.tabId);
+      setDraftCategory(initial.category);
+      setDraftNaming(initial.naming);
+      setDraftContent(initial.content);
+      setEditorInitialDraft(initial);
+      setEditorErrors({});
+      isSavingEditorRef.current = false;
+    });
   };
 
   const openEditForm = (tpl: DocumentTemplate) => {
-    setEditorMode('edit');
-    setSelectedTemplateId(tpl.id);
-    setDraftName(tpl.name);
-    setDraftTabId(tpl.tabId || currentTab.id);
-    setDraftCategory(getTemplateCategory(tpl));
-    setDraftNaming(tpl.namingPattern);
-    setDraftContent(tpl.contentTemplate);
+    requestGuardedAction(() => {
+      const initial = {
+        name: tpl.name,
+        tabId: tpl.tabId || currentTab.id,
+        category: getTemplateCategory(tpl),
+        naming: tpl.namingPattern,
+        content: tpl.contentTemplate
+      };
+      setEditorMode('edit');
+      setSelectedTemplateId(tpl.id);
+      setDraftName(initial.name);
+      setDraftTabId(initial.tabId);
+      setDraftCategory(initial.category);
+      setDraftNaming(initial.naming);
+      setDraftContent(initial.content);
+      setEditorInitialDraft(initial);
+      setEditorErrors({});
+      isSavingEditorRef.current = false;
+    });
   };
 
   const handleSaveEditor = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!draftName.trim() || !draftContent.trim()) return;
+    if (isSavingEditorRef.current) return;
 
-    if (editorMode === 'create') {
-      const targetTabObj = allTabs.find((t) => t.id === draftTabId) || currentTab;
-      const newTpl: DocumentTemplate = {
-        id: createUniqueId('tpl'),
-        name: draftName.trim(),
-        tabId: targetTabObj.id,
-        category: draftCategory || inferDocumentCategory(draftName, targetTabObj.name),
-        fileName: `${draftName.trim()}.docx`,
-        namingPattern: draftNaming.trim() || '{ФИО}_документ.docx',
-        contentTemplate: draftContent.trim()
-      };
-      onSaveTemplates([...templates, newTpl]);
-      setSelectedTemplateId(newTpl.id);
-      if (scope === 'archive') setScope(newTpl.tabId === currentTab.id ? 'tab' : 'all');
-      setEditorMode('none');
-      showToast(`Шаблон «${newTpl.name}» добавлен для таблицы «${targetTabObj.name}»`, 'success');
-    } else if (editorMode === 'edit' && currentTemplate) {
-      const targetTabObj = allTabs.find((t) => t.id === draftTabId) || currentTab;
-      const updated = templates.map((t) =>
-        t.id === currentTemplate.id
-          ? {
-              ...t,
-              name: draftName.trim(),
-              tabId: targetTabObj.id,
-              category: draftCategory || inferDocumentCategory(draftName, targetTabObj.name),
-              namingPattern: draftNaming.trim() || t.namingPattern,
-              contentTemplate: draftContent.trim(),
-              isArchived: false,
-              archivedAt: undefined,
-              archivedFromTabName: undefined
-            }
-          : t
-      );
-      onSaveTemplates(updated);
-      setEditorMode('none');
-      showToast(`Шаблон «${draftName.trim()}» сохранён`, 'success');
+    const nextErrors: { name?: string; content?: string; summary?: string } = {};
+    if (!draftName.trim()) {
+      nextErrors.name = 'Укажите название шаблона.';
+    }
+    if (!draftContent.trim()) {
+      nextErrors.content = 'Введите текст шаблона (можно использовать теги в фигурных скобках).';
+    }
+
+    if (nextErrors.name || nextErrors.content) {
+      nextErrors.summary = nextErrors.name || nextErrors.content;
+      setEditorErrors(nextErrors);
+      return;
+    }
+
+    isSavingEditorRef.current = true;
+    try {
+      if (editorMode === 'create') {
+        const targetTabObj = allTabs.find((t) => t.id === draftTabId) || currentTab;
+        const newTpl: DocumentTemplate = {
+          id: createUniqueId('tpl'),
+          name: draftName.trim(),
+          tabId: targetTabObj.id,
+          category: draftCategory || inferDocumentCategory(draftName, targetTabObj.name),
+          fileName: `${draftName.trim()}.docx`,
+          namingPattern: draftNaming.trim() || '{ФИО}_документ.docx',
+          contentTemplate: draftContent.trim()
+        };
+        onSaveTemplates([...templates, newTpl]);
+        setSelectedTemplateId(newTpl.id);
+        if (scope === 'archive') setScope(newTpl.tabId === currentTab.id ? 'tab' : 'all');
+        setEditorMode('none');
+        setEditorInitialDraft(null);
+        setEditorErrors({});
+        showToast(`Шаблон «${newTpl.name}» добавлен для таблицы «${targetTabObj.name}»`, 'success');
+      } else if (editorMode === 'edit' && currentTemplate) {
+        const targetTabObj = allTabs.find((t) => t.id === draftTabId) || currentTab;
+        const updated = templates.map((t) =>
+          t.id === currentTemplate.id
+            ? {
+                ...t,
+                name: draftName.trim(),
+                tabId: targetTabObj.id,
+                category: draftCategory || inferDocumentCategory(draftName, targetTabObj.name),
+                namingPattern: draftNaming.trim() || t.namingPattern,
+                contentTemplate: draftContent.trim(),
+                isArchived: false,
+                archivedAt: undefined,
+                archivedFromTabName: undefined
+              }
+            : t
+        );
+        onSaveTemplates(updated);
+        setEditorMode('none');
+        setEditorInitialDraft(null);
+        setEditorErrors({});
+        showToast(`Шаблон «${draftName.trim()}» сохранён`, 'success');
+      }
+    } finally {
+      isSavingEditorRef.current = false;
     }
   };
 
@@ -449,71 +563,84 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
   const availableTagsForDraftTab = tags.filter((t) => t.tabId === draftTabId);
 
   return (
-    <AppModal
-      isOpen={isOpen}
-      onClose={onClose}
-      closeOnEscape={editorMode === 'none'}
-      size="6xl"
-      heightClass="h-[90vh]"
-      icon={<FileText className="w-5 h-5" />}
-      iconTone="blue"
-      title={
-        <>
-          Шаблоны документов
-          {entityProfile?.shortName ? ` · ${entityProfile.shortName}` : ''}
-        </>
-      }
-      subtitle="У каждой таблицы свой набор шаблонов · прямая подстановка тегов работает автономно (DOCX и PDF)"
-      headerRight={
-        <div className="flex flex-wrap items-center gap-2">
-          {/* View Scope Switcher */}
-          <div className="flex items-center gap-1 bg-slate-200/70 dark:bg-slate-800 p-1 rounded-lg text-xs">
-            <button
-              type="button"
-              onClick={() => {
-                setScope('tab');
-                setEditorMode('none');
-              }}
-              className={`px-3 py-1 rounded-md font-medium transition-colors cursor-pointer whitespace-nowrap ${
-                scope === 'tab'
-                  ? 'bg-white dark:bg-slate-900 text-blue-700 dark:text-blue-300 shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-              }`}
-            >
-              Вкладка «{currentTab.name}» <span className="font-mono tabular-nums opacity-75">({tabActiveTemplates.length})</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setScope('all');
-                setEditorMode('none');
-              }}
-              className={`px-3 py-1 rounded-md font-medium transition-colors cursor-pointer whitespace-nowrap ${
-                scope === 'all'
-                  ? 'bg-white dark:bg-slate-900 text-blue-700 dark:text-blue-300 shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-              }`}
-            >
-              Все по разделам <span className="font-mono tabular-nums opacity-75">({allActiveTemplates.length})</span>
-            </button>
-            {archivedTemplates.length > 0 && (
+    <>
+      <AppModal
+        isOpen={isOpen}
+        onClose={() => requestGuardedAction(onClose, true)}
+        closeOnEscape={editorMode === 'none' && !pendingDiscardAction}
+        size="6xl"
+        heightClass="h-[90vh]"
+        icon={<FileText className="w-5 h-5" />}
+        iconTone="blue"
+        title={
+          <>
+            Шаблоны документов
+            {entityProfile?.shortName ? ` · ${entityProfile.shortName}` : ''}
+          </>
+        }
+        subtitle="У каждой таблицы свой набор шаблонов · прямая подстановка тегов работает автономно (DOCX и PDF)"
+        headerRight={
+          <div className="flex flex-wrap items-center gap-2">
+            {/* View Scope Switcher */}
+            <div className="flex items-center gap-1 bg-slate-200/70 dark:bg-slate-800 p-1 rounded-lg text-xs">
               <button
                 type="button"
-                onClick={() => {
-                  setScope('archive');
-                  setEditorMode('none');
-                }}
-                className={`px-3 py-1 rounded-md font-medium transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1 ${
-                  scope === 'archive'
-                    ? 'bg-white dark:bg-slate-900 text-amber-700 dark:text-amber-300 shadow-xs'
+                onClick={() =>
+                  requestGuardedAction(() => {
+                    setScope('tab');
+                    setEditorMode('none');
+                    setEditorInitialDraft(null);
+                    setEditorErrors({});
+                  })
+                }
+                className={`px-3 py-1 rounded-md font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                  scope === 'tab'
+                    ? 'bg-white dark:bg-slate-900 text-blue-700 dark:text-blue-300 shadow-xs'
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                 }`}
               >
-                <FolderArchive className="w-3.5 h-3.5" />
-                <span>Архив <span className="font-mono tabular-nums">({archivedTemplates.length})</span></span>
+                Вкладка «{currentTab.name}» <span className="font-mono tabular-nums opacity-75">({tabActiveTemplates.length})</span>
               </button>
-            )}
-          </div>
+              <button
+                type="button"
+                onClick={() =>
+                  requestGuardedAction(() => {
+                    setScope('all');
+                    setEditorMode('none');
+                    setEditorInitialDraft(null);
+                    setEditorErrors({});
+                  })
+                }
+                className={`px-3 py-1 rounded-md font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                  scope === 'all'
+                    ? 'bg-white dark:bg-slate-900 text-blue-700 dark:text-blue-300 shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                }`}
+              >
+                Все по разделам <span className="font-mono tabular-nums opacity-75">({allActiveTemplates.length})</span>
+              </button>
+              {archivedTemplates.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    requestGuardedAction(() => {
+                      setScope('archive');
+                      setEditorMode('none');
+                      setEditorInitialDraft(null);
+                      setEditorErrors({});
+                    })
+                  }
+                  className={`px-3 py-1 rounded-md font-medium transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1 ${
+                    scope === 'archive'
+                      ? 'bg-white dark:bg-slate-900 text-amber-700 dark:text-amber-300 shadow-xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                  }`}
+                >
+                  <FolderArchive className="w-3.5 h-3.5" />
+                  <span>Архив <span className="font-mono tabular-nums">({archivedTemplates.length})</span></span>
+                </button>
+              )}
+            </div>
 
           <AppButton
             variant="primary"
@@ -614,10 +741,14 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
                           return (
                             <div
                               key={tpl.id}
-                              onClick={() => {
-                                setEditorMode('none');
-                                setSelectedTemplateId(tpl.id);
-                              }}
+                              onClick={() =>
+                                requestGuardedAction(() => {
+                                  setEditorMode('none');
+                                  setEditorInitialDraft(null);
+                                  setEditorErrors({});
+                                  setSelectedTemplateId(tpl.id);
+                                })
+                              }
                               className={`p-2.5 rounded-lg border cursor-pointer transition-colors ${
                                 isSelected
                                   ? 'bg-blue-50/90 dark:bg-blue-950/50 border-blue-300 dark:border-blue-700'
@@ -686,10 +817,14 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
                     return (
                       <div
                         key={tpl.id}
-                        onClick={() => {
-                          setEditorMode('none');
-                          setSelectedTemplateId(tpl.id);
-                        }}
+                        onClick={() =>
+                          requestGuardedAction(() => {
+                            setEditorMode('none');
+                            setEditorInitialDraft(null);
+                            setEditorErrors({});
+                            setSelectedTemplateId(tpl.id);
+                          })
+                        }
                         className={`p-3 rounded-lg border cursor-pointer transition-colors ${
                           isSelected
                             ? 'bg-blue-50/90 dark:bg-blue-950/50 border-blue-300 dark:border-blue-700'
@@ -788,28 +923,53 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
           {/* Right Pane: Create/Edit Form OR Live Template Preview & Document Export */}
           <div className="md:col-span-7 flex flex-col bg-slate-50/50 dark:bg-slate-950/40 overflow-hidden">
             {editorMode !== 'none' ? (
-              <form onSubmit={handleSaveEditor} className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
-                <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
-                  <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                    {editorMode === 'create' ? 'Создание нового шаблона' : 'Редактирование шаблона'}
-                  </h3>
+              <form noValidate onSubmit={handleSaveEditor} className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
+                <div className="flex items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
+                      {editorMode === 'create' ? 'Создание нового шаблона' : 'Редактирование шаблона'}
+                    </h3>
+                    {isEditorDirty && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 font-medium text-[11px] shrink-0">
+                        <AlertTriangle className="w-3 h-3 text-amber-600 shrink-0" />
+                        Черновик изменён
+                      </span>
+                    )}
+                  </div>
                   <button
                     type="button"
-                    onClick={() => setEditorMode('none')}
-                    className="text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 font-medium cursor-pointer"
+                    onClick={() =>
+                      requestGuardedAction(() => {
+                        setEditorMode('none');
+                        setEditorInitialDraft(null);
+                        setEditorErrors({});
+                      })
+                    }
+                    className="text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 font-medium cursor-pointer shrink-0"
                   >
                     Отмена
                   </button>
                 </div>
 
+                {editorErrors.summary && (
+                  <StatusBanner variant="error" compact>
+                    {editorErrors.summary}
+                  </StatusBanner>
+                )}
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <FormField label="Название шаблона" required>
+                  <FormField label="Название шаблона" required error={editorErrors.name}>
                     <AppInput
                       type="text"
                       compact
-                      required
+                      error={Boolean(editorErrors.name)}
                       value={draftName}
-                      onChange={(e) => setDraftName(e.target.value)}
+                      onChange={(e) => {
+                        setDraftName(e.target.value);
+                        if (editorErrors.name || editorErrors.summary) {
+                          setEditorErrors((prev) => ({ ...prev, name: undefined, summary: prev.content }));
+                        }
+                      }}
                       placeholder="Например: Приказ о проведении обучения"
                     />
                   </FormField>
@@ -859,7 +1019,12 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
                         <button
                           key={t.id}
                           type="button"
-                          onClick={() => setDraftContent((c) => `${c}${c && !c.endsWith(' ') && !c.endsWith('\n') ? ' ' : ''}${t.name}`)}
+                          onClick={() => {
+                            setDraftContent((c) => `${c}${c && !c.endsWith(' ') && !c.endsWith('\n') ? ' ' : ''}${t.name}`);
+                            if (editorErrors.content || editorErrors.summary) {
+                              setEditorErrors((prev) => ({ ...prev, content: undefined, summary: prev.name }));
+                            }
+                          }}
                           className="px-2 py-0.5 bg-slate-100 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-slate-200 dark:border-slate-700 rounded font-mono text-[11px] cursor-pointer"
                         >
                           {t.name}
@@ -869,13 +1034,18 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
                   </div>
                 )}
 
-                <FormField label="Текст шаблона с тегами {...}" required className="flex-1">
+                <FormField label="Текст шаблона с тегами {...}" required error={editorErrors.content} className="flex-1">
                   <AppTextarea
-                    required
                     mono
                     rows={12}
+                    error={Boolean(editorErrors.content)}
                     value={draftContent}
-                    onChange={(e) => setDraftContent(e.target.value)}
+                    onChange={(e) => {
+                      setDraftContent(e.target.value);
+                      if (editorErrors.content || editorErrors.summary) {
+                        setEditorErrors((prev) => ({ ...prev, content: undefined, summary: prev.name }));
+                      }
+                    }}
                     placeholder="Введите текст приказа, инструкции или направления с тегами {Организация}, {ФИО}, {Должность}..."
                     className="p-3 leading-relaxed"
                   />
@@ -883,9 +1053,15 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
 
                 <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
                   <AppButton
-                    variant="ghost"
+                    variant="secondary"
                     size="md"
-                    onClick={() => setEditorMode('none')}
+                    onClick={() =>
+                      requestGuardedAction(() => {
+                        setEditorMode('none');
+                        setEditorInitialDraft(null);
+                        setEditorErrors({});
+                      })
+                    }
                   >
                     Отмена
                   </AppButton>
@@ -893,6 +1069,7 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
                     type="submit"
                     variant="primary"
                     size="md"
+                    disabled={editorMode === 'edit' && !isEditorDirty}
                     icon={<Check className="w-4 h-4" />}
                   >
                     Сохранить шаблон
@@ -1047,6 +1224,31 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
             )}
           </div>
         </div>
-    </AppModal>
+      </AppModal>
+
+      <ConfirmDialog
+        isOpen={Boolean(pendingDiscardAction)}
+        danger
+        title="Отменить несохранённые изменения шаблона?"
+        description={
+          pendingDiscardAction?.isClosingModal
+            ? 'В редакторе шаблона есть несохранённые изменения. Закрыть окно без сохранения?'
+            : 'В редакторе шаблона есть несохранённые изменения. Продолжить без сохранения?'
+        }
+        confirmLabel="Не сохранять"
+        cancelLabel="Вернуться к правке"
+        onConfirm={() => {
+          const pending = pendingDiscardAction;
+          setPendingDiscardAction(null);
+          if (pending) {
+            setEditorMode('none');
+            setEditorInitialDraft(null);
+            setEditorErrors({});
+            pending.action();
+          }
+        }}
+        onCancel={() => setPendingDiscardAction(null)}
+      />
+    </>
   );
 };

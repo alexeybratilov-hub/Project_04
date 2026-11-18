@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Columns, Plus, Trash2, ArrowUp,
   ArrowDown, Link2, Check, AlertTriangle,
-  Link as LinkIcon, List, Calendar, Hash, Type, CheckSquare, Edit2
+  Link as LinkIcon, List, Calendar, Hash, Type, CheckSquare, Edit2, ExternalLink
 } from 'lucide-react';
 import { Column, ColumnType, Tab, Tag } from '../types/database';
 import { createUniqueId, integrityService } from '../services/integrityService';
@@ -345,6 +345,7 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
                   <option value="date">Дата (ГГГГ-ММ-ДД)</option>
                   <option value="select">Выпадающий список (выбор из вариантов)</option>
                   <option value="boolean">Да / Нет (флажок)</option>
+                  <option value="link">Ссылка (URL / веб-адрес)</option>
                   <option value="relation">Связь со справочником (мастер-вкладка 1:N)</option>
                 </AppSelect>
               </FormField>
@@ -494,6 +495,10 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
                           ) : col.type === 'boolean' ? (
                             <span title="Флаг Да/Нет" className="p-1 rounded bg-cyan-100 dark:bg-cyan-950 text-cyan-600 dark:text-cyan-400 shrink-0">
                               <CheckSquare className="w-3.5 h-3.5" />
+                            </span>
+                          ) : col.type === 'link' ? (
+                            <span title="Ссылка (URL)" className="p-1 rounded bg-sky-100 dark:bg-sky-950 text-sky-600 dark:text-sky-400 shrink-0">
+                              <ExternalLink className="w-3.5 h-3.5" />
                             </span>
                           ) : (
                             <span title="Текст" className="p-1 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 shrink-0">

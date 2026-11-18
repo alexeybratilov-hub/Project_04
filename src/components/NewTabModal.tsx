@@ -1,10 +1,18 @@
-import React, { useState, useEffect, useId } from 'react';
+import React, { useState, useEffect, useId, useRef, useMemo, useCallback } from 'react';
 import {
-  Plus, Key, Link2, Check, Table, Trash2
+  Plus, Key, Link2, Check, Table, Trash2, AlertTriangle
 } from 'lucide-react';
 import { Column, ColumnType, Tab } from '../types/database';
 import { createUniqueId } from '../services/integrityService';
-import { AppButton, AppInput, AppModal, AppSelect, FormField, StatusBanner } from './ui';
+import {
+  AppButton,
+  AppInput,
+  AppModal,
+  AppSelect,
+  ConfirmDialog,
+  FormField,
+  StatusBanner
+} from './ui';
 
 interface NewTabModalProps {
   isOpen: boolean;
@@ -24,6 +32,14 @@ interface ExtraColDraft {
   type: ColumnType;
 }
 
+interface NewTabInitialSnapshot {
+  tabName: string;
+  isMaster: boolean;
+  hasDependencies: boolean;
+  selectedMasterLinks: Array<{ masterTabId: string; masterColumnId: string }>;
+  extraCols: ExtraColDraft[];
+}
+
 export const NewTabModal: React.FC<NewTabModalProps> = ({
   isOpen,
   onClose,
@@ -36,36 +52,97 @@ export const NewTabModal: React.FC<NewTabModalProps> = ({
   const [tabName, setTabName] = useState('');
   const [isMaster, setIsMaster] = useState(false);
   const [hasDependencies, setHasDependencies] = useState<boolean>(masterTabs.length > 0);
-  // Selected master links: array of { masterTabId, masterColumnId }
   const [selectedMasterLinks, setSelectedMasterLinks] = useState<Array<{ masterTabId: string; masterColumnId: string }>>([]);
   const [extraCols, setExtraCols] = useState<ExtraColDraft[]>([
     { id: 'ex_1', name: 'ФИО / Наименование', type: 'text' },
-    { id: 'ex_2', name: 'Дата', type: 'date' },
+    { id: 'ex_2', name: 'Дата', type: 'date' }
   ]);
   const [newExtraName, setNewExtraName] = useState('');
   const [newExtraType, setNewExtraType] = useState<ColumnType>('text');
   const [errorMsg, setErrorMsg] = useState('');
+  const [tabNameError, setTabNameError] = useState('');
+  const [extraColError, setExtraColError] = useState('');
+  const [initialSnapshot, setInitialSnapshot] = useState<NewTabInitialSnapshot | null>(null);
+  const [pendingDiscardConfirm, setPendingDiscardConfirm] = useState(false);
+
+  const prevOpenRef = useRef(false);
+  const isSubmittingRef = useRef(false);
 
   useEffect(() => {
-    if (isOpen) {
-      setTabName(`Новая таблица ${existingTabs.length + 1}`);
-      setIsMaster(false);
-      setHasDependencies(masterTabs.length > 0);
-      setSelectedMasterLinks([]);
-      setExtraCols([
-        { id: `ex_${Date.now()}_1`, name: 'Примечание', type: 'text' },
-        { id: `ex_${Date.now()}_2`, name: 'Дата', type: 'date' }
-      ]);
-      setNewExtraName('');
-      setNewExtraType('text');
-      setErrorMsg('');
+    const justOpened = isOpen && !prevOpenRef.current;
+    prevOpenRef.current = isOpen;
+
+    if (!isOpen) {
+      isSubmittingRef.current = false;
+      return;
     }
+    if (!justOpened) return;
+
+    const defaultCols: ExtraColDraft[] = [
+      { id: `ex_${Date.now()}_1`, name: 'Примечание', type: 'text' },
+      { id: `ex_${Date.now()}_2`, name: 'Дата', type: 'date' }
+    ];
+    const defaultName = `Новая таблица ${existingTabs.length + 1}`;
+    const defaultHasDeps = masterTabs.length > 0;
+
+    setTabName(defaultName);
+    setIsMaster(false);
+    setHasDependencies(defaultHasDeps);
+    setSelectedMasterLinks([]);
+    setExtraCols(defaultCols);
+    setNewExtraName('');
+    setNewExtraType('text');
+    setErrorMsg('');
+    setTabNameError('');
+    setExtraColError('');
+    setPendingDiscardConfirm(false);
+    isSubmittingRef.current = false;
+
+    setInitialSnapshot({
+      tabName: defaultName,
+      isMaster: false,
+      hasDependencies: defaultHasDeps,
+      selectedMasterLinks: [],
+      extraCols: defaultCols
+    });
   }, [isOpen, existingTabs.length, masterTabs.length]);
+
+  const isDirty = useMemo(() => {
+    if (!isOpen || !initialSnapshot) return false;
+    if (newExtraName.trim()) return true;
+    return (
+      JSON.stringify({
+        tabName,
+        isMaster,
+        hasDependencies,
+        selectedMasterLinks,
+        extraCols
+      }) !== JSON.stringify(initialSnapshot)
+    );
+  }, [
+    isOpen,
+    initialSnapshot,
+    tabName,
+    isMaster,
+    hasDependencies,
+    selectedMasterLinks,
+    extraCols,
+    newExtraName
+  ]);
+
+  const requestClose = useCallback(() => {
+    if (isDirty) {
+      setPendingDiscardConfirm(true);
+    } else {
+      onClose();
+    }
+  }, [isDirty, onClose]);
 
   const isLinkSelected = (masterTabId: string, masterColumnId: string) =>
     selectedMasterLinks.some((l) => l.masterTabId === masterTabId && l.masterColumnId === masterColumnId);
 
   const toggleMasterLink = (masterTabId: string, masterColumnId: string) => {
+    setErrorMsg('');
     setSelectedMasterLinks((prev) => {
       const exists = prev.some((l) => l.masterTabId === masterTabId && l.masterColumnId === masterColumnId);
       if (exists) {
@@ -78,18 +155,48 @@ export const NewTabModal: React.FC<NewTabModalProps> = ({
   const handleAddExtraCol = () => {
     const trimmed = newExtraName.trim();
     if (!trimmed) return;
+
+    const lower = trimmed.toLowerCase();
+    if (extraCols.some((c) => c.name.trim().toLowerCase() === lower)) {
+      setExtraColError(`Столбец «${trimmed}» уже добавлен в список.`);
+      return;
+    }
+
+    setExtraColError('');
+    setErrorMsg('');
     setExtraCols((prev) => [...prev, { id: `ex_${Date.now()}`, name: trimmed, type: newExtraType }]);
     setNewExtraName('');
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmittingRef.current) return;
+
     const trimmedName = tabName.trim();
     if (!trimmedName) {
+      setTabNameError('Введите название новой таблицы');
       setErrorMsg('Введите название новой таблицы');
       return;
     }
 
+    const duplicateTab = existingTabs.some(
+      (t) => t.name.trim().toLowerCase() === trimmedName.toLowerCase()
+    );
+    if (duplicateTab) {
+      const msg = `Таблица с названием «${trimmedName}» уже существует.`;
+      setTabNameError(msg);
+      setErrorMsg(msg);
+      return;
+    }
+
+    if (newExtraName.trim()) {
+      const msg = `Нажмите «Добавить», чтобы включить столбец «${newExtraName.trim()}» перед созданием таблицы, или очистите поле.`;
+      setExtraColError(msg);
+      setErrorMsg(msg);
+      return;
+    }
+
+    isSubmittingRef.current = true;
     const columns: Column[] = [];
     const seenNames = new Set<string>();
 
@@ -150,216 +257,262 @@ export const NewTabModal: React.FC<NewTabModalProps> = ({
   };
 
   return (
-    <AppModal
-      isOpen={isOpen}
-      onClose={onClose}
-      size="3xl"
-      icon={<Table className="w-5 h-5" />}
-      iconTone="blue"
-      title="Создание новой вкладки (таблицы)"
-      subtitle="Настройте название, статус мастер-таблицы и зависимости от справочников"
-      footer={
-        <>
-          <AppButton variant="ghost" onClick={onClose}>
-            Отмена
-          </AppButton>
-          <AppButton
-            type="submit"
-            form={formId}
-            variant="primary"
-            size="md"
-            icon={<Check className="w-4 h-4" />}
-          >
-            Создать таблицу
-          </AppButton>
-        </>
-      }
-    >
-      <form id={formId} onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-5 text-xs">
-        {errorMsg && (
-          <StatusBanner variant="error" compact>
-            {errorMsg}
-          </StatusBanner>
-        )}
-
-        {/* Tab Name & Master Toggle */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <FormField label="Название таблицы:" required>
-            <AppInput
-              type="text"
-              value={tabName}
-              onChange={(e) => {
-                setTabName(e.target.value);
-                if (errorMsg) setErrorMsg('');
-              }}
-              placeholder="Например: Журнал выдачи СИЗ"
-              autoFocus
-            />
-          </FormField>
-
-          <div className="flex items-end">
-            <label
-              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border cursor-pointer transition-colors ${
-                isMaster
-                  ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-400 dark:border-amber-700 text-amber-900 dark:text-amber-200'
-                  : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'
-              }`}
-            >
-              <input
-                type="checkbox"
-                checked={isMaster}
-                onChange={(e) => setIsMaster(e.target.checked)}
-                className="rounded border-slate-300 text-amber-600 focus:ring-amber-500"
-              />
-              <Key className="w-4 h-4 text-amber-500 shrink-0" />
-              <div>
-                <div className="font-semibold">Сделать мастер-таблицей</div>
-                <div className="text-[10px] text-slate-500">Сможет отдавать столбцы другим таблицам</div>
-              </div>
-            </label>
-          </div>
-        </div>
-
-        {/* Dependencies Question if Master Tabs Exist */}
-        {masterTabs.length > 0 && (
-          <div className="p-4 bg-blue-50/60 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800/70 rounded-xl space-y-3">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div className="flex items-center gap-2 font-semibold text-blue-900 dark:text-blue-200">
-                <Link2 className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                <span>Есть ли зависимости от существующих мастер-таблиц?</span>
-              </div>
-
-              <div className="flex items-center gap-1.5 bg-white dark:bg-slate-900 p-0.5 rounded-lg border border-blue-200 dark:border-blue-800">
-                <AppButton
-                  variant={hasDependencies ? 'primary' : 'ghost'}
-                  size="xs"
-                  onClick={() => setHasDependencies(true)}
-                >
-                  Да, настроить связи
-                </AppButton>
-                <AppButton
-                  variant={!hasDependencies ? 'secondary' : 'ghost'}
-                  size="xs"
-                  onClick={() => setHasDependencies(false)}
-                  className={!hasDependencies ? '!bg-slate-700 !text-white !border-slate-700' : ''}
-                >
-                  Нет, независимая
-                </AppButton>
-              </div>
+    <>
+      <AppModal
+        isOpen={isOpen}
+        onClose={requestClose}
+        size="3xl"
+        icon={<Table className="w-5 h-5" />}
+        iconTone="blue"
+        title="Создание новой вкладки (таблицы)"
+        subtitle="Настройте название, статус мастер-таблицы и зависимости от справочников"
+        footer={
+          <div className="w-full flex flex-wrap items-center justify-between gap-3">
+            <div className="text-[11px] text-slate-500 dark:text-slate-400">
+              {isDirty ? (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 font-medium">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                  Есть несохранённые изменения черновика
+                </span>
+              ) : (
+                <span>Настройте столбцы и связи новой таблицы</span>
+              )}
             </div>
+            <div className="flex items-center gap-2">
+              <AppButton variant="secondary" size="md" onClick={requestClose}>
+                Отмена
+              </AppButton>
+              <AppButton
+                type="submit"
+                form={formId}
+                variant="primary"
+                size="md"
+                icon={<Check className="w-4 h-4" />}
+              >
+                Создать таблицу
+              </AppButton>
+            </div>
+          </div>
+        }
+      >
+        <form
+          id={formId}
+          noValidate
+          onSubmit={handleSubmit}
+          className="flex-1 overflow-y-auto p-6 space-y-5 text-xs"
+        >
+          {errorMsg && (
+            <StatusBanner variant="error" compact>
+              {errorMsg}
+            </StatusBanner>
+          )}
 
-            {hasDependencies && (
-              <div className="space-y-2.5 pt-1">
-                <p className="text-[11px] text-blue-800/80 dark:text-blue-300">
-                  Отметьте столбцы из мастер-таблиц — они будут добавлены в новую таблицу с <strong>такими же названиями</strong> и зависимыми выпадающими списками в ячейках:
-                </p>
+          {/* Tab Name & Master Toggle */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <FormField label="Название таблицы:" required error={tabNameError}>
+              <AppInput
+                type="text"
+                error={Boolean(tabNameError)}
+                value={tabName}
+                onChange={(e) => {
+                  setTabName(e.target.value);
+                  if (tabNameError) setTabNameError('');
+                  if (errorMsg) setErrorMsg('');
+                }}
+                placeholder="Например: Журнал выдачи СИЗ"
+                autoFocus
+              />
+            </FormField>
 
-                <div className="space-y-2.5 max-h-52 overflow-y-auto pr-1">
-                  {masterTabs.map((mTab) => (
-                    <div
-                      key={mTab.id}
-                      className="p-3 bg-white dark:bg-slate-900 rounded-lg border border-blue-200/80 dark:border-slate-700 space-y-2"
-                    >
-                      <div className="flex items-center gap-1.5 font-semibold text-slate-800 dark:text-slate-200">
-                        <Key className="w-3.5 h-3.5 text-amber-500" />
-                        <span>Мастер: «{mTab.name}»</span>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {mTab.columns.map((mCol) => {
-                          const checked = isLinkSelected(mTab.id, mCol.id);
-                          return (
-                            <label
-                              key={mCol.id}
-                              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] cursor-pointer transition-all select-none ${
-                                checked
-                                  ? 'bg-blue-600 text-white border-blue-600 font-medium shadow-xs'
-                                  : 'bg-slate-50 dark:bg-slate-800/50 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-blue-400'
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={() => toggleMasterLink(mTab.id, mCol.id)}
-                                className="hidden"
-                              />
-                              <Link2 className={`w-3 h-3 ${checked ? 'text-white' : 'text-slate-400'}`} />
-                              <span>{mCol.name}</span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
+            <div className="flex items-end">
+              <label
+                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border cursor-pointer transition-colors ${
+                  isMaster
+                    ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-400 dark:border-amber-700 text-amber-900 dark:text-amber-200'
+                    : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={isMaster}
+                  onChange={(e) => setIsMaster(e.target.checked)}
+                  className="rounded border-slate-300 text-amber-600 focus:ring-amber-500"
+                />
+                <Key className="w-4 h-4 text-amber-500 shrink-0" />
+                <div>
+                  <div className="font-semibold">Сделать мастер-таблицей</div>
+                  <div className="text-[10px] text-slate-500">Сможет отдавать столбцы другим таблицам</div>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          {/* Dependencies Question if Master Tabs Exist */}
+          {masterTabs.length > 0 && (
+            <div className="p-4 bg-blue-50/60 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800/70 rounded-xl space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex items-center gap-2 font-semibold text-blue-900 dark:text-blue-200">
+                  <Link2 className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                  <span>Есть ли зависимости от существующих мастер-таблиц?</span>
+                </div>
+
+                <div className="flex items-center gap-1.5 bg-white dark:bg-slate-900 p-0.5 rounded-lg border border-blue-200 dark:border-blue-800">
+                  <AppButton
+                    variant={hasDependencies ? 'primary' : 'ghost'}
+                    size="xs"
+                    onClick={() => setHasDependencies(true)}
+                  >
+                    Да, настроить связи
+                  </AppButton>
+                  <AppButton
+                    variant={!hasDependencies ? 'secondary' : 'ghost'}
+                    size="xs"
+                    onClick={() => setHasDependencies(false)}
+                    className={!hasDependencies ? '!bg-slate-700 !text-white !border-slate-700' : ''}
+                  >
+                    Нет, независимая
+                  </AppButton>
                 </div>
               </div>
-            )}
-          </div>
-        )}
 
-        {/* Extra Own Columns */}
-        <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
-          <h3 className="font-semibold text-slate-800 dark:text-slate-200">
-            Дополнительные столбцы таблицы:
-          </h3>
+              {hasDependencies && (
+                <div className="space-y-2.5 pt-1">
+                  <p className="text-[11px] text-blue-800/80 dark:text-blue-300">
+                    Отметьте столбцы из мастер-таблиц — они будут добавлены в новую таблицу с <strong>такими же названиями</strong> и зависимыми выпадающими списками в ячейках:
+                  </p>
 
-          <div className="flex flex-wrap gap-2">
-            {extraCols.map((col) => (
-              <div
-                key={col.id}
-                className="flex items-center gap-1.5 px-2.5 py-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md"
-              >
-                <span className="font-medium text-slate-800 dark:text-slate-200">{col.name}</span>
-                <span className="text-[10px] text-slate-400 font-mono">({col.type})</span>
-                <button
-                  type="button"
-                  onClick={() => setExtraCols((prev) => prev.filter((c) => c.id !== col.id))}
-                  className="text-slate-400 hover:text-red-500 ml-1 cursor-pointer"
-                  title="Убрать столбец"
+                  <div className="space-y-2.5 max-h-52 overflow-y-auto pr-1">
+                    {masterTabs.map((mTab) => (
+                      <div
+                        key={mTab.id}
+                        className="p-3 bg-white dark:bg-slate-900 rounded-lg border border-blue-200/80 dark:border-slate-700 space-y-2"
+                      >
+                        <div className="flex items-center gap-1.5 font-semibold text-slate-800 dark:text-slate-200">
+                          <Key className="w-3.5 h-3.5 text-amber-500" />
+                          <span>Мастер: «{mTab.name}»</span>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {mTab.columns.map((mCol) => {
+                            const checked = isLinkSelected(mTab.id, mCol.id);
+                            return (
+                              <label
+                                key={mCol.id}
+                                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] cursor-pointer transition-all select-none ${
+                                  checked
+                                    ? 'bg-blue-600 text-white border-blue-600 font-medium shadow-xs'
+                                    : 'bg-slate-50 dark:bg-slate-800/50 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-blue-400'
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => toggleMasterLink(mTab.id, mCol.id)}
+                                  className="hidden"
+                                />
+                                <Link2 className={`w-3 h-3 ${checked ? 'text-white' : 'text-slate-400'}`} />
+                                <span>{mCol.name}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Extra Own Columns */}
+          <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
+            <h3 className="font-semibold text-slate-800 dark:text-slate-200">
+              Дополнительные столбцы таблицы:
+            </h3>
+
+            <div className="flex flex-wrap gap-2">
+              {extraCols.map((col) => (
+                <div
+                  key={col.id}
+                  className="flex items-center gap-1.5 px-2.5 py-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md"
                 >
-                  <Trash2 className="w-3 h-3" />
-                </button>
-              </div>
-            ))}
-          </div>
+                  <span className="font-medium text-slate-800 dark:text-slate-200">{col.name}</span>
+                  <span className="text-[10px] text-slate-400 font-mono">({col.type})</span>
+                  <button
+                    type="button"
+                    onClick={() => setExtraCols((prev) => prev.filter((c) => c.id !== col.id))}
+                    className="text-slate-400 hover:text-red-500 ml-1 cursor-pointer"
+                    title="Убрать столбец"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
 
-          <div className="flex items-center gap-2 pt-1">
-            <AppInput
-              type="text"
-              compact
-              value={newExtraName}
-              onChange={(e) => setNewExtraName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  handleAddExtraCol();
-                }
-              }}
-              placeholder="Название своего столбца..."
-              className="flex-1"
-            />
-            <AppSelect
-              compact
-              value={newExtraType}
-              onChange={(e) => setNewExtraType(e.target.value as ColumnType)}
-              className="w-auto"
-            >
-              <option value="text">Текст</option>
-              <option value="number">Число</option>
-              <option value="date">Дата</option>
-              <option value="boolean">Да / Нет</option>
-            </AppSelect>
-            <AppButton
-              variant="secondary"
-              size="sm"
-              onClick={handleAddExtraCol}
-              disabled={!newExtraName.trim()}
-              icon={<Plus className="w-3.5 h-3.5" />}
-            >
-              Добавить
-            </AppButton>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 pt-1">
+                <AppInput
+                  type="text"
+                  compact
+                  error={Boolean(extraColError)}
+                  value={newExtraName}
+                  onChange={(e) => {
+                    setNewExtraName(e.target.value);
+                    if (extraColError) setExtraColError('');
+                    if (errorMsg) setErrorMsg('');
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleAddExtraCol();
+                    }
+                  }}
+                  placeholder="Название своего столбца..."
+                  className="flex-1"
+                />
+                <AppSelect
+                  compact
+                  value={newExtraType}
+                  onChange={(e) => setNewExtraType(e.target.value as ColumnType)}
+                  className="w-auto"
+                >
+                  <option value="text">Текст</option>
+                  <option value="number">Число</option>
+                  <option value="date">Дата</option>
+                  <option value="boolean">Да / Нет</option>
+                  <option value="link">Ссылка (URL)</option>
+                </AppSelect>
+                <AppButton
+                  variant="secondary"
+                  size="sm"
+                  onClick={handleAddExtraCol}
+                  disabled={!newExtraName.trim()}
+                  icon={<Plus className="w-3.5 h-3.5" />}
+                >
+                  Добавить
+                </AppButton>
+              </div>
+              {extraColError && (
+                <p className="text-[11px] text-red-600 dark:text-red-400">{extraColError}</p>
+              )}
+            </div>
           </div>
-        </div>
-      </form>
-    </AppModal>
+        </form>
+      </AppModal>
+
+      <ConfirmDialog
+        isOpen={pendingDiscardConfirm}
+        danger
+        title="Отменить создание таблицы?"
+        description="В настройках новой таблицы есть несохранённые изменения. Закрыть окно без создания?"
+        confirmLabel="Закрыть без создания"
+        cancelLabel="Вернуться"
+        onConfirm={() => {
+          setPendingDiscardConfirm(false);
+          onClose();
+        }}
+        onCancel={() => setPendingDiscardConfirm(false)}
+      />
+    </>
   );
 };

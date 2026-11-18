@@ -384,4 +384,32 @@ describe('storageService', () => {
       expect(normalizedAuto.settings.tabBarMode).toBe('auto');
     });
   });
+
+  describe('T-31: AppSettings rowDensity and pageSize normalization', () => {
+    it('defaults missing or invalid rowDensity/pageSize and preserves valid values', () => {
+      const legacy = JSON.parse(JSON.stringify(INITIAL_DATABASE_STATE));
+      delete legacy.settings.rowDensity;
+      delete legacy.settings.pageSize;
+
+      const normalizedDefault = normalizeDatabaseState(legacy);
+      expect(normalizedDefault.settings.rowDensity).toBe('compact');
+      expect(normalizedDefault.settings.pageSize).toBe(100);
+
+      for (const pageSize of [50, 100, 250, 500]) {
+        const normalizedValid = normalizeDatabaseState({
+          ...legacy,
+          settings: { ...legacy.settings, rowDensity: 'normal', pageSize }
+        });
+        expect(normalizedValid.settings.rowDensity).toBe('normal');
+        expect(normalizedValid.settings.pageSize).toBe(pageSize);
+      }
+
+      const normalizedInvalid = normalizeDatabaseState({
+        ...legacy,
+        settings: { ...legacy.settings, rowDensity: 'huge', pageSize: 999 }
+      });
+      expect(normalizedInvalid.settings.rowDensity).toBe('compact');
+      expect(normalizedInvalid.settings.pageSize).toBe(100);
+    });
+  });
 });

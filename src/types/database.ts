@@ -143,6 +143,7 @@ export interface LegalEntity {
 }
 
 export type TabBarMode = 'single' | 'auto';
+export type GridRowDensity = 'compact' | 'normal';
 
 export interface AppSettings {
   databaseDirectory: string;
@@ -150,6 +151,8 @@ export interface AppSettings {
   theme: 'light' | 'dark';
   autoSave: boolean;
   tabBarMode?: TabBarMode;
+  rowDensity?: GridRowDensity;
+  pageSize?: number;
   lastBackupDate?: string;
 }
 

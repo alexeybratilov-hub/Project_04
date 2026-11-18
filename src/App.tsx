@@ -1076,6 +1076,20 @@ export default function App() {
           onSelectedRowIdsChange={setSelectedRowIds}
           focusSearchSignal={focusSearchSignal}
           deleteSelectedSignal={deleteSelectedSignal}
+          rowDensity={dbState.settings.rowDensity || 'compact'}
+          onChangeRowDensity={(rowDensity) =>
+            updateDbState((p) => ({
+              ...p,
+              settings: { ...p.settings, rowDensity }
+            }))
+          }
+          pageSize={dbState.settings.pageSize || 100}
+          onChangePageSize={(pageSize) =>
+            updateDbState((p) => ({
+              ...p,
+              settings: { ...p.settings, pageSize }
+            }))
+          }
           onAddRow={handleAddRow}
           onInsertBulkRows={handleInsertBulkRows}
           onUpdateCell={handleUpdateCell}

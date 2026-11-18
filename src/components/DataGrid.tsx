@@ -4,13 +4,40 @@ import {
   Trash2, Link2, ExternalLink, ArrowUpDown, ArrowUp,
   ArrowDown, Check, BookOpen, FileText, Cpu,
   Columns, CheckSquare, Square, X, Edit2,
-  AlertCircle, ChevronDown, ChevronLeft, ChevronRight, Rows3
+  AlertCircle, ChevronDown, ChevronLeft, ChevronRight, Rows3,
+  Maximize2, Copy
 } from 'lucide-react';
-import { Column, ColumnType, Row, Tab } from '../types/database';
+import { Column, ColumnType, GridRowDensity, Row, Tab } from '../types/database';
 import { ImportHintCard } from './ImportHintCard';
-import { ConfirmDialog, Z_INDEX } from './ui';
+import { AppButton, AppModal, ConfirmDialog, Z_INDEX } from './ui';
 import { excelService, ValidationDiscrepancy } from '../services/excelService';
 import { createUniqueId } from '../services/integrityService';
+
+function isLongCellValue(val: unknown): boolean {
+  if (val === undefined || val === null) return false;
+  const s = String(val);
+  return s.length > 100 || s.includes('\n');
+}
+
+function formatSafeHref(raw: unknown): string | null {
+  const s = String(raw ?? '').trim();
+  if (!s) return null;
+  const lower = s.toLowerCase();
+  if (
+    lower.startsWith('javascript:') ||
+    lower.startsWith('data:') ||
+    lower.startsWith('vbscript:')
+  ) {
+    return null;
+  }
+  if (/^(https?:\/\/|mailto:|tel:)/i.test(s)) {
+    return s;
+  }
+  if (/^[^\s]+\.[a-zа-яё0-9]{2,}(\/[^\s]*)?$/i.test(s) && !s.includes('\\')) {
+    return `https://${s}`;
+  }
+  return null;
+}
 
 interface DataGridProps {
   currentTab: Tab;
@@ -21,6 +48,10 @@ interface DataGridProps {
   onSelectedRowIdsChange?: (ids: Set<string>) => void;
   focusSearchSignal?: number;
   deleteSelectedSignal?: number;
+  rowDensity?: GridRowDensity;
+  onChangeRowDensity?: (density: GridRowDensity) => void;
+  pageSize?: number;
+  onChangePageSize?: (size: number) => void;
   onAddRow: () => void;
   onInsertBulkRows?: (rows: Row[], insertIndex?: number) => void;
   onUpdateCell: (rowId: string, columnId: string, value: any) => void;
@@ -53,6 +84,15 @@ interface CascadeConflictState {
   patch: Record<string, any>;
 }
 
+interface ViewingCellState {
+  rowId: string;
+  colId: string;
+  colName: string;
+  colType: ColumnType;
+  rowIndex: number;
+  value: string;
+}
+
 export const DataGrid: React.FC<DataGridProps> = ({
   currentTab,
   allTabs,
@@ -62,6 +102,10 @@ export const DataGrid: React.FC<DataGridProps> = ({
   onSelectedRowIdsChange,
   focusSearchSignal,
   deleteSelectedSignal,
+  rowDensity: controlledRowDensity,
+  onChangeRowDensity,
+  pageSize: controlledPageSize,
+  onChangePageSize,
   onAddRow,
   onInsertBulkRows,
   onUpdateCell,
@@ -98,9 +142,31 @@ export const DataGrid: React.FC<DataGridProps> = ({
   const [draftValue, setDraftValue] = useState<any>('');
   const escapeCancelRef = useRef(false);
 
-  // View density & Pagination for 5000+ rows
-  const [rowDensity, setRowDensity] = useState<'compact' | 'normal'>('compact');
-  const [pageSize, setPageSize] = useState<number>(100);
+  // Full long-cell viewer modal
+  const [viewingCell, setViewingCell] = useState<ViewingCellState | null>(null);
+  const [copiedFullCell, setCopiedFullCell] = useState(false);
+
+  // View density & Pagination (controlled via AppSettings with internal fallback)
+  const [internalRowDensity, setInternalRowDensity] = useState<GridRowDensity>('compact');
+  const rowDensity = controlledRowDensity ?? internalRowDensity;
+  const updateRowDensity = (next: GridRowDensity) => {
+    if (onChangeRowDensity) {
+      onChangeRowDensity(next);
+    } else {
+      setInternalRowDensity(next);
+    }
+  };
+
+  const [internalPageSize, setInternalPageSize] = useState<number>(100);
+  const pageSize = controlledPageSize ?? internalPageSize;
+  const updatePageSize = (next: number) => {
+    if (onChangePageSize) {
+      onChangePageSize(next);
+    } else {
+      setInternalPageSize(next);
+    }
+  };
+
   const [currentPage, setCurrentPage] = useState<number>(1);
 
   // Search ref for Ctrl+F focus
@@ -116,10 +182,13 @@ export const DataGrid: React.FC<DataGridProps> = ({
   const [renamingColId, setRenamingColId] = useState<string | null>(null);
   const [renamingColVal, setRenamingColVal] = useState('');
 
-  // Column Width Resize Drag state
+  // Column Width Resize Drag state (ref-backed to avoid listener churn and stale closures)
   const [resizingColId, setResizingColId] = useState<string | null>(null);
   const [previewWidths, setPreviewWidths] = useState<Record<string, number>>({});
   const resizeStartRef = useRef<{ startX: number; startWidth: number }>({ startX: 0, startWidth: 180 });
+  const latestResizeWidthRef = useRef<number | null>(null);
+  const onUpdateColumnRef = useRef(onUpdateColumn);
+  onUpdateColumnRef.current = onUpdateColumn;
 
   // Non-blocking row delete & cascade conflict confirmations
   const [confirmDeleteBulk, setConfirmDeleteBulk] = useState(false);
@@ -140,6 +209,8 @@ export const DataGrid: React.FC<DataGridProps> = ({
     setConfirmDeleteRowId(null);
     setRenamingColId(null);
     setEditingCell(null);
+    setViewingCell(null);
+    setCopiedFullCell(false);
     setIsQuickAddOpen(false);
     setCascadeConflict(null);
     setActiveCellAnchor(null);
@@ -242,34 +313,50 @@ export const DataGrid: React.FC<DataGridProps> = ({
   useEffect(() => {
     if (!resizingColId) return;
 
-    const handleMouseMove = (e: MouseEvent) => {
-      const delta = e.clientX - resizeStartRef.current.startX;
-      const nextWidth = Math.max(70, Math.min(800, resizeStartRef.current.startWidth + delta));
-      setPreviewWidths((prev) => ({ ...prev, [resizingColId]: nextWidth }));
-    };
+    const prevCursor = document.body.style.cursor;
+    const prevUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
 
-    const handleMouseUp = () => {
-      const finalWidth = previewWidths[resizingColId];
-      if (finalWidth !== undefined && onUpdateColumn) {
-        onUpdateColumn(resizingColId, { width: finalWidth });
+    const finishResize = () => {
+      const finalWidth = latestResizeWidthRef.current;
+      if (
+        finalWidth !== null &&
+        finalWidth !== resizeStartRef.current.startWidth &&
+        onUpdateColumnRef.current
+      ) {
+        onUpdateColumnRef.current(resizingColId, { width: finalWidth });
       }
+      latestResizeWidthRef.current = null;
       setResizingColId(null);
       setPreviewWidths({});
     };
 
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
+    const handleMouseMove = (e: MouseEvent) => {
+      const delta = e.clientX - resizeStartRef.current.startX;
+      const nextWidth = Math.max(60, Math.min(800, Math.round(resizeStartRef.current.startWidth + delta)));
+      latestResizeWidthRef.current = nextWidth;
+      setPreviewWidths({ [resizingColId]: nextWidth });
     };
-  }, [resizingColId, previewWidths, onUpdateColumn]);
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', finishResize);
+    window.addEventListener('blur', finishResize);
+    return () => {
+      document.body.style.cursor = prevCursor;
+      document.body.style.userSelect = prevUserSelect;
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', finishResize);
+      window.removeEventListener('blur', finishResize);
+    };
+  }, [resizingColId]);
 
   const startResizeColumn = (e: React.MouseEvent, column: Column) => {
     e.preventDefault();
     e.stopPropagation();
     const curWidth = column.width || 180;
     resizeStartRef.current = { startX: e.clientX, startWidth: curWidth };
+    latestResizeWidthRef.current = curWidth;
     setResizingColId(column.id);
     setPreviewWidths({ [column.id]: curWidth });
   };
@@ -726,7 +813,7 @@ export const DataGrid: React.FC<DataGridProps> = ({
 
           <button
             type="button"
-            onClick={() => setRowDensity((d) => (d === 'compact' ? 'normal' : 'compact'))}
+            onClick={() => updateRowDensity(rowDensity === 'compact' ? 'normal' : 'compact')}
             className="flex items-center gap-1.5 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg text-xs font-medium transition-colors whitespace-nowrap cursor-pointer"
             title={rowDensity === 'compact' ? 'Плотность строк: Компактно (нажмите для обычной)' : 'Плотность строк: Обычная (нажмите для компактной)'}
           >
@@ -1064,6 +1151,7 @@ export const DataGrid: React.FC<DataGridProps> = ({
                               <option value="date">Дата</option>
                               <option value="select">Выпадающий список</option>
                               <option value="boolean">Да / Нет (флаг)</option>
+                              <option value="link">Ссылка (URL)</option>
                               <option value="relation">Связь со справочником</option>
                             </select>
                           </div>
@@ -1094,8 +1182,8 @@ export const DataGrid: React.FC<DataGridProps> = ({
                     )}
                   </th>
 
-                  {/* Row Action Header */}
-                  <th className="w-[82px] px-1.5 py-1.5 text-center text-slate-400 align-middle">Действ.</th>
+                  {/* Sticky Row Action Header */}
+                  <th className="sticky right-0 z-30 bg-slate-100 dark:bg-slate-800 w-[82px] px-1.5 py-1.5 text-center text-slate-400 border-l border-slate-200 dark:border-slate-700/80 shadow-[-4px_0_8px_-4px_rgba(15,23,42,0.12)] align-middle">Действ.</th>
                 </tr>
               </thead>
 
@@ -1104,9 +1192,9 @@ export const DataGrid: React.FC<DataGridProps> = ({
                 {visibleRows.length === 0 ? (
                   <>
                     {!searchQuery && currentTab.columns.some((c) => c.name.trim().length > 0) && (
-                      <tr className="bg-blue-50/35 dark:bg-blue-950/15">
-                        <td className="sticky left-0 z-10 bg-blue-50/35 dark:bg-slate-900 w-[34px] px-1.5 py-2 text-center border-r border-slate-200/60 dark:border-slate-800/80"></td>
-                        <td className="sticky left-[34px] z-10 bg-blue-50/35 dark:bg-slate-900 w-[38px] px-1 py-2 text-center font-mono text-[11px] text-blue-600 dark:text-blue-400 border-r border-slate-200/60 dark:border-slate-800/80">
+                      <tr className="bg-blue-50/40 dark:bg-blue-950/15">
+                        <td className="sticky left-0 z-10 bg-blue-50 dark:bg-slate-900 w-[34px] px-1.5 py-2 text-center border-r border-slate-200/60 dark:border-slate-800/80"></td>
+                        <td className="sticky left-[34px] z-10 bg-blue-50 dark:bg-slate-900 w-[38px] px-1 py-2 text-center font-mono text-[11px] text-blue-600 dark:text-blue-400 border-r border-slate-200/60 dark:border-slate-800/80">
                           +
                         </td>
                         {currentTab.columns.map((column) => {
@@ -1137,7 +1225,7 @@ export const DataGrid: React.FC<DataGridProps> = ({
                           );
                         })}
                         <td className="w-[34px] border-r border-slate-200/60 dark:border-slate-800/80"></td>
-                        <td className="w-[82px]"></td>
+                        <td className="sticky right-0 z-10 bg-blue-50 dark:bg-slate-900 w-[82px] border-l border-slate-200/60 dark:border-slate-800/80"></td>
                       </tr>
                     )}
                     <tr>
@@ -1299,276 +1387,402 @@ export const DataGrid: React.FC<DataGridProps> = ({
                                     )}
                                   </select>
                                 ) : (
-                                  <div className="flex items-start gap-1 w-full min-h-[20px]">
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setAnchorForRowCell(row.id, column);
-                                        setEditingCell({ rowId: row.id, colId: column.id });
-                                      }}
-                                      className="flex-1 min-w-0 text-left py-0.5 pr-1 flex items-start justify-between gap-1 rounded hover:bg-blue-50/70 dark:hover:bg-slate-800/70 focus:outline-hidden focus:ring-1 focus:ring-blue-500 transition-colors cursor-pointer"
-                                      title={
-                                        !relationValid
-                                          ? `Значение «${String(value)}» не найдено в мастере. Нажмите для выбора актуального.`
-                                          : 'Нажмите для выбора значения или Ctrl+V для вставки из Excel'
-                                      }
-                                    >
-                                      <span
-                                        className={`line-clamp-4 whitespace-normal break-words [overflow-wrap:anywhere] leading-[1.35] text-[12px] ${
+                                    <div className="flex items-start gap-1 w-full min-h-[20px]">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setAnchorForRowCell(row.id, column);
+                                          setEditingCell({ rowId: row.id, colId: column.id });
+                                        }}
+                                        className="flex-1 min-w-0 text-left py-0.5 pr-1 flex items-start justify-between gap-1 rounded hover:bg-blue-50/70 dark:hover:bg-slate-800/70 focus:outline-hidden focus:ring-1 focus:ring-blue-500 transition-colors cursor-pointer"
+                                        title={
                                           !relationValid
-                                            ? 'font-medium text-amber-700 dark:text-amber-300'
-                                            : value
-                                              ? 'font-medium text-slate-800 dark:text-slate-200'
-                                              : 'text-slate-400 italic'
-                                        }`}
+                                            ? `Значение «${String(value)}» не найдено в мастере. Нажмите для выбора актуального.`
+                                            : 'Нажмите для выбора значения или Ctrl+V для вставки из Excel'
+                                        }
                                       >
-                                        {value ? String(value) : '(выбрать)'}
-                                      </span>
-                                      <ChevronDown className="w-3 h-3 text-slate-400 shrink-0 mt-0.5" />
-                                    </button>
+                                        <span
+                                          className={`line-clamp-4 whitespace-normal break-words [overflow-wrap:anywhere] leading-[1.35] text-[12px] ${
+                                            !relationValid
+                                              ? 'font-medium text-amber-700 dark:text-amber-300'
+                                              : value
+                                                ? 'font-medium text-slate-800 dark:text-slate-200'
+                                                : 'text-slate-400 italic'
+                                          }`}
+                                        >
+                                          {value ? String(value) : '(выбрать)'}
+                                        </span>
+                                        <ChevronDown className="w-3 h-3 text-slate-400 shrink-0 mt-0.5" />
+                                      </button>
 
+                                      {isLongCellValue(value) && (
+                                        <button
+                                          type="button"
+                                          title="Открыть содержимое ячейки целиком"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setAnchorForRowCell(row.id, column);
+                                            setCopiedFullCell(false);
+                                            setViewingCell({
+                                              rowId: row.id,
+                                              colId: column.id,
+                                              colName: column.name,
+                                              colType: column.type,
+                                              rowIndex,
+                                              value: String(value ?? '')
+                                            });
+                                          }}
+                                          className="p-0.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded transition-colors shrink-0 mt-0.5 cursor-pointer opacity-70 hover:opacity-100"
+                                        >
+                                          <Maximize2 className="w-3 h-3" />
+                                        </button>
+                                      )}
+
+                                      <button
+                                        type="button"
+                                        title="Перейти к записи в мастер-таблице"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          onAttemptEditRelation(column, row);
+                                        }}
+                                        className="p-0.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded transition-colors shrink-0 mt-0.5 cursor-pointer opacity-70 hover:opacity-100"
+                                      >
+                                        <ExternalLink className="w-3 h-3" />
+                                      </button>
+                                    </div>
+                                  )
+                                ) : isEditing ? (
+                                  column.type === 'select' ? (
+                                    <select
+                                      autoFocus
+                                      value={value ?? ''}
+                                      onChange={(e) => {
+                                        onUpdateCell(row.id, column.id, e.target.value);
+                                        setEditingCell(null);
+                                      }}
+                                      onBlur={() => setEditingCell(null)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Escape') setEditingCell(null);
+                                      }}
+                                      className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-xs focus:outline-hidden"
+                                    >
+                                      <option value="">(Пусто)</option>
+                                      {(column.options || []).map((opt) => (
+                                        <option key={opt} value={opt}>{opt}</option>
+                                      ))}
+                                    </select>
+                                  ) : column.type === 'date' ? (
+                                    <input
+                                      type="date"
+                                      autoFocus
+                                      value={draftValue ?? ''}
+                                      onChange={(e) => setDraftValue(e.target.value)}
+                                      onPaste={(e) => handleCellTextareaPaste(e, row, column)}
+                                      onBlur={() => commitInlineEdit(row.id, column)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') commitInlineEdit(row.id, column);
+                                        if (e.key === 'Escape') cancelInlineEdit();
+                                      }}
+                                      className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-xs font-mono tabular-nums focus:outline-hidden"
+                                    />
+                                  ) : column.type === 'number' ? (
+                                    <input
+                                      type="number"
+                                      autoFocus
+                                      value={draftValue ?? ''}
+                                      onChange={(e) => setDraftValue(e.target.value)}
+                                      onPaste={(e) => handleCellTextareaPaste(e, row, column)}
+                                      onBlur={() => commitInlineEdit(row.id, column)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') commitInlineEdit(row.id, column);
+                                        if (e.key === 'Escape') cancelInlineEdit();
+                                      }}
+                                      className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-xs font-mono tabular-nums focus:outline-hidden"
+                                    />
+                                  ) : column.type === 'link' ? (
+                                    <input
+                                      type="text"
+                                      autoFocus
+                                      placeholder="https://..."
+                                      value={draftValue ?? ''}
+                                      onChange={(e) => setDraftValue(e.target.value)}
+                                      onPaste={(e) => handleCellTextareaPaste(e, row, column)}
+                                      onBlur={() => commitInlineEdit(row.id, column)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                          e.preventDefault();
+                                          commitInlineEdit(row.id, column);
+                                        } else if (e.key === 'Escape') {
+                                          e.preventDefault();
+                                          cancelInlineEdit();
+                                        }
+                                      }}
+                                      className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-[12px] text-blue-700 dark:text-blue-300 focus:outline-hidden"
+                                    />
+                                  ) : (
+                                    <textarea
+                                      autoFocus
+                                      rows={Math.min(6, Math.max(2, String(draftValue ?? '').split('\n').length))}
+                                      value={draftValue ?? ''}
+                                      onChange={(e) => setDraftValue(e.target.value)}
+                                      onPaste={(e) => handleCellTextareaPaste(e, row, column)}
+                                      onBlur={() => commitInlineEdit(row.id, column)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && !e.shiftKey) {
+                                          e.preventDefault();
+                                          commitInlineEdit(row.id, column);
+                                        } else if (e.key === 'Escape') {
+                                          e.preventDefault();
+                                          cancelInlineEdit();
+                                        }
+                                      }}
+                                      className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-[12px] leading-[1.35] resize-y focus:outline-hidden"
+                                    />
+                                  )
+                                ) : column.type === 'boolean' ? (
+                                  /* SAFE BOOLEAN CELL: clicking empty cell only anchors Ctrl+V; only clicking the toggle button switches value */
+                                  <div className="min-h-[20px] py-0.5 flex items-center">
                                     <button
                                       type="button"
-                                      title="Перейти к записи в мастер-таблице"
+                                      role="switch"
+                                      aria-checked={Boolean(value)}
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        onAttemptEditRelation(column, row);
+                                        setAnchorForRowCell(row.id, column);
+                                        onUpdateCell(row.id, column.id, !Boolean(value));
                                       }}
-                                      className="p-0.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded transition-colors shrink-0 mt-0.5 cursor-pointer opacity-70 hover:opacity-100"
-                                    >
-                                      <ExternalLink className="w-3 h-3" />
-                                    </button>
-                                  </div>
-                                )
-                              ) : isEditing ? (
-                                column.type === 'select' ? (
-                                  <select
-                                    autoFocus
-                                    value={value ?? ''}
-                                    onChange={(e) => {
-                                      onUpdateCell(row.id, column.id, e.target.value);
-                                      setEditingCell(null);
-                                    }}
-                                    onBlur={() => setEditingCell(null)}
-                                    onKeyDown={(e) => {
-                                      if (e.key === 'Escape') setEditingCell(null);
-                                    }}
-                                    className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-xs focus:outline-hidden"
-                                  >
-                                    <option value="">(Пусто)</option>
-                                    {(column.options || []).map((opt) => (
-                                      <option key={opt} value={opt}>{opt}</option>
-                                    ))}
-                                  </select>
-                                ) : column.type === 'date' ? (
-                                  <input
-                                    type="date"
-                                    autoFocus
-                                    value={draftValue ?? ''}
-                                    onChange={(e) => setDraftValue(e.target.value)}
-                                    onPaste={(e) => handleCellTextareaPaste(e, row, column)}
-                                    onBlur={() => commitInlineEdit(row.id, column)}
-                                    onKeyDown={(e) => {
-                                      if (e.key === 'Enter') commitInlineEdit(row.id, column);
-                                      if (e.key === 'Escape') cancelInlineEdit();
-                                    }}
-                                    className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-xs font-mono tabular-nums focus:outline-hidden"
-                                  />
-                                ) : column.type === 'number' ? (
-                                  <input
-                                    type="number"
-                                    autoFocus
-                                    value={draftValue ?? ''}
-                                    onChange={(e) => setDraftValue(e.target.value)}
-                                    onPaste={(e) => handleCellTextareaPaste(e, row, column)}
-                                    onBlur={() => commitInlineEdit(row.id, column)}
-                                    onKeyDown={(e) => {
-                                      if (e.key === 'Enter') commitInlineEdit(row.id, column);
-                                      if (e.key === 'Escape') cancelInlineEdit();
-                                    }}
-                                    className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-xs font-mono tabular-nums focus:outline-hidden"
-                                  />
-                                ) : column.type === 'boolean' ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      onUpdateCell(row.id, column.id, !value);
-                                      setEditingCell(null);
-                                    }}
-                                    className="px-2 py-0.5 rounded bg-blue-600 text-white text-xs"
-                                  >
-                                    {value ? 'Да' : 'Нет'}
-                                  </button>
-                                ) : (
-                                  <textarea
-                                    autoFocus
-                                    rows={2}
-                                    value={draftValue ?? ''}
-                                    onChange={(e) => setDraftValue(e.target.value)}
-                                    onPaste={(e) => handleCellTextareaPaste(e, row, column)}
-                                    onBlur={() => commitInlineEdit(row.id, column)}
-                                    onKeyDown={(e) => {
-                                      if (e.key === 'Enter' && !e.shiftKey) {
-                                        e.preventDefault();
-                                        commitInlineEdit(row.id, column);
-                                      } else if (e.key === 'Escape') {
-                                        e.preventDefault();
-                                        cancelInlineEdit();
-                                      }
-                                    }}
-                                    className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-[12px] leading-[1.35] resize-y focus:outline-hidden"
-                                  />
-                                )
-                              ) : (
-                                /* DISPLAY VALUE */
-                                <div
-                                  onClick={() => {
-                                    setAnchorForRowCell(row.id, column);
-                                    if (column.type === 'boolean') {
-                                      onUpdateCell(row.id, column.id, !value);
-                                    } else {
-                                      beginInlineEdit(row, column);
-                                    }
-                                  }}
-                                  className="min-h-[20px] py-0.5 cursor-text whitespace-normal break-words [overflow-wrap:anywhere] leading-[1.35] text-[12px]"
-                                  title={
-                                    column.type === 'boolean'
-                                      ? 'Клик для переключения'
-                                      : value
-                                        ? `${String(value)} (клик — редактировать, Ctrl+V — вставить строки из Excel ниже)`
-                                        : 'Клик — редактировать или Ctrl+V для вставки из Excel'
-                                  }
-                                >
-                                  {column.type === 'boolean' ? (
-                                    <span
-                                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-semibold cursor-pointer ${
+                                      title="Нажмите на переключатель, чтобы изменить «Да / Нет»"
+                                      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded border text-[11px] font-semibold transition-colors cursor-pointer focus:outline-hidden focus:ring-2 focus:ring-blue-500/40 ${
                                         value
-                                          ? 'bg-emerald-100/80 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
-                                          : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                                          ? 'bg-emerald-100/80 border-emerald-300/80 text-emerald-800 hover:bg-emerald-200/70 dark:bg-emerald-950/60 dark:border-emerald-800 dark:text-emerald-300'
+                                          : 'bg-slate-100 border-slate-200 text-slate-600 hover:bg-slate-200/80 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300'
                                       }`}
                                     >
-                                      {value ? <Check className="w-3 h-3" /> : null}
-                                      {value ? 'Да' : 'Нет'}
-                                    </span>
-                                  ) : column.type === 'number' ? (
-                                    <span className="font-mono tabular-nums">
-                                      {value !== undefined && value !== null && value !== ''
-                                        ? Number(value).toLocaleString('ru-RU')
-                                        : '—'}
-                                    </span>
-                                  ) : column.type === 'date' ? (
-                                    <span className="font-mono tabular-nums text-slate-700 dark:text-slate-300">
-                                      {value || '—'}
-                                    </span>
-                                  ) : (
-                                    <span className="line-clamp-4 whitespace-normal break-words [overflow-wrap:anywhere]">
-                                      {value !== undefined && value !== null && value !== '' ? String(value) : '—'}
-                                    </span>
-                                  )}
-                                </div>
-                              )}
-                            </td>
-                          );
-                        })}
+                                      {value ? (
+                                        <CheckSquare className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                      ) : (
+                                        <Square className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                      )}
+                                      <span>{value ? 'Да' : 'Нет'}</span>
+                                    </button>
+                                  </div>
+                                ) : column.type === 'link' ? (
+                                  /* LINK CELL: clickable safe URL + explicit edit button */
+                                  (() => {
+                                    const safeHref = formatSafeHref(value);
+                                    const strVal = value !== undefined && value !== null ? String(value).trim() : '';
+                                    if (!strVal) {
+                                      return (
+                                        <div
+                                          onClick={() => {
+                                            setAnchorForRowCell(row.id, column);
+                                            beginInlineEdit(row, column);
+                                          }}
+                                          className="min-h-[20px] py-0.5 cursor-text text-[12px] text-slate-400"
+                                          title="Клик — ввести ссылку (URL)"
+                                        >
+                                          —
+                                        </div>
+                                      );
+                                    }
+                                    return (
+                                      <div
+                                        onClick={() => {
+                                          setAnchorForRowCell(row.id, column);
+                                          beginInlineEdit(row, column);
+                                        }}
+                                        className="group/cell flex items-start justify-between gap-1 min-h-[20px] py-0.5 text-[12px] leading-[1.35] cursor-text"
+                                        title="Клик по ссылке открывает адрес, клик по карандашу или полю — редактировать"
+                                      >
+                                        {safeHref ? (
+                                          <a
+                                            href={safeHref}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            onClick={(e) => e.stopPropagation()}
+                                            className="inline-flex items-start gap-1 text-blue-600 dark:text-blue-400 hover:underline break-all min-w-0"
+                                            title={`Открыть ссылку: ${safeHref}`}
+                                          >
+                                            <span className="line-clamp-3 break-all">{strVal}</span>
+                                            <ExternalLink className="w-3 h-3 shrink-0 mt-0.5" />
+                                          </a>
+                                        ) : (
+                                          <span className="line-clamp-3 whitespace-normal break-words [overflow-wrap:anywhere] text-slate-700 dark:text-slate-300">
+                                            {strVal}
+                                          </span>
+                                        )}
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setAnchorForRowCell(row.id, column);
+                                            beginInlineEdit(row, column);
+                                          }}
+                                          className="opacity-0 group-hover/cell:opacity-100 focus:opacity-100 p-0.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded shrink-0 cursor-pointer transition-opacity"
+                                          title="Редактировать ссылку"
+                                        >
+                                          <Edit2 className="w-3 h-3" />
+                                        </button>
+                                      </div>
+                                    );
+                                  })()
+                                ) : (
+                                  /* DISPLAY VALUE (text, number, date, select) */
+                                  <div
+                                    onClick={() => {
+                                      setAnchorForRowCell(row.id, column);
+                                      beginInlineEdit(row, column);
+                                    }}
+                                    className="group/cell relative min-h-[20px] py-0.5 cursor-text whitespace-normal break-words [overflow-wrap:anywhere] leading-[1.35] text-[12px] flex items-start justify-between gap-1"
+                                    title={
+                                      value
+                                        ? `${String(value)} (клик — редактировать, Ctrl+V — вставить строки из Excel ниже)`
+                                        : 'Клик — редактировать или Ctrl+V для вставки из Excel'
+                                    }
+                                  >
+                                    {column.type === 'number' ? (
+                                      <span className="font-mono tabular-nums">
+                                        {value !== undefined && value !== null && value !== ''
+                                          ? Number(value).toLocaleString('ru-RU')
+                                          : '—'}
+                                      </span>
+                                    ) : column.type === 'date' ? (
+                                      <span className="font-mono tabular-nums text-slate-700 dark:text-slate-300">
+                                        {value || '—'}
+                                      </span>
+                                    ) : (
+                                      <>
+                                        <span className="line-clamp-4 whitespace-normal break-words [overflow-wrap:anywhere] flex-1 min-w-0">
+                                          {value !== undefined && value !== null && value !== '' ? String(value) : '—'}
+                                        </span>
+                                        {isLongCellValue(value) && (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setAnchorForRowCell(row.id, column);
+                                              setCopiedFullCell(false);
+                                              setViewingCell({
+                                                rowId: row.id,
+                                                colId: column.id,
+                                                colName: column.name,
+                                                colType: column.type,
+                                                rowIndex,
+                                                value: String(value ?? '')
+                                              });
+                                            }}
+                                            className="opacity-60 group-hover/cell:opacity-100 focus:opacity-100 p-0.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 bg-white/80 dark:bg-slate-800/80 rounded shrink-0 cursor-pointer transition-opacity"
+                                            title="Просмотреть содержимое ячейки целиком"
+                                          >
+                                            <Maximize2 className="w-3 h-3" />
+                                          </button>
+                                        )}
+                                      </>
+                                    )}
+                                  </div>
+                                )}
+                              </td>
+                            );
+                          })}
 
-                        {/* Quick Add Column spacer */}
-                        <td className="w-[34px] border-r border-slate-200/60 dark:border-slate-800/80"></td>
+                          {/* Quick Add Column spacer */}
+                          <td className="w-[34px] border-r border-slate-200/60 dark:border-slate-800/80"></td>
 
-                        {/* Quick Row Actions */}
-                        <td className={`w-[82px] px-1 ${cellPadClass} text-center align-top`}>
-                          {confirmDeleteRowId === row.id ? (
-                            <div className="flex items-center justify-center gap-1 pt-0.5">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  onDeleteRows([row.id]);
-                                  setConfirmDeleteRowId(null);
-                                }}
-                                className="px-1.5 py-0.5 bg-red-600 text-white rounded text-[10px] font-semibold hover:bg-red-700"
-                              >
-                                Удал.
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setConfirmDeleteRowId(null)}
-                                className="px-1.5 py-0.5 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 rounded text-[10px]"
-                              >
-                                Нет
-                              </button>
-                            </div>
-                          ) : (
-                            <div className="flex items-center justify-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity pt-0.5">
-                              <button
-                                type="button"
-                                onClick={() => onOpenTemplates([row.id])}
-                                className="p-1 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded transition-colors"
-                                title="Шаблоны для этой строки (DOCX / PDF)"
-                              >
-                                <FileText className="w-3.5 h-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => onOpenLLMStudio(row.id)}
-                                className="p-1 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 rounded transition-colors"
-                                title="Сгенерировать документ через LLM-студию"
-                              >
-                                <Cpu className="w-3.5 h-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setConfirmDeleteRowId(row.id)}
-                                className="p-1 text-slate-400 hover:text-red-600 dark:hover:text-red-400 rounded transition-colors"
-                                title="Удалить запись"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-
-                {/* Bottom Click-to-Paste Excel Target Row (when table has rows & named columns) */}
-                {visibleRows.length > 0 && currentTab.columns.some((c) => c.name.trim().length > 0) && (
-                  <tr className="bg-slate-50/60 dark:bg-slate-800/30 border-t border-dashed border-slate-200 dark:border-slate-800">
-                    <td className="sticky left-0 z-10 bg-slate-50 dark:bg-slate-800/60 w-[34px] px-1.5 py-1.5 border-r border-slate-200/60 dark:border-slate-800/80"></td>
-                    <td className="sticky left-[34px] z-10 bg-slate-50 dark:bg-slate-800/60 w-[38px] px-1 py-1.5 text-center font-mono text-[10px] text-slate-400 border-r border-slate-200/60 dark:border-slate-800/80">
-                      +
-                    </td>
-                    {currentTab.columns.map((column) => {
-                      const isAnchored =
-                        activeCellAnchor?.rowId === null &&
-                        activeCellAnchor?.colId === column.id &&
-                        activeCellAnchor?.insertIndex === currentTab.rows.length;
-                      return (
-                        <td
-                          key={column.id}
-                          onClick={() =>
-                            setActiveCellAnchor({
-                              rowId: null,
-                              colId: column.id,
-                              insertIndex: currentTab.rows.length,
-                              label: `Вставка Ctrl+V в столбец «${column.name}» в конец таблицы`
-                            })
-                          }
-                          className={`px-2 py-1.5 border-r border-slate-200/60 dark:border-slate-800/80 text-[11px] cursor-pointer transition-colors ${
-                            isAnchored
-                              ? 'bg-blue-100/70 dark:bg-blue-950/40 text-blue-800 dark:text-blue-200 ring-1 ring-inset ring-blue-500 font-medium'
-                              : 'text-slate-400 hover:bg-blue-50/50 dark:hover:bg-slate-800/50'
-                          }`}
-                          title={`Кликните и нажмите Ctrl+V, чтобы вставить из Excel в конец таблицы (${column.name})`}
-                        >
-                          {isAnchored ? 'Нажмите Ctrl+V...' : '+ Ctrl+V в конец'}
-                        </td>
+                          {/* Sticky Right Row Actions */}
+                          <td className={`sticky right-0 z-10 ${stickyBgClass} w-[82px] px-1 ${cellPadClass} text-center border-l border-slate-200/70 dark:border-slate-800/80 shadow-[-4px_0_8px_-4px_rgba(15,23,42,0.08)] align-top`}>
+                            {confirmDeleteRowId === row.id ? (
+                              <div className="flex items-center justify-center gap-1 pt-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    onDeleteRows([row.id]);
+                                    setConfirmDeleteRowId(null);
+                                  }}
+                                  className="px-1.5 py-0.5 bg-red-600 text-white rounded text-[10px] font-semibold hover:bg-red-700 cursor-pointer"
+                                >
+                                  Удал.
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteRowId(null)}
+                                  className="px-1.5 py-0.5 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 rounded text-[10px] cursor-pointer"
+                                >
+                                  Нет
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center justify-center gap-0.5 opacity-75 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity pt-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => onOpenTemplates([row.id])}
+                                  className="p-1 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded transition-colors cursor-pointer"
+                                  title="Шаблоны для этой строки (DOCX / PDF)"
+                                >
+                                  <FileText className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => onOpenLLMStudio(row.id)}
+                                  className="p-1 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 rounded transition-colors cursor-pointer"
+                                  title="Сгенерировать документ через LLM-студию"
+                                >
+                                  <Cpu className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteRowId(row.id)}
+                                  className="p-1 text-slate-400 hover:text-red-600 dark:hover:text-red-400 rounded transition-colors cursor-pointer"
+                                  title="Удалить запись"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
                       );
-                    })}
-                    <td className="w-[34px] border-r border-slate-200/60 dark:border-slate-800/80"></td>
-                    <td className="w-[82px]"></td>
-                  </tr>
-                )}
-              </tbody>
+                    })
+                  )}
+
+                  {/* Bottom Click-to-Paste Excel Target Row (when table has rows & named columns) */}
+                  {visibleRows.length > 0 && currentTab.columns.some((c) => c.name.trim().length > 0) && (
+                    <tr className="bg-slate-50/60 dark:bg-slate-800/30 border-t border-dashed border-slate-200 dark:border-slate-800">
+                      <td className="sticky left-0 z-10 bg-slate-50 dark:bg-slate-800 w-[34px] px-1.5 py-1.5 border-r border-slate-200/60 dark:border-slate-800/80"></td>
+                      <td className="sticky left-[34px] z-10 bg-slate-50 dark:bg-slate-800 w-[38px] px-1 py-1.5 text-center font-mono text-[10px] text-slate-400 border-r border-slate-200/60 dark:border-slate-800/80">
+                        +
+                      </td>
+                      {currentTab.columns.map((column) => {
+                        const isAnchored =
+                          activeCellAnchor?.rowId === null &&
+                          activeCellAnchor?.colId === column.id &&
+                          activeCellAnchor?.insertIndex === currentTab.rows.length;
+                        return (
+                          <td
+                            key={column.id}
+                            onClick={() =>
+                              setActiveCellAnchor({
+                                rowId: null,
+                                colId: column.id,
+                                insertIndex: currentTab.rows.length,
+                                label: `Вставка Ctrl+V в столбец «${column.name}» в конец таблицы`
+                              })
+                            }
+                            className={`px-2 py-1.5 border-r border-slate-200/60 dark:border-slate-800/80 text-[11px] cursor-pointer transition-colors ${
+                              isAnchored
+                                ? 'bg-blue-100/70 dark:bg-blue-950/40 text-blue-800 dark:text-blue-200 ring-1 ring-inset ring-blue-500 font-medium'
+                                : 'text-slate-400 hover:bg-blue-50/50 dark:hover:bg-slate-800/50'
+                            }`}
+                            title={`Кликните и нажмите Ctrl+V, чтобы вставить из Excel в конец таблицы (${column.name})`}
+                          >
+                            {isAnchored ? 'Нажмите Ctrl+V...' : '+ Ctrl+V в конец'}
+                          </td>
+                        );
+                      })}
+                      <td className="w-[34px] border-r border-slate-200/60 dark:border-slate-800/80"></td>
+                      <td className="sticky right-0 z-10 bg-slate-50 dark:bg-slate-800 w-[82px] border-l border-slate-200/60 dark:border-slate-800/80"></td>
+                    </tr>
+                  )}
+                </tbody>
             </table>
           );
         })()}
@@ -1587,7 +1801,7 @@ export const DataGrid: React.FC<DataGridProps> = ({
               <select
                 value={pageSize}
                 onChange={(e) => {
-                  setPageSize(Number(e.target.value));
+                  updatePageSize(Number(e.target.value));
                   setCurrentPage(1);
                 }}
                 className="px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded text-[11px] font-mono"
@@ -1646,6 +1860,71 @@ export const DataGrid: React.FC<DataGridProps> = ({
         }}
         onCancel={() => setCascadeConflict(null)}
       />
+
+      {/* FULL CELL CONTENT VIEWER MODAL */}
+      <AppModal
+        isOpen={Boolean(viewingCell)}
+        onClose={() => setViewingCell(null)}
+        size="xl"
+        icon={<Maximize2 className="w-5 h-5" />}
+        iconTone="blue"
+        title={viewingCell ? `Содержимое ячейки: «${viewingCell.colName}»` : ''}
+        subtitle={
+          viewingCell ? (
+            <>
+              Таблица «{currentTab.name}» · Строка №<span className="font-mono tabular-nums">{viewingCell.rowIndex + 1}</span> ·{' '}
+              <span className="font-mono tabular-nums">{viewingCell.value.length}</span> симв.
+            </>
+          ) : undefined
+        }
+        footer={
+          <div className="w-full flex flex-wrap items-center justify-between gap-2">
+            <AppButton
+              variant="secondary"
+              size="sm"
+              icon={copiedFullCell ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+              onClick={() => {
+                if (!viewingCell) return;
+                navigator.clipboard?.writeText(viewingCell.value).then(() => {
+                  setCopiedFullCell(true);
+                  setTimeout(() => setCopiedFullCell(false), 2000);
+                }).catch(() => undefined);
+              }}
+            >
+              {copiedFullCell ? 'Скопировано' : 'Скопировать текст'}
+            </AppButton>
+
+            <div className="flex items-center gap-2">
+              {viewingCell && viewingCell.colType !== 'relation' && (
+                <AppButton
+                  variant="secondary"
+                  size="sm"
+                  icon={<Edit2 className="w-3.5 h-3.5" />}
+                  onClick={() => {
+                    const targetRow = currentTab.rows.find((r) => r.id === viewingCell.rowId);
+                    const targetCol = currentTab.columns.find((c) => c.id === viewingCell.colId);
+                    setViewingCell(null);
+                    if (targetRow && targetCol) {
+                      beginInlineEdit(targetRow, targetCol);
+                    }
+                  }}
+                >
+                  Редактировать
+                </AppButton>
+              )}
+              <AppButton variant="primary" size="sm" onClick={() => setViewingCell(null)}>
+                Закрыть
+              </AppButton>
+            </div>
+          </div>
+        }
+      >
+        <div className="p-5 overflow-y-auto max-h-[60vh]">
+          <div className="p-3.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-lg text-xs leading-relaxed text-slate-800 dark:text-slate-100 whitespace-pre-wrap break-words select-text font-sans">
+            {viewingCell?.value}
+          </div>
+        </div>
+      </AppModal>
     </div>
   );
 };
