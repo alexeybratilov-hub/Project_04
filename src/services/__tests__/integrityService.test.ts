@@ -333,4 +333,39 @@ describe('integrityService', () => {
     expect(nextEmpTab.rows.find((r) => r.id === 'e_norm')?.emp_dept).toBe('Цех 2');
     expect(nextEmpTab.rows.find((r) => r.id === 'e_bad')?.emp_dept).toBe('Цех 1');
   });
+
+  it('T-26: detects templates referencing a tag before deletion via getTagDeleteImpact', () => {
+    const templates: DocumentTemplate[] = [
+      {
+        id: 'tpl_1',
+        name: 'Приказ по ОТ',
+        tabId: 'tab_emp',
+        fileName: 'order.docx',
+        namingPattern: 'Приказ_{ФИО}.docx',
+        contentTemplate: 'Направить {ФИО} на обучение'
+      },
+      {
+        id: 'tpl_2',
+        name: 'Архивный шаблон',
+        tabId: '',
+        isArchived: true,
+        fileName: 'old.docx',
+        namingPattern: 'Старый_{id}.docx',
+        contentTemplate: 'СНИЛС: {СНИЛС}'
+      }
+    ];
+
+    const usedInBody = integrityService.getTagDeleteImpact('{ФИО}', templates);
+    expect(usedInBody.isUsed).toBe(true);
+    expect(usedInBody.usedInTemplates).toHaveLength(1);
+    expect(usedInBody.usedInTemplates[0].name).toBe('Приказ по ОТ');
+
+    const usedArchived = integrityService.getTagDeleteImpact('{СНИЛС}', templates);
+    expect(usedArchived.isUsed).toBe(true);
+    expect(usedArchived.usedInTemplates[0].isArchived).toBe(true);
+
+    const unused = integrityService.getTagDeleteImpact('{Табельный_номер}', templates);
+    expect(unused.isUsed).toBe(false);
+    expect(unused.usedInTemplates).toEqual([]);
+  });
 });

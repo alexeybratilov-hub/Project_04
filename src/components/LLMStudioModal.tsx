@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  X, Cpu, Play, Download, RefreshCw, FileText, Sparkles,
+  Cpu, Play, Download, RefreshCw, FileText, Sparkles,
   AlertCircle, CheckCircle2, Eye, EyeOff, Info
 } from 'lucide-react';
 import { AttachedDoc, LegalEntityProfile, LLMConfig, LLMGenerationLog, Tab, Tag } from '../types/database';
@@ -9,7 +9,15 @@ import { documentGenerator } from '../services/documentGenerator';
 import { createUniqueId } from '../services/integrityService';
 import { getLLMProviderPreset, LLM_PROVIDER_PRESETS, normalizeLLMConfig } from '../data/llmProviders';
 import { inferDocumentCategory } from '../services/generatedDocsService';
-import { useToast } from './ui/ToastProvider';
+import {
+  AppButton,
+  AppInput,
+  AppModal,
+  AppSelect,
+  AppTextarea,
+  StatusBanner,
+  useToast
+} from './ui';
 
 export interface RecordGeneratedDocPayload {
   title: string;
@@ -112,17 +120,6 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
       setTargetRowId(currentTab.rows[0]?.id || '');
     }
   }, [isOpen, selectedRowId, currentTab.id, currentTab.rows, targetRowId]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, onClose]);
-
-  if (!isOpen) return null;
 
   const currentPreset = getLLMProviderPreset(localConfig.providerId);
   const localPresets = LLM_PROVIDER_PRESETS.filter((p) => p.kind === 'local');
@@ -327,130 +324,107 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4"
-      role="dialog"
-      aria-modal="true"
-    >
-      <div className="w-full max-w-6xl max-h-[94vh] bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 shrink-0 gap-4">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="p-2 bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-400 rounded-lg shrink-0">
-              <Cpu className="w-5 h-5" />
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                  LLM-студия и настройки ИИ
-                </h2>
-                <span className="text-xs font-mono text-indigo-600 dark:text-indigo-400">
-                  · {currentPreset.name} ({localConfig.model})
-                </span>
-              </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                {entityProfile?.shortName ? `${entityProfile.shortName} · ` : ''}
-                {localConfig.providerKind === 'local'
-                  ? 'Локальный сервер ИИ без передачи данных в облако'
-                  : 'Подключение через внешний API провайдера'}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-lg text-xs font-medium shrink-0">
-            <button
-              type="button"
-              onClick={() => setActiveTab('generate')}
-              className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-                activeTab === 'generate'
-                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs font-semibold'
-                  : 'text-slate-600 dark:text-slate-400'
-              }`}
-            >
-              Студия
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('settings')}
-              className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
-                activeTab === 'settings'
-                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs font-semibold'
-                  : 'text-slate-600 dark:text-slate-400'
-              }`}
-            >
-              <span>Подключение</span>
-              {localConfig.status === 'error' && (
-                <AlertCircle className="w-3.5 h-3.5 text-red-600 dark:text-red-400" />
-              )}
-              {localConfig.status === 'connected' && (
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('history')}
-              className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-                activeTab === 'history'
-                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs font-semibold'
-                  : 'text-slate-600 dark:text-slate-400'
-              }`}
-            >
-              Журнал ({llmLogs.length})
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="p-1.5 ml-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg transition-colors cursor-pointer"
-              aria-label="Закрыть"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
+    <AppModal
+      isOpen={isOpen}
+      onClose={onClose}
+      size="6xl"
+      heightClass="max-h-[94vh]"
+      icon={<Cpu className="w-5 h-5" />}
+      iconTone="indigo"
+      title={
+        <div className="flex items-center gap-2 flex-wrap">
+          <span>LLM-студия и настройки ИИ</span>
+          <span className="text-xs font-mono font-normal text-indigo-600 dark:text-indigo-400">
+            · {currentPreset.name} ({localConfig.model})
+          </span>
         </div>
+      }
+      subtitle={
+        <>
+          {entityProfile?.shortName ? `${entityProfile.shortName} · ` : ''}
+          {localConfig.providerKind === 'local'
+            ? 'Локальный сервер ИИ без передачи данных в облако'
+            : 'Подключение через внешний API провайдера'}
+        </>
+      }
+      headerRight={
+        <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-lg text-xs font-medium">
+          <button
+            type="button"
+            onClick={() => setActiveTab('generate')}
+            className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+              activeTab === 'generate'
+                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs font-semibold'
+                : 'text-slate-600 dark:text-slate-400'
+            }`}
+          >
+            Студия
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('settings')}
+            className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+              activeTab === 'settings'
+                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs font-semibold'
+                : 'text-slate-600 dark:text-slate-400'
+            }`}
+          >
+            <span>Подключение</span>
+            {localConfig.status === 'error' && (
+              <AlertCircle className="w-3.5 h-3.5 text-red-600 dark:text-red-400" />
+            )}
+            {localConfig.status === 'connected' && (
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('history')}
+            className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+              activeTab === 'history'
+                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs font-semibold'
+                : 'text-slate-600 dark:text-slate-400'
+            }`}
+          >
+            Журнал ({llmLogs.length})
+          </button>
+        </div>
+      }
+    >
 
         {/* Content Body */}
         {activeTab === 'generate' && (
           <div className="flex-1 overflow-hidden grid grid-cols-1 md:grid-cols-12 divide-y md:divide-y-0 md:divide-x divide-slate-200 dark:divide-slate-800">
             <div className="md:col-span-5 p-5 overflow-y-auto space-y-4 text-xs">
               {localConfig.status !== 'connected' && (
-                <div
-                  className={`p-3 rounded-xl border flex items-start justify-between gap-2 ${
-                    localConfig.status === 'error'
-                      ? 'bg-red-50 dark:bg-red-950/40 border-red-300 dark:border-red-800 text-red-900 dark:text-red-200'
-                      : 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200'
-                  }`}
+                <StatusBanner
+                  variant={localConfig.status === 'error' ? 'error' : 'warning'}
+                  compact
+                  title={localConfig.status === 'error' ? 'Ошибка подключения к LLM' : 'LLM-сервер не подключён'}
+                  action={
+                    <AppButton
+                      variant="secondary"
+                      size="xs"
+                      onClick={() => setActiveTab('settings')}
+                    >
+                      Настроить
+                    </AppButton>
+                  }
                 >
-                  <div className="flex items-start gap-2 min-w-0">
-                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                    <div className="space-y-0.5">
-                      <div className="font-semibold">
-                        {localConfig.status === 'error' ? 'Ошибка подключения к LLM' : 'LLM-сервер не подключён'}
-                      </div>
-                      <p className="text-[11px] opacity-90">
-                        {localConfig.status === 'error' && localConfig.errorMessage
-                          ? localConfig.errorMessage
-                          : 'Прямая генерация документов по тегам и шаблонам работает независимо от LLM.'}
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('settings')}
-                    className="px-2 py-1 bg-white dark:bg-slate-900 border border-current/20 rounded text-[11px] font-semibold shrink-0 cursor-pointer"
-                  >
-                    Настроить
-                  </button>
-                </div>
+                  {localConfig.status === 'error' && localConfig.errorMessage
+                    ? localConfig.errorMessage
+                    : 'Прямая генерация документов по тегам и шаблонам работает независимо от LLM.'}
+                </StatusBanner>
               )}
 
               <div className="space-y-1.5">
                 <label className="font-semibold text-slate-800 dark:text-slate-200 block">
                   Тип формируемого документа:
                 </label>
-                <select
+                <AppSelect
                   value={docType}
                   onChange={(e) => setDocType(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg font-medium text-xs text-slate-900 dark:text-slate-100"
+                  className="font-medium"
                 >
                   <option value="Инструкция по охране труда (ИОТ)">Инструкция по охране труда (ИОТ)</option>
                   <option value="Приказ о назначении ответственных лиц по ОТ">Приказ о назначении ответственных по ОТ</option>
@@ -458,17 +432,16 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                   <option value="Протокол проверки знаний требований охраны труда">Протокол проверки знаний ОТ</option>
                   <option value="Акт расследования обстоятельств микротравмы">Акт расследования микротравмы</option>
                   <option value="Программа первичного инструктажа на рабочем месте">Программа первичного инструктажа</option>
-                </select>
+                </AppSelect>
               </div>
 
               <div className="space-y-1.5">
                 <label className="font-semibold text-slate-800 dark:text-slate-200 block">
                   Строка базы ({currentTab.name}):
                 </label>
-                <select
+                <AppSelect
                   value={targetRowId}
                   onChange={(e) => setTargetRowId(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-slate-100"
                 >
                   {currentTab.rows.map((row, idx) => {
                     const label =
@@ -484,7 +457,7 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                       </option>
                     );
                   })}
-                </select>
+                </AppSelect>
               </div>
 
               <div className="p-3 bg-purple-50/70 dark:bg-purple-950/30 border border-purple-200/80 dark:border-purple-900/60 rounded-xl space-y-1.5">
@@ -508,32 +481,31 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                 <label className="font-semibold text-slate-800 dark:text-slate-200 block">
                   Дополнительные требования к содержанию:
                 </label>
-                <textarea
+                <AppTextarea
                   rows={4}
+                  mono
                   value={customInstructions}
                   onChange={(e) => setCustomInstructions(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-mono text-slate-900 dark:text-slate-100"
                 />
               </div>
 
-              <button
-                type="button"
+              <AppButton
+                variant="primary"
+                size="md"
+                loading={isGenerating}
+                disabled={!targetRow}
                 onClick={handleRunGeneration}
-                disabled={isGenerating || !targetRow}
-                className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white rounded-xl font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
-              >
-                {isGenerating ? (
-                  <>
+                icon={
+                  isGenerating ? (
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>Идет генерация документа...</span>
-                  </>
-                ) : (
-                  <>
+                  ) : (
                     <Sparkles className="w-4 h-4" />
-                    <span>Сгенерировать документ</span>
-                  </>
-                )}
-              </button>
+                  )
+                }
+                className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 rounded-xl"
+              >
+                {isGenerating ? 'Идет генерация документа...' : 'Сгенерировать документ'}
+              </AppButton>
             </div>
 
             <div className="md:col-span-7 flex flex-col bg-slate-50/50 dark:bg-slate-950/40 p-5 overflow-hidden">
@@ -564,24 +536,24 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                 </span>
 
                 <div className="flex items-center gap-2">
-                  <button
-                    type="button"
+                  <AppButton
+                    variant="primary"
+                    size="md"
+                    disabled={!generatedText}
                     onClick={handleDownloadDocx}
-                    disabled={!generatedText}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-800 text-white rounded-lg font-semibold text-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+                    icon={<Download className="w-3.5 h-3.5" />}
                   >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Сохранить DOCX</span>
-                  </button>
-                  <button
-                    type="button"
+                    Сохранить DOCX
+                  </AppButton>
+                  <AppButton
+                    variant="danger"
+                    size="md"
+                    disabled={!generatedText}
                     onClick={handleDownloadPdf}
-                    disabled={!generatedText}
-                    className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-slate-300 dark:disabled:bg-slate-800 text-white rounded-lg font-semibold text-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+                    icon={<Download className="w-3.5 h-3.5" />}
                   >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Сохранить PDF</span>
-                  </button>
+                    Сохранить PDF
+                  </AppButton>
                 </div>
               </div>
             </div>
@@ -609,11 +581,11 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                   >
                     Провайдер LLM:
                   </label>
-                  <select
+                  <AppSelect
                     id="llm-provider-select"
                     value={localConfig.providerId}
                     onChange={(e) => handleSelectProvider(e.target.value)}
-                    className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-medium text-slate-900 dark:text-slate-100"
+                    className="font-medium"
                   >
                     <optgroup label="Локальные серверы (автономно на ПК)">
                       {localPresets.map((p) => (
@@ -629,7 +601,7 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                         </option>
                       ))}
                     </optgroup>
-                  </select>
+                  </AppSelect>
                   <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
                     {currentPreset.description}
                   </p>
@@ -640,8 +612,9 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                   <label className="block font-semibold text-slate-800 dark:text-slate-200 mb-1">
                     Адрес API (Endpoint URL):
                   </label>
-                  <input
+                  <AppInput
                     type="text"
+                    mono
                     value={localConfig.endpoint}
                     onChange={(e) =>
                       setLocalConfig({
@@ -651,7 +624,6 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                       })
                     }
                     placeholder={currentPreset.defaultEndpoint}
-                    className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg font-mono text-xs"
                   />
                 </div>
 
@@ -665,8 +637,9 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                     </label>
                   </div>
                   <div className="relative flex items-center">
-                    <input
+                    <AppInput
                       type={showApiKey ? 'text' : 'password'}
+                      mono
                       value={localConfig.apiKey || ''}
                       onChange={(e) =>
                         setLocalConfig({
@@ -680,7 +653,7 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                           ? 'Вставьте ключ провайдера (хранится локально в конфигурации базы)'
                           : 'Не требуется для стандартного локального запуска'
                       }
-                      className="w-full pl-3 pr-9 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg font-mono text-xs"
+                      className="pr-9"
                     />
                     <button
                       type="button"
@@ -699,14 +672,14 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                     <label className="block font-semibold text-slate-800 dark:text-slate-200 mb-1">
                       Пресет популярной модели:
                     </label>
-                    <select
+                    <AppSelect
+                      mono
                       value={modelChoices.includes(localConfig.model) ? localConfig.model : '__custom__'}
                       onChange={(e) => {
                         if (e.target.value !== '__custom__') {
                           setLocalConfig({ ...localConfig, model: e.target.value });
                         }
                       }}
-                      className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg font-mono text-xs"
                     >
                       {modelChoices.map((m) => (
                         <option key={m} value={m}>
@@ -714,19 +687,19 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                         </option>
                       ))}
                       <option value="__custom__">Своя модель (ввести вручную →)</option>
-                    </select>
+                    </AppSelect>
                   </div>
 
                   <div>
                     <label className="block font-semibold text-slate-800 dark:text-slate-200 mb-1">
                       Идентификатор модели:
                     </label>
-                    <input
+                    <AppInput
                       type="text"
+                      mono
                       value={localConfig.model}
                       onChange={(e) => setLocalConfig({ ...localConfig, model: e.target.value })}
                       placeholder={currentPreset.defaultModel}
-                      className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg font-mono text-xs"
                     />
                   </div>
                 </div>
@@ -753,8 +726,10 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                     <label className="block font-semibold text-slate-800 dark:text-slate-200 mb-1">
                       Тайм-аут запроса (мс):
                     </label>
-                    <input
+                    <AppInput
                       type="number"
+                      compact
+                      mono
                       min={5000}
                       max={180000}
                       step={5000}
@@ -765,73 +740,74 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                           timeoutMs: Math.max(5000, Number(e.target.value) || 45000)
                         })
                       }
-                      className="w-full px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg font-mono text-xs"
                     />
                   </div>
                 </div>
 
                 {/* Action Buttons */}
                 <div className="flex flex-wrap items-center gap-3 pt-2">
-                  <button
-                    type="button"
+                  <AppButton
+                    variant="primary"
+                    size="md"
+                    loading={isTestingConnection}
                     onClick={handleTestConnection}
-                    disabled={isTestingConnection}
-                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white rounded-lg font-semibold flex items-center gap-2 transition-colors cursor-pointer"
+                    icon={
+                      isTestingConnection ? (
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Play className="w-4 h-4" />
+                      )
+                    }
+                    className="bg-indigo-600 hover:bg-indigo-700"
                   >
-                    {isTestingConnection ? (
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Play className="w-4 h-4" />
-                    )}
-                    <span>Проверить подключение</span>
-                  </button>
+                    Проверить подключение
+                  </AppButton>
 
-                  <button
-                    type="button"
+                  <AppButton
+                    variant="secondary"
+                    size="md"
                     onClick={handleSaveSettingsOnly}
-                    className="px-4 py-2 bg-slate-200 hover:bg-slate-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-800 dark:text-slate-200 rounded-lg font-medium transition-colors cursor-pointer"
                   >
                     Сохранить настройки
-                  </button>
+                  </AppButton>
                 </div>
 
                 {/* Connection Test Result Box — unmistakable RED highlight on error */}
                 {connectionFeedback.type === 'error' && (
-                  <div
+                  <StatusBanner
+                    variant="error"
                     role="alert"
-                    className="p-3.5 bg-red-50 dark:bg-red-950/60 border-2 border-red-500 dark:border-red-600 rounded-xl flex items-start gap-2.5 text-red-900 dark:text-red-100"
-                  >
-                    <AlertCircle className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
-                    <div className="space-y-1 min-w-0">
-                      <div className="font-bold text-xs text-red-700 dark:text-red-300">
+                    className="border-2 !border-red-500 dark:!border-red-600"
+                    title={
+                      <span className="font-bold text-red-700 dark:text-red-300">
                         Тест подключения не пройден — ошибка связи с LLM
-                      </div>
-                      <div className="font-mono text-[11px] break-words text-red-800 dark:text-red-200">
-                        {connectionFeedback.message}
-                      </div>
+                      </span>
+                    }
+                  >
+                    <div className="font-mono text-[11px] break-words text-red-800 dark:text-red-200">
+                      {connectionFeedback.message}
                     </div>
-                  </div>
+                  </StatusBanner>
                 )}
 
                 {connectionFeedback.type === 'success' && (
-                  <div className="p-3.5 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-400 dark:border-emerald-700 rounded-xl flex items-start gap-2.5 text-emerald-900 dark:text-emerald-100">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
-                    <div className="space-y-0.5 min-w-0">
-                      <div className="font-semibold text-xs text-emerald-800 dark:text-emerald-300">
-                        Соединение активно
-                      </div>
-                      <div className="font-mono text-[11px] break-words">
-                        {connectionFeedback.message}
-                      </div>
+                  <StatusBanner
+                    variant="success"
+                    title="Соединение активно"
+                  >
+                    <div className="font-mono text-[11px] break-words">
+                      {connectionFeedback.message}
                     </div>
-                  </div>
+                  </StatusBanner>
                 )}
 
                 {connectionFeedback.type === 'testing' && (
-                  <div className="p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg font-mono text-[11px] text-slate-600 dark:text-slate-300 flex items-center gap-2">
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-600 shrink-0" />
-                    <span>{connectionFeedback.message}</span>
-                  </div>
+                  <StatusBanner
+                    variant="info"
+                    icon={<RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-600 shrink-0 mt-0.5" />}
+                  >
+                    <span className="font-mono text-[11px]">{connectionFeedback.message}</span>
+                  </StatusBanner>
                 )}
               </div>
 
@@ -898,7 +874,6 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
             )}
           </div>
         )}
-      </div>
-    </div>
+    </AppModal>
   );
 };

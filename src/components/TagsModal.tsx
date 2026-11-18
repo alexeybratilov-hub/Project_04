@@ -1,8 +1,17 @@
-import React, { useState, useEffect } from 'react';
-import { X, Tag as TagIcon, Plus, Trash2, Copy, Check, AlertTriangle, Search } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Tag as TagIcon, Plus, Trash2, Copy, Check, AlertTriangle, Search } from 'lucide-react';
 import { DocumentTemplate, Tab, Tag } from '../types/database';
 import { createUniqueId, integrityService } from '../services/integrityService';
-import { useToast } from './ui/ToastProvider';
+import {
+  AppButton,
+  AppInput,
+  AppModal,
+  AppSelect,
+  ConfirmDialog,
+  FormField,
+  StatusBanner,
+  useToast
+} from './ui';
 
 interface TagsModalProps {
   isOpen: boolean;
@@ -29,11 +38,31 @@ export const TagsModal: React.FC<TagsModalProps> = ({
   const [newTagTabId, setNewTagTabId] = useState(tabs[0]?.id || '');
   const [newTagColId, setNewTagColId] = useState(tabs[0]?.columns[0]?.id || '');
   const [newTagDesc, setNewTagDesc] = useState('');
+  const [pendingDeleteTag, setPendingDeleteTag] = useState<{
+    tag: Tag;
+    tabName: string;
+    colName: string;
+    usedInTemplates: { id: string; name: string; isArchived?: boolean }[];
+  } | null>(null);
+  const [pendingDiscardConfirm, setPendingDiscardConfirm] = useState(false);
 
-  // Synchronize whenever modal opens or active LegalEntity's tags/tabs change
+  const prevOpenRef = useRef(false);
+
+  // Initialize local draft strictly when modal opens; keep tab/col selectors valid when tabs change
   useEffect(() => {
+    const justOpened = isOpen && !prevOpenRef.current;
+    prevOpenRef.current = isOpen;
+
+    if (justOpened) {
+      setLocalTags(JSON.parse(JSON.stringify(tags)));
+      setPendingDeleteTag(null);
+      setPendingDiscardConfirm(false);
+      setNewTagName('');
+      setNewTagDesc('');
+      setSearch('');
+    }
+
     if (isOpen) {
-      setLocalTags(tags);
       const fallbackTab = tabs[0];
       const validTab = tabs.find((t) => t.id === newTagTabId) || fallbackTab;
       if (validTab) {
@@ -45,18 +74,18 @@ export const TagsModal: React.FC<TagsModalProps> = ({
         setNewTagColId('');
       }
     }
-  }, [isOpen, tags, tabs]);
+  }, [isOpen, tags, tabs, newTagTabId, newTagColId]);
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, onClose]);
+  const tagsChanged = JSON.stringify(localTags) !== JSON.stringify(tags);
+  const isDirty = tagsChanged || Boolean(newTagName.trim()) || Boolean(newTagDesc.trim());
 
-  if (!isOpen) return null;
+  const requestClose = useCallback(() => {
+    if (isDirty) {
+      setPendingDiscardConfirm(true);
+    } else {
+      onClose();
+    }
+  }, [isDirty, onClose]);
 
   // Exclude built-in LegalEntity requisite tags & {id} from false orphan alerts
   const orphanedTags = integrityService.getOrphanedTemplateTags(templates, localTags);
@@ -85,16 +114,43 @@ export const TagsModal: React.FC<TagsModalProps> = ({
 
     const updated = [...localTags, newTag];
     setLocalTags(updated);
-    onSaveTags(updated);
     setNewTagName('');
     setNewTagDesc('');
-    showToast(`Тег ${formattedName} привязан к столбцу`, 'success');
+    showToast(`Тег ${formattedName} добавлен в черновик`, 'info');
   };
 
-  const handleDeleteTag = (id: string) => {
-    const updated = localTags.filter((t) => t.id !== id);
+  const requestDeleteTag = (tag: Tag, tabName: string, colName: string) => {
+    const impact = integrityService.getTagDeleteImpact(tag.name, templates);
+    setPendingDeleteTag({
+      tag,
+      tabName,
+      colName,
+      usedInTemplates: impact.usedInTemplates
+    });
+  };
+
+  const confirmDeleteTag = () => {
+    if (!pendingDeleteTag) return;
+    const { tag } = pendingDeleteTag;
+    const updated = localTags.filter((t) => t.id !== tag.id);
     setLocalTags(updated);
-    onSaveTags(updated);
+    setPendingDeleteTag(null);
+    showToast(`Тег ${tag.name} удалён из черновика (нажмите «Сохранить изменения»)`, 'info');
+  };
+
+  const handleSaveAndClose = () => {
+    if (!tagsChanged && newTagName.trim()) {
+      showToast(
+        `Нажмите кнопку «+», чтобы добавить тег «${newTagName.trim()}» в список перед сохранением.`,
+        'warning'
+      );
+      return;
+    }
+    if (tagsChanged) {
+      onSaveTags(localTags);
+      showToast('Пул тегов сохранён', 'success');
+    }
+    onClose();
   };
 
   const filteredTags = localTags.filter(
@@ -106,62 +162,71 @@ export const TagsModal: React.FC<TagsModalProps> = ({
   const selectedTabForAdd = tabs.find((t) => t.id === newTagTabId) || tabs[0];
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4"
-      role="dialog"
-      aria-modal="true"
-    >
-      <div className="w-full max-w-4xl max-h-[90vh] bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-400 rounded-lg">
-              <TagIcon className="w-5 h-5" />
-            </div>
+    <>
+      <AppModal
+        isOpen={isOpen}
+        onClose={requestClose}
+        size="4xl"
+        heightClass="max-h-[90vh]"
+        icon={<TagIcon className="w-5 h-5" />}
+        iconTone="indigo"
+        title="Пул тегов шаблонизатора"
+        subtitle="Привязка плейсхолдеров {Имя_тега} к колонкам активного юрлица"
+        footer={
+          <div className="w-full flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                Пул тегов шаблонизатора
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Привязка плейсхолдеров &#123;Имя_тега&#125; к колонкам активного юрлица
-              </p>
+              {isDirty ? (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 font-medium text-[11px]">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                  Есть несохранённые изменения черновика
+                </span>
+              ) : (
+                <span className="text-slate-500">
+                  Используйте теги прямо в шаблонах Word и PDF, например{' '}
+                  <code className="font-mono text-blue-600">&#123;ФИО&#125;</code>
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <AppButton variant="secondary" size="md" onClick={requestClose}>
+                Отмена
+              </AppButton>
+              <AppButton
+                variant="primary"
+                size="md"
+                onClick={handleSaveAndClose}
+                disabled={!isDirty}
+              >
+                Сохранить изменения
+              </AppButton>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg transition-colors"
-            aria-label="Закрыть"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Content Body */}
+        }
+      >
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
           {/* Orphaned Tags Warning */}
           {orphanedTags.length > 0 && (
-            <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 rounded-xl text-xs space-y-2">
-              <div className="flex items-center gap-2 font-semibold text-amber-800 dark:text-amber-300">
-                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                <span>Непривязанные теги в шаблонах ({orphanedTags.length}):</span>
-              </div>
-              <p className="text-amber-700 dark:text-amber-400 leading-relaxed">
+            <StatusBanner
+              variant="warning"
+              compact
+              title={`Непривязанные теги в шаблонах (${orphanedTags.length}):`}
+            >
+              <p className="leading-relaxed">
                 Эти плейсхолдеры встречаются в шаблонах документов, но пока не привязаны к столбцу (системные теги организации распознаются автоматически):
               </p>
-              <div className="flex flex-wrap gap-1.5 pt-1">
+              <div className="flex flex-wrap gap-1.5 pt-1.5">
                 {orphanedTags.map((tName) => (
                   <button
                     key={tName}
                     type="button"
                     onClick={() => setNewTagName(tName)}
-                    className="px-2 py-0.5 bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300 rounded font-mono text-[11px] hover:bg-amber-100 transition-colors"
+                    className="px-2 py-0.5 bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300 rounded font-mono text-[11px] hover:bg-amber-100 transition-colors cursor-pointer"
                   >
                     + {tName}
                   </button>
                 ))}
               </div>
-            </div>
+            </StatusBanner>
           )}
 
           {/* Add New Tag Form */}
@@ -173,71 +238,69 @@ export const TagsModal: React.FC<TagsModalProps> = ({
               Создать новую привязку тега:
             </h3>
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5 text-xs">
-              <div>
-                <label className="block text-[11px] text-slate-500 mb-1">Имя тега (&#123;Имя&#125;):</label>
-                <input
+              <FormField label="Имя тега ({Имя}):">
+                <AppInput
                   type="text"
+                  compact
+                  mono
                   placeholder="{Новый_тег}"
                   value={newTagName}
                   onChange={(e) => setNewTagName(e.target.value)}
-                  className="w-full px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg font-mono text-xs text-slate-900 dark:text-slate-100"
                 />
-              </div>
+              </FormField>
 
-              <div>
-                <label className="block text-[11px] text-slate-500 mb-1">Вкладка-источник:</label>
-                <select
+              <FormField label="Вкладка-источник:">
+                <AppSelect
+                  compact
                   value={newTagTabId}
                   onChange={(e) => {
                     setNewTagTabId(e.target.value);
                     const selected = tabs.find((t) => t.id === e.target.value);
                     setNewTagColId(selected?.columns[0]?.id || '');
                   }}
-                  className="w-full px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-slate-100"
                 >
                   {tabs.map((tab) => (
                     <option key={tab.id} value={tab.id}>
                       {tab.name}
                     </option>
                   ))}
-                </select>
-              </div>
+                </AppSelect>
+              </FormField>
 
-              <div>
-                <label className="block text-[11px] text-slate-500 mb-1">Поле (столбец):</label>
-                <select
+              <FormField label="Поле (столбец):">
+                <AppSelect
+                  compact
                   value={newTagColId}
                   onChange={(e) => setNewTagColId(e.target.value)}
-                  className="w-full px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-slate-100"
                 >
                   {(selectedTabForAdd?.columns || []).map((col) => (
                     <option key={col.id} value={col.id}>
                       {col.name}
                     </option>
                   ))}
-                </select>
-              </div>
+                </AppSelect>
+              </FormField>
 
-              <div>
-                <label className="block text-[11px] text-slate-500 mb-1">Описание:</label>
+              <FormField label="Описание:">
                 <div className="flex items-center gap-1.5">
-                  <input
+                  <AppInput
                     type="text"
+                    compact
                     placeholder="Назначение тега"
                     value={newTagDesc}
                     onChange={(e) => setNewTagDesc(e.target.value)}
-                    className="w-full px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-slate-100"
                   />
-                  <button
+                  <AppButton
                     type="submit"
+                    variant="primary"
+                    size="sm"
                     disabled={!newTagName.trim() || !newTagColId}
-                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-400 text-white rounded-lg font-medium shrink-0 transition-colors"
+                    icon={<Plus className="w-4 h-4" />}
+                    className="shrink-0 !px-2.5"
                     title="Добавить тег"
-                  >
-                    <Plus className="w-4 h-4" />
-                  </button>
+                  />
                 </div>
-              </div>
+              </FormField>
             </div>
           </form>
 
@@ -256,13 +319,14 @@ export const TagsModal: React.FC<TagsModalProps> = ({
                 Зарегистрированные теги ({filteredTags.length}):
               </h3>
               <div className="relative w-64">
-                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
+                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                <AppInput
                   type="text"
+                  compact
                   placeholder="Фильтр по тегам..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  className="w-full pl-8 pr-3 py-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-slate-100"
+                  className="!pl-8 !py-1 bg-slate-50 dark:bg-slate-800"
                 />
               </div>
             </div>
@@ -304,15 +368,21 @@ export const TagsModal: React.FC<TagsModalProps> = ({
                             <button
                               type="button"
                               onClick={() => handleCopy(tag.name, tag.id)}
-                              className="p-1 text-slate-400 hover:text-blue-600 rounded transition-colors"
+                              className="p-1 text-slate-400 hover:text-blue-600 rounded transition-colors cursor-pointer"
                               title="Скопировать тег"
                             >
                               {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
                             </button>
                             <button
                               type="button"
-                              onClick={() => handleDeleteTag(tag.id)}
-                              className="p-1 text-slate-400 hover:text-red-600 rounded transition-colors"
+                              onClick={() =>
+                                requestDeleteTag(
+                                  tag,
+                                  tab?.name || 'удалённая вкладка',
+                                  col?.name || 'удалённый столбец'
+                                )
+                              }
+                              className="p-1 text-slate-400 hover:text-red-600 rounded transition-colors cursor-pointer"
                               title="Удалить тег"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
@@ -327,21 +397,48 @@ export const TagsModal: React.FC<TagsModalProps> = ({
             </div>
           </div>
         </div>
+      </AppModal>
 
-        {/* Footer */}
-        <div className="flex items-center justify-between px-6 py-3.5 bg-slate-50/70 dark:bg-slate-800/40 border-t border-slate-200 dark:border-slate-800 text-xs shrink-0">
-          <span className="text-slate-500">
-            Используйте теги прямо в шаблонах Word и PDF, например <code className="font-mono text-blue-600">&#123;ФИО&#125;</code>
-          </span>
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
-          >
-            Готово
-          </button>
-        </div>
-      </div>
-    </div>
+      <ConfirmDialog
+        isOpen={Boolean(pendingDeleteTag)}
+        danger
+        title={
+          pendingDeleteTag && pendingDeleteTag.usedInTemplates.length > 0
+            ? 'Удаление используемого тега'
+            : 'Удаление привязки тега'
+        }
+        description={
+          pendingDeleteTag
+            ? pendingDeleteTag.usedInTemplates.length > 0
+              ? `Внимание: тег ${pendingDeleteTag.tag.name} используется в шаблонах документов (${pendingDeleteTag.usedInTemplates.length} шт.):\n• ${pendingDeleteTag.usedInTemplates
+                  .map((t) => `${t.name}${t.isArchived ? ' (в архиве)' : ''}`)
+                  .join('\n• ')}\n\nПосле удаления тега он перестанет подставляться в этих документах и будет отмечен как непривязанный. Всё равно удалить?`
+              : `Удалить привязку тега ${pendingDeleteTag.tag.name} (вкладка «${pendingDeleteTag.tabName}», столбец «${pendingDeleteTag.colName}»)?`
+            : ''
+        }
+        confirmLabel={
+          pendingDeleteTag && pendingDeleteTag.usedInTemplates.length > 0
+            ? 'Удалить тег'
+            : 'Удалить'
+        }
+        cancelLabel="Отмена"
+        onConfirm={confirmDeleteTag}
+        onCancel={() => setPendingDeleteTag(null)}
+      />
+
+      <ConfirmDialog
+        isOpen={pendingDiscardConfirm}
+        danger
+        title="Отменить несохранённые изменения?"
+        description="В списке тегов есть несохранённые изменения. Закрыть окно без сохранения?"
+        confirmLabel="Закрыть без сохранения"
+        cancelLabel="Вернуться"
+        onConfirm={() => {
+          setPendingDiscardConfirm(false);
+          onClose();
+        }}
+        onCancel={() => setPendingDiscardConfirm(false)}
+      />
+    </>
   );
 };

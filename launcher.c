@@ -10,6 +10,7 @@
 #include <bcrypt.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <stdint.h>
 #include <ctype.h>
@@ -18,20 +19,23 @@
 #define RES_INITIAL_DB 102
 #define MAX_REQUEST_BODY (64 * 1024 * 1024)
 #define MAX_HEADER_SIZE (32 * 1024)
+#define OT_PATH_CAP 2048
+#define OT_URL_BUF 4096
+#define MAX_JSON_DEPTH 256
 
 /* Global Server State */
 static CRITICAL_SECTION g_fsLock;
-static wchar_t g_dirPath[MAX_PATH * 2];
-static wchar_t g_pathData[MAX_PATH * 2];
-static wchar_t g_pathBackups[MAX_PATH * 2];
-static wchar_t g_pathDocs[MAX_PATH * 2];
-static wchar_t g_pathNorm[MAX_PATH * 2];
-static wchar_t g_pathTpl[MAX_PATH * 2];
-static wchar_t g_pathDb[MAX_PATH * 2];
-static wchar_t g_pathDbTmp[MAX_PATH * 2];
-static wchar_t g_pathDbPrev[MAX_PATH * 2];
-static wchar_t g_pathRev[MAX_PATH * 2];
-static wchar_t g_pathRuntime[MAX_PATH * 2];
+static wchar_t g_dirPath[OT_PATH_CAP];
+static wchar_t g_pathData[OT_PATH_CAP];
+static wchar_t g_pathBackups[OT_PATH_CAP];
+static wchar_t g_pathDocs[OT_PATH_CAP];
+static wchar_t g_pathNorm[OT_PATH_CAP];
+static wchar_t g_pathTpl[OT_PATH_CAP];
+static wchar_t g_pathDb[OT_PATH_CAP];
+static wchar_t g_pathDbTmp[OT_PATH_CAP];
+static wchar_t g_pathDbPrev[OT_PATH_CAP];
+static wchar_t g_pathRev[OT_PATH_CAP];
+static wchar_t g_pathRuntime[OT_PATH_CAP];
 
 static char g_token[64];
 static uint16_t g_port = 0;
@@ -41,10 +45,89 @@ static BOOL g_corruptedWarning = FALSE;
 
 static SOCKET g_listenSock = INVALID_SOCKET;
 static volatile LONG g_running = 1;
-static volatile ULONGLONG g_lastClientTick = 0;
+static volatile LONGLONG g_lastClientTick = 0;
 static volatile LONG g_clientEverConnected = 0;
 static volatile LONG g_shutdownPending = 0;
-static volatile ULONGLONG g_shutdownTick = 0;
+static volatile LONGLONG g_shutdownTick = 0;
+
+static ULONGLONG ReadTick64(volatile LONGLONG* pVal) {
+    return (ULONGLONG)InterlockedCompareExchange64(pVal, 0, 0);
+}
+
+static void WriteTick64(volatile LONGLONG* pVal, ULONGLONG v) {
+    InterlockedExchange64(pVal, (LONGLONG)v);
+}
+
+static BOOL FormatW(wchar_t* dst, size_t cap, const wchar_t* fmt, ...) {
+    if (!dst || cap == 0 || !fmt) return FALSE;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = _vsnwprintf(dst, cap - 1, fmt, ap);
+    va_end(ap);
+    dst[cap - 1] = L'\0';
+    return n >= 0 && (size_t)n < cap;
+}
+
+static BOOL ToWin32PathW(const wchar_t* path, wchar_t* outBuf, size_t outCap) {
+    if (!path || !outBuf || outCap == 0) return FALSE;
+    size_t len = wcslen(path);
+    if (wcsncmp(path, L"\\\\?\\", 4) == 0) {
+        if (len >= outCap) return FALSE;
+        memcpy(outBuf, path, (len + 1) * sizeof(wchar_t));
+        return TRUE;
+    }
+    if (len >= 220) {
+        if (path[0] == L'\\' && path[1] == L'\\') {
+            size_t needed = 8 + (len - 2);
+            if (needed >= outCap) return FALSE;
+            wcscpy(outBuf, L"\\\\?\\UNC\\");
+            wcscat(outBuf, path + 2);
+            return TRUE;
+        }
+        if (len >= 2 && path[1] == L':') {
+            size_t needed = 4 + len;
+            if (needed >= outCap) return FALSE;
+            wcscpy(outBuf, L"\\\\?\\");
+            wcscat(outBuf, path);
+            return TRUE;
+        }
+    }
+    if (len >= outCap) return FALSE;
+    memcpy(outBuf, path, (len + 1) * sizeof(wchar_t));
+    return TRUE;
+}
+
+static DWORD OtGetFileAttributesW(const wchar_t* path) {
+    wchar_t extPath[OT_PATH_CAP + 16];
+    if (!ToWin32PathW(path, extPath, OT_PATH_CAP + 16)) return INVALID_FILE_ATTRIBUTES;
+    return GetFileAttributesW(extPath);
+}
+
+static BOOL OtCreateDirectoryW(const wchar_t* path) {
+    wchar_t extPath[OT_PATH_CAP + 16];
+    if (!ToWin32PathW(path, extPath, OT_PATH_CAP + 16)) return FALSE;
+    return CreateDirectoryW(extPath, NULL);
+}
+
+static BOOL OtCopyFileW(const wchar_t* src, const wchar_t* dst, BOOL failIfExists) {
+    wchar_t wSrc[OT_PATH_CAP + 16], wDst[OT_PATH_CAP + 16];
+    if (!ToWin32PathW(src, wSrc, OT_PATH_CAP + 16)) return FALSE;
+    if (!ToWin32PathW(dst, wDst, OT_PATH_CAP + 16)) return FALSE;
+    return CopyFileW(wSrc, wDst, failIfExists);
+}
+
+static BOOL OtMoveFileExW(const wchar_t* src, const wchar_t* dst, DWORD flags) {
+    wchar_t wSrc[OT_PATH_CAP + 16], wDst[OT_PATH_CAP + 16];
+    if (!ToWin32PathW(src, wSrc, OT_PATH_CAP + 16)) return FALSE;
+    if (!ToWin32PathW(dst, wDst, OT_PATH_CAP + 16)) return FALSE;
+    return MoveFileExW(wSrc, wDst, flags);
+}
+
+static BOOL OtDeleteFileW(const wchar_t* path) {
+    wchar_t extPath[OT_PATH_CAP + 16];
+    if (!ToWin32PathW(path, extPath, OT_PATH_CAP + 16)) return FALSE;
+    return DeleteFileW(extPath);
+}
 
 /* ---------------- Helpers ---------------- */
 
@@ -116,8 +199,15 @@ static BOOL GetEmbeddedResource(int resId, const void** ppData, DWORD* pSize) {
 }
 
 static BOOL WriteBytesAtomicW(const wchar_t* destPath, const wchar_t* tmpPath, const void* data, DWORD size, DWORD* outErr) {
+    wchar_t wDest[OT_PATH_CAP + 16], wTmp[OT_PATH_CAP + 16];
+    if (!ToWin32PathW(destPath, wDest, OT_PATH_CAP + 16) ||
+        !ToWin32PathW(tmpPath, wTmp, OT_PATH_CAP + 16)) {
+        if (outErr) *outErr = ERROR_FILENAME_EXCED_RANGE;
+        return FALSE;
+    }
+
     HANDLE hFile = CreateFileW(
-        tmpPath,
+        wTmp,
         GENERIC_WRITE,
         0,
         NULL,
@@ -139,7 +229,7 @@ static BOOL WriteBytesAtomicW(const wchar_t* destPath, const wchar_t* tmpPath, c
         if (!WriteFile(hFile, ptr + totalWritten, toWrite, &chunk, NULL) || chunk == 0) {
             if (outErr) *outErr = GetLastError();
             CloseHandle(hFile);
-            DeleteFileW(tmpPath);
+            DeleteFileW(wTmp);
             return FALSE;
         }
         totalWritten += chunk;
@@ -148,14 +238,14 @@ static BOOL WriteBytesAtomicW(const wchar_t* destPath, const wchar_t* tmpPath, c
     if (!FlushFileBuffers(hFile)) {
         if (outErr) *outErr = GetLastError();
         CloseHandle(hFile);
-        DeleteFileW(tmpPath);
+        DeleteFileW(wTmp);
         return FALSE;
     }
     CloseHandle(hFile);
 
-    if (!MoveFileExW(tmpPath, destPath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    if (!MoveFileExW(wTmp, wDest, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         if (outErr) *outErr = GetLastError();
-        DeleteFileW(tmpPath);
+        DeleteFileW(wTmp);
         return FALSE;
     }
 
@@ -164,8 +254,14 @@ static BOOL WriteBytesAtomicW(const wchar_t* destPath, const wchar_t* tmpPath, c
 }
 
 static BOOL ReadFileToBufferW(const wchar_t* path, char** outBuf, DWORD* outSize, DWORD* outErr) {
+    wchar_t wPath[OT_PATH_CAP + 16];
+    if (!ToWin32PathW(path, wPath, OT_PATH_CAP + 16)) {
+        if (outErr) *outErr = ERROR_FILENAME_EXCED_RANGE;
+        return FALSE;
+    }
+
     HANDLE hFile = CreateFileW(
-        path,
+        wPath,
         GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL,
@@ -214,6 +310,207 @@ static BOOL ReadFileToBufferW(const wchar_t* path, char** outBuf, DWORD* outSize
     return TRUE;
 }
 
+/* ---------------- Strict RFC 8259 JSON Parser ---------------- */
+
+typedef struct {
+    const char* p;
+    const char* end;
+    int depth;
+    BOOL foundTopLevelDbKey;
+} JsonParserCtx;
+
+static void JsonSkipWs(JsonParserCtx* ctx) {
+    while (ctx->p < ctx->end) {
+        char c = *ctx->p;
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+            ctx->p++;
+        } else {
+            break;
+        }
+    }
+}
+
+static BOOL JsonParseStringToken(
+    JsonParserCtx* ctx,
+    const char** outRawStart,
+    size_t* outRawLen,
+    BOOL* outHasEscape
+) {
+    if (ctx->p >= ctx->end || *ctx->p != '"') return FALSE;
+    ctx->p++;
+    const char* start = ctx->p;
+    BOOL hasEsc = FALSE;
+
+    while (ctx->p < ctx->end) {
+        unsigned char c = (unsigned char)*ctx->p;
+        if (c == '"') {
+            if (outRawStart) *outRawStart = start;
+            if (outRawLen) *outRawLen = (size_t)(ctx->p - start);
+            if (outHasEscape) *outHasEscape = hasEsc;
+            ctx->p++;
+            return TRUE;
+        }
+        if (c < 0x20) {
+            return FALSE; /* unescaped control char forbidden by RFC 8259 */
+        }
+        if (c == '\\') {
+            hasEsc = TRUE;
+            ctx->p++;
+            if (ctx->p >= ctx->end) return FALSE;
+            char esc = *ctx->p++;
+            switch (esc) {
+                case '"': case '\\': case '/': case 'b':
+                case 'f': case 'n': case 'r': case 't':
+                    break;
+                case 'u':
+                    if ((size_t)(ctx->end - ctx->p) < 4) return FALSE;
+                    for (int i = 0; i < 4; i++) {
+                        if (!isxdigit((unsigned char)ctx->p[i])) return FALSE;
+                    }
+                    ctx->p += 4;
+                    break;
+                default:
+                    return FALSE;
+            }
+        } else {
+            ctx->p++;
+        }
+    }
+    return FALSE;
+}
+
+static BOOL JsonParseNumberToken(JsonParserCtx* ctx) {
+    if (ctx->p < ctx->end && *ctx->p == '-') ctx->p++;
+    if (ctx->p >= ctx->end) return FALSE;
+    if (*ctx->p == '0') {
+        ctx->p++;
+    } else if (*ctx->p >= '1' && *ctx->p <= '9') {
+        ctx->p++;
+        while (ctx->p < ctx->end && *ctx->p >= '0' && *ctx->p <= '9') ctx->p++;
+    } else {
+        return FALSE;
+    }
+
+    if (ctx->p < ctx->end && *ctx->p == '.') {
+        ctx->p++;
+        if (ctx->p >= ctx->end || *ctx->p < '0' || *ctx->p > '9') return FALSE;
+        while (ctx->p < ctx->end && *ctx->p >= '0' && *ctx->p <= '9') ctx->p++;
+    }
+
+    if (ctx->p < ctx->end && (*ctx->p == 'e' || *ctx->p == 'E')) {
+        ctx->p++;
+        if (ctx->p < ctx->end && (*ctx->p == '+' || *ctx->p == '-')) ctx->p++;
+        if (ctx->p >= ctx->end || *ctx->p < '0' || *ctx->p > '9') return FALSE;
+        while (ctx->p < ctx->end && *ctx->p >= '0' && *ctx->p <= '9') ctx->p++;
+    }
+    return TRUE;
+}
+
+static BOOL JsonParseValue(JsonParserCtx* ctx) {
+    JsonSkipWs(ctx);
+    if (ctx->p >= ctx->end) return FALSE;
+
+    char c = *ctx->p;
+    if (c == '{') {
+        if (ctx->depth >= MAX_JSON_DEPTH) return FALSE;
+        ctx->depth++;
+        ctx->p++;
+        JsonSkipWs(ctx);
+        if (ctx->p < ctx->end && *ctx->p == '}') {
+            ctx->p++;
+            ctx->depth--;
+            return TRUE;
+        }
+        while (1) {
+            JsonSkipWs(ctx);
+            const char* keyStart = NULL;
+            size_t keyLen = 0;
+            BOOL keyHasEsc = FALSE;
+            if (!JsonParseStringToken(ctx, &keyStart, &keyLen, &keyHasEsc)) {
+                return FALSE;
+            }
+            if (ctx->depth == 1 && !keyHasEsc) {
+                if ((keyLen == 8 && memcmp(keyStart, "entities", 8) == 0) ||
+                    (keyLen == 4 && memcmp(keyStart, "tabs", 4) == 0)) {
+                    ctx->foundTopLevelDbKey = TRUE;
+                }
+            }
+            JsonSkipWs(ctx);
+            if (ctx->p >= ctx->end || *ctx->p != ':') return FALSE;
+            ctx->p++;
+            if (!JsonParseValue(ctx)) return FALSE;
+            JsonSkipWs(ctx);
+            if (ctx->p >= ctx->end) return FALSE;
+            if (*ctx->p == ',') {
+                ctx->p++;
+                continue;
+            }
+            if (*ctx->p == '}') {
+                ctx->p++;
+                ctx->depth--;
+                return TRUE;
+            }
+            return FALSE;
+        }
+    }
+
+    if (c == '[') {
+        if (ctx->depth >= MAX_JSON_DEPTH) return FALSE;
+        ctx->depth++;
+        ctx->p++;
+        JsonSkipWs(ctx);
+        if (ctx->p < ctx->end && *ctx->p == ']') {
+            ctx->p++;
+            ctx->depth--;
+            return TRUE;
+        }
+        while (1) {
+            if (!JsonParseValue(ctx)) return FALSE;
+            JsonSkipWs(ctx);
+            if (ctx->p >= ctx->end) return FALSE;
+            if (*ctx->p == ',') {
+                ctx->p++;
+                continue;
+            }
+            if (*ctx->p == ']') {
+                ctx->p++;
+                ctx->depth--;
+                return TRUE;
+            }
+            return FALSE;
+        }
+    }
+
+    if (c == '"') {
+        return JsonParseStringToken(ctx, NULL, NULL, NULL);
+    }
+    if (c == 't') {
+        if ((size_t)(ctx->end - ctx->p) >= 4 && memcmp(ctx->p, "true", 4) == 0) {
+            ctx->p += 4;
+            return TRUE;
+        }
+        return FALSE;
+    }
+    if (c == 'f') {
+        if ((size_t)(ctx->end - ctx->p) >= 5 && memcmp(ctx->p, "false", 5) == 0) {
+            ctx->p += 5;
+            return TRUE;
+        }
+        return FALSE;
+    }
+    if (c == 'n') {
+        if ((size_t)(ctx->end - ctx->p) >= 4 && memcmp(ctx->p, "null", 4) == 0) {
+            ctx->p += 4;
+            return TRUE;
+        }
+        return FALSE;
+    }
+    if (c == '-' || (c >= '0' && c <= '9')) {
+        return JsonParseNumberToken(ctx);
+    }
+    return FALSE;
+}
+
 static BOOL IsValidDatabaseJson(const char* buf, DWORD size) {
     if (!buf || size < 12) return FALSE;
     DWORD start = 0;
@@ -221,18 +518,99 @@ static BOOL IsValidDatabaseJson(const char* buf, DWORD size) {
     if (size >= 3 && (unsigned char)buf[0] == 0xEF && (unsigned char)buf[1] == 0xBB && (unsigned char)buf[2] == 0xBF) {
         start = 3;
     }
-    while (start < size && isspace((unsigned char)buf[start])) start++;
-    if (start >= size || buf[start] != '{') return FALSE;
 
-    DWORD end = size;
-    while (end > start && isspace((unsigned char)buf[end - 1])) end--;
-    if (end <= start || buf[end - 1] != '}') return FALSE;
+    JsonParserCtx ctx;
+    ctx.p = buf + start;
+    ctx.end = buf + size;
+    ctx.depth = 0;
+    ctx.foundTopLevelDbKey = FALSE;
 
-    /* Must contain top-level entities or tabs key */
-    if (strstr(buf, "\"entities\"") == NULL && strstr(buf, "\"tabs\"") == NULL) {
+    JsonSkipWs(&ctx);
+    if (ctx.p >= ctx.end || *ctx.p != '{') return FALSE;
+    if (!JsonParseValue(&ctx)) return FALSE;
+    JsonSkipWs(&ctx);
+    if (ctx.p != ctx.end) return FALSE;
+    return ctx.foundTopLevelDbKey;
+}
+
+static BOOL ExtractRuntimePortAndToken(
+    const char* buf,
+    DWORD size,
+    unsigned int* outPort,
+    char* outToken,
+    size_t outTokenCap
+) {
+    if (!buf || size == 0 || !outPort || !outToken || outTokenCap == 0) return FALSE;
+    *outPort = 0;
+    outToken[0] = '\0';
+
+    JsonParserCtx ctx;
+    ctx.p = buf;
+    ctx.end = buf + size;
+    ctx.depth = 0;
+    ctx.foundTopLevelDbKey = FALSE;
+
+    JsonSkipWs(&ctx);
+    if (ctx.p >= ctx.end || *ctx.p != '{') return FALSE;
+    ctx.p++;
+    ctx.depth = 1;
+    JsonSkipWs(&ctx);
+    if (ctx.p < ctx.end && *ctx.p == '}') return FALSE;
+
+    while (ctx.p < ctx.end) {
+        JsonSkipWs(&ctx);
+        const char* kStart = NULL;
+        size_t kLen = 0;
+        BOOL kEsc = FALSE;
+        if (!JsonParseStringToken(&ctx, &kStart, &kLen, &kEsc)) return FALSE;
+
+        JsonSkipWs(&ctx);
+        if (ctx.p >= ctx.end || *ctx.p != ':') return FALSE;
+        ctx.p++;
+        JsonSkipWs(&ctx);
+
+        if (!kEsc && kLen == 4 && memcmp(kStart, "port", 4) == 0) {
+            const char* numStart = ctx.p;
+            if (!JsonParseNumberToken(&ctx)) return FALSE;
+            size_t numLen = (size_t)(ctx.p - numStart);
+            if (numLen > 0 && numLen < 16) {
+                char numBuf[16];
+                memcpy(numBuf, numStart, numLen);
+                numBuf[numLen] = '\0';
+                unsigned long parsedPort = strtoul(numBuf, NULL, 10);
+                if (parsedPort > 0 && parsedPort < 65536) {
+                    *outPort = (unsigned int)parsedPort;
+                }
+            }
+        } else if (!kEsc && kLen == 5 && memcmp(kStart, "token", 5) == 0) {
+            const char* tStart = NULL;
+            size_t tLen = 0;
+            BOOL tEsc = FALSE;
+            if (!JsonParseStringToken(&ctx, &tStart, &tLen, &tEsc)) return FALSE;
+            if (!tEsc && tLen > 0 && tLen < outTokenCap) {
+                memcpy(outToken, tStart, tLen);
+                outToken[tLen] = '\0';
+            }
+        } else {
+            if (!JsonParseValue(&ctx)) return FALSE;
+        }
+
+        JsonSkipWs(&ctx);
+        if (ctx.p >= ctx.end) return FALSE;
+        if (*ctx.p == ',') {
+            ctx.p++;
+            continue;
+        }
+        if (*ctx.p == '}') {
+            ctx.p++;
+            break;
+        }
         return FALSE;
     }
-    return TRUE;
+
+    JsonSkipWs(&ctx);
+    if (ctx.p != ctx.end) return FALSE;
+    return (*outPort > 0 && *outPort < 65536 && outToken[0] != '\0');
 }
 
 static void MapWin32Error(DWORD err, int* outHttpStatus, const char** outCode, BOOL* outUsbDisconnected) {
@@ -283,47 +661,51 @@ static void LoadOrInitRevision(void) {
 
 static void PersistRevision(void) {
     char buf[32];
-    int len = sprintf(buf, "%llu", (unsigned long long)g_revision);
+    int len = snprintf(buf, sizeof(buf), "%llu", (unsigned long long)g_revision);
     if (len > 0) {
-        wchar_t tmpRev[MAX_PATH * 2];
-        wsprintfW(tmpRev, L"%s.tmp", g_pathRev);
-        WriteBytesAtomicW(g_pathRev, tmpRev, buf, (DWORD)len, NULL);
+        wchar_t tmpRev[OT_PATH_CAP];
+        if (FormatW(tmpRev, OT_PATH_CAP, L"%s.tmp", g_pathRev)) {
+            WriteBytesAtomicW(g_pathRev, tmpRev, buf, (DWORD)len, NULL);
+        }
     }
 }
 
 static void RotateDbBackups(void) {
-    if (GetFileAttributesW(g_pathDb) == INVALID_FILE_ATTRIBUTES) return;
+    if (OtGetFileAttributesW(g_pathDb) == INVALID_FILE_ATTRIBUTES) return;
 
     /* Keep rolling ring of 4 historical backups + immediate prev */
-    wchar_t bOld[MAX_PATH * 2], bNew[MAX_PATH * 2];
+    wchar_t bOld[OT_PATH_CAP], bNew[OT_PATH_CAP];
     for (int i = 3; i >= 1; i--) {
-        wsprintfW(bOld, L"%s\\ot_database_bak_%d.json", g_pathBackups, i);
-        wsprintfW(bNew, L"%s\\ot_database_bak_%d.json", g_pathBackups, i + 1);
-        if (GetFileAttributesW(bOld) != INVALID_FILE_ATTRIBUTES) {
-            MoveFileExW(bOld, bNew, MOVEFILE_REPLACE_EXISTING);
+        if (!FormatW(bOld, OT_PATH_CAP, L"%s\\ot_database_bak_%d.json", g_pathBackups, i) ||
+            !FormatW(bNew, OT_PATH_CAP, L"%s\\ot_database_bak_%d.json", g_pathBackups, i + 1)) {
+            continue;
+        }
+        if (OtGetFileAttributesW(bOld) != INVALID_FILE_ATTRIBUTES) {
+            OtMoveFileExW(bOld, bNew, MOVEFILE_REPLACE_EXISTING);
         }
     }
-    if (GetFileAttributesW(g_pathDbPrev) != INVALID_FILE_ATTRIBUTES) {
-        wsprintfW(bNew, L"%s\\ot_database_bak_1.json", g_pathBackups);
-        CopyFileW(g_pathDbPrev, bNew, FALSE);
+    if (OtGetFileAttributesW(g_pathDbPrev) != INVALID_FILE_ATTRIBUTES) {
+        if (FormatW(bNew, OT_PATH_CAP, L"%s\\ot_database_bak_1.json", g_pathBackups)) {
+            OtCopyFileW(g_pathDbPrev, bNew, FALSE);
+        }
     }
-    CopyFileW(g_pathDb, g_pathDbPrev, FALSE);
+    OtCopyFileW(g_pathDb, g_pathDbPrev, FALSE);
 }
 
 static BOOL EnsureDatabaseBootstrapped(void) {
-    CreateDirectoryW(g_pathData, NULL);
-    CreateDirectoryW(g_pathBackups, NULL);
-    CreateDirectoryW(g_pathDocs, NULL);
-    CreateDirectoryW(g_pathNorm, NULL);
-    CreateDirectoryW(g_pathTpl, NULL);
+    OtCreateDirectoryW(g_pathData);
+    OtCreateDirectoryW(g_pathBackups);
+    OtCreateDirectoryW(g_pathDocs);
+    OtCreateDirectoryW(g_pathNorm);
+    OtCreateDirectoryW(g_pathTpl);
 
     LoadOrInitRevision();
 
-    DWORD attr = GetFileAttributesW(g_pathDb);
+    DWORD attr = OtGetFileAttributesW(g_pathDb);
     if (attr == INVALID_FILE_ATTRIBUTES) {
         /* Try prev backup first in case previous move died mid-flight (normally atomic) */
-        if (GetFileAttributesW(g_pathDbPrev) != INVALID_FILE_ATTRIBUTES) {
-            if (CopyFileW(g_pathDbPrev, g_pathDb, FALSE)) {
+        if (OtGetFileAttributesW(g_pathDbPrev) != INVALID_FILE_ATTRIBUTES) {
+            if (OtCopyFileW(g_pathDbPrev, g_pathDb, FALSE)) {
                 g_restoredFromBackup = TRUE;
                 return TRUE;
             }
@@ -346,18 +728,19 @@ static BOOL EnsureDatabaseBootstrapped(void) {
         free(buf);
         if (!ok) {
             g_corruptedWarning = TRUE;
-            wchar_t corruptPath[MAX_PATH * 2];
-            wsprintfW(corruptPath, L"%s\\ot_database_corrupted_%lu.json", g_pathBackups, (unsigned long)GetTickCount());
-            CopyFileW(g_pathDb, corruptPath, FALSE);
+            wchar_t corruptPath[OT_PATH_CAP];
+            if (FormatW(corruptPath, OT_PATH_CAP, L"%s\\ot_database_corrupted_%llu.json", g_pathBackups, (unsigned long long)GetTickCount64())) {
+                OtCopyFileW(g_pathDb, corruptPath, FALSE);
+            }
 
             /* Attempt recovery from latest backup */
-            if (GetFileAttributesW(g_pathDbPrev) != INVALID_FILE_ATTRIBUTES) {
+            if (OtGetFileAttributesW(g_pathDbPrev) != INVALID_FILE_ATTRIBUTES) {
                 char* bakBuf = NULL;
                 DWORD bakSz = 0;
                 if (ReadFileToBufferW(g_pathDbPrev, &bakBuf, &bakSz, NULL)) {
                     BOOL bakOk = IsValidDatabaseJson(bakBuf, bakSz);
                     free(bakBuf);
-                    if (bakOk && CopyFileW(g_pathDbPrev, g_pathDb, FALSE)) {
+                    if (bakOk && OtCopyFileW(g_pathDbPrev, g_pathDb, FALSE)) {
                         g_restoredFromBackup = TRUE;
                         return TRUE;
                     }
@@ -438,7 +821,7 @@ static BOOL UrlDecodeUtf8(const char* src, char* dst, size_t dstCap) {
 static BOOL IsSafeSingleFilename(const char* utf8Name, wchar_t* outWideName, size_t outWideCap) {
     if (!utf8Name || !utf8Name[0]) return FALSE;
     size_t len = strlen(utf8Name);
-    if (len > 220) return FALSE;
+    if (len == 0 || len > 768) return FALSE;
 
     if (strcmp(utf8Name, ".") == 0 || strcmp(utf8Name, "..") == 0) return FALSE;
     for (size_t i = 0; i < len; i++) {
@@ -463,7 +846,7 @@ static BOOL IsSafeSingleFilename(const char* utf8Name, wchar_t* outWideName, siz
     }
 
     int wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8Name, -1, outWideName, (int)outWideCap);
-    if (wlen <= 1) return FALSE;
+    if (wlen <= 1 || (wlen - 1) > 235) return FALSE;
 
     /* Disallow trailing dot or space in Windows filenames */
     wchar_t last = outWideName[wlen - 2];
@@ -473,7 +856,7 @@ static BOOL IsSafeSingleFilename(const char* utf8Name, wchar_t* outWideName, siz
 
 static BOOL IsSafeSubpath(const char* utf8RelPath, wchar_t* outWideRelPath, size_t outWideCap) {
     if (!utf8RelPath || !utf8RelPath[0] || outWideCap < 4) return FALSE;
-    char copy[1024];
+    char copy[2048];
     size_t len = strlen(utf8RelPath);
     if (len == 0 || len >= sizeof(copy)) return FALSE;
     memcpy(copy, utf8RelPath, len + 1);
@@ -509,21 +892,27 @@ static BOOL IsSafeSubpath(const char* utf8RelPath, wchar_t* outWideRelPath, size
         if (*cursor == '\0') return FALSE;
     }
 
-    return segCount > 0 && segCount <= 8;
+    return segCount > 0 && segCount <= 12;
 }
 
 static void EnsureParentDirectoriesW(const wchar_t* fullFilePath) {
-    wchar_t dirBuf[MAX_PATH * 2];
+    wchar_t dirBuf[OT_PATH_CAP];
     size_t len = wcslen(fullFilePath);
-    if (len == 0 || len >= MAX_PATH * 2) return;
+    if (len == 0 || len >= OT_PATH_CAP) return;
     memcpy(dirBuf, fullFilePath, (len + 1) * sizeof(wchar_t));
 
+    int uncSlashesToSkip = (dirBuf[0] == L'\\' && dirBuf[1] == L'\\') ? 4 : 0;
+    int seenSlashes = 0;
+
     for (wchar_t* p = dirBuf; *p; p++) {
-        if (*p == L'\\' && p > dirBuf) {
+        if (*p == L'\\') {
+            seenSlashes++;
+            if (uncSlashesToSkip > 0 && seenSlashes <= uncSlashesToSkip) continue;
+            if (p == dirBuf) continue;
             /* Skip drive root like C:\ */
             if (p == dirBuf + 2 && dirBuf[1] == L':') continue;
             *p = L'\0';
-            CreateDirectoryW(dirBuf, NULL);
+            OtCreateDirectoryW(dirBuf);
             *p = L'\\';
         }
     }
@@ -540,7 +929,7 @@ static BOOL ExtractQueryParam(const char* query, const char* key, char* outVal, 
         if (segLen > keyLen + 1 && strncmp(p, key, keyLen) == 0 && p[keyLen] == '=') {
             const char* enc = p + keyLen + 1;
             size_t encLen = segLen - (keyLen + 1);
-            char encBuf[1024];
+            char encBuf[OT_URL_BUF];
             if (encLen >= sizeof(encBuf)) return FALSE;
             memcpy(encBuf, enc, encLen);
             encBuf[encLen] = '\0';
@@ -571,8 +960,9 @@ static void SendHttpResponse(
     DWORD bodyLen
 ) {
     char hdr[1024];
-    int hlen = sprintf(
+    int hlen = snprintf(
         hdr,
+        sizeof(hdr),
         "HTTP/1.1 %d %s\r\n"
         "Content-Type: %s\r\n"
         "Content-Length: %lu\r\n"
@@ -586,7 +976,7 @@ static void SendHttpResponse(
         (unsigned long)bodyLen,
         extraHeaders ? extraHeaders : ""
     );
-    if (hlen > 0) {
+    if (hlen > 0 && (size_t)hlen < sizeof(hdr)) {
         SendAll(s, hdr, (DWORD)hlen);
     }
     if (body && bodyLen > 0) {
@@ -594,16 +984,68 @@ static void SendHttpResponse(
     }
 }
 
+static void JsonAppendRaw(char* dst, size_t dstCap, size_t* ioPos, const char* raw) {
+    if (!dst || !ioPos || !raw) return;
+    while (*raw && *ioPos + 1 < dstCap) {
+        dst[(*ioPos)++] = *raw++;
+    }
+    dst[*ioPos] = '\0';
+}
+
+static void JsonAppendEscaped(char* dst, size_t dstCap, size_t* ioPos, const char* src) {
+    if (!dst || !ioPos) return;
+    if (!src) src = "";
+    static const char hexDigits[] = "0123456789abcdef";
+    for (const unsigned char* p = (const unsigned char*)src; *p; p++) {
+        unsigned char c = *p;
+        const char* esc = NULL;
+        char uEsc[7];
+        switch (c) {
+            case '"': esc = "\\\""; break;
+            case '\\': esc = "\\\\"; break;
+            case '\b': esc = "\\b"; break;
+            case '\f': esc = "\\f"; break;
+            case '\n': esc = "\\n"; break;
+            case '\r': esc = "\\r"; break;
+            case '\t': esc = "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    uEsc[0] = '\\';
+                    uEsc[1] = 'u';
+                    uEsc[2] = '0';
+                    uEsc[3] = '0';
+                    uEsc[4] = hexDigits[(c >> 4) & 0x0F];
+                    uEsc[5] = hexDigits[c & 0x0F];
+                    uEsc[6] = '\0';
+                    esc = uEsc;
+                }
+                break;
+        }
+        if (esc) {
+            size_t elen = strlen(esc);
+            if (*ioPos + elen >= dstCap) break;
+            memcpy(dst + *ioPos, esc, elen);
+            *ioPos += elen;
+        } else {
+            if (*ioPos + 1 >= dstCap) break;
+            dst[(*ioPos)++] = (char)c;
+        }
+    }
+    dst[*ioPos] = '\0';
+}
+
 static void SendJsonError(SOCKET s, int status, const char* statusText, const char* code, const char* message, BOOL usbDisconnected) {
-    char json[512];
-    int len = sprintf(
-        json,
-        "{\"ok\":false,\"error\":\"%s\",\"message\":\"%s\",\"usbDisconnected\":%s}",
-        code,
-        message,
-        usbDisconnected ? "true" : "false"
-    );
-    SendHttpResponse(s, status, statusText, "application/json; charset=utf-8", NULL, json, (DWORD)len);
+    char json[1024];
+    size_t pos = 0;
+    json[0] = '\0';
+    JsonAppendRaw(json, sizeof(json), &pos, "{\"ok\":false,\"error\":\"");
+    JsonAppendEscaped(json, sizeof(json), &pos, code);
+    JsonAppendRaw(json, sizeof(json), &pos, "\",\"message\":\"");
+    JsonAppendEscaped(json, sizeof(json), &pos, message);
+    JsonAppendRaw(json, sizeof(json), &pos, "\",\"usbDisconnected\":");
+    JsonAppendRaw(json, sizeof(json), &pos, usbDisconnected ? "true" : "false");
+    JsonAppendRaw(json, sizeof(json), &pos, "}");
+    SendHttpResponse(s, status, statusText, "application/json; charset=utf-8", NULL, json, (DWORD)pos);
 }
 
 static const char* GuessMimeType(const char* utf8Name) {
@@ -654,8 +1096,8 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
 
     /* Parse Request Line: METHOD /path?query HTTP/1.x */
     char method[16] = {0};
-    char rawTarget[2048] = {0};
-    if (sscanf(reqBuf, "%15s %2047s", method, rawTarget) != 2) {
+    char rawTarget[OT_URL_BUF] = {0};
+    if (sscanf(reqBuf, "%15s %4095s", method, rawTarget) != 2) {
         SendJsonError(s, 400, "Bad Request", "BAD_REQUEST", "Invalid HTTP request line", FALSE);
         free(reqBuf);
         closesocket(s);
@@ -682,8 +1124,8 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
     }
 
     /* Split path and query */
-    char path[2048] = {0};
-    char query[2048] = {0};
+    char path[OT_URL_BUF] = {0};
+    char query[OT_URL_BUF] = {0};
     const char* qmark = strchr(rawTarget, '?');
     if (qmark) {
         size_t plen = (size_t)(qmark - rawTarget);
@@ -749,7 +1191,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
         } else {
             InterlockedExchange(&g_shutdownPending, 0);
             InterlockedExchange(&g_clientEverConnected, 1);
-            g_lastClientTick = GetTickCount64();
+            WriteTick64(&g_lastClientTick, GetTickCount64());
             SendHttpResponse(s, 200, "OK", "text/html; charset=utf-8", NULL, htmlData, htmlSize);
         }
         if (bodyBuf) free(bodyBuf);
@@ -759,12 +1201,12 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
 
     /* 1b. Serve standalone OT-Baza.exe from current binary if requested locally */
     if (StrCaseEq(method, "GET") && strcmp(path, "/download/OT-Baza.exe") == 0) {
-        wchar_t selfExe[MAX_PATH * 2];
-        DWORD selfLen = GetModuleFileNameW(NULL, selfExe, MAX_PATH * 2);
+        wchar_t selfExe[OT_PATH_CAP];
+        DWORD selfLen = GetModuleFileNameW(NULL, selfExe, OT_PATH_CAP);
         char* exeBuf = NULL;
         DWORD exeSize = 0;
         DWORD rErr = 0;
-        if (selfLen == 0 || !ReadFileToBufferW(selfExe, &exeBuf, &exeSize, &rErr)) {
+        if (selfLen == 0 || selfLen >= OT_PATH_CAP || !ReadFileToBufferW(selfExe, &exeBuf, &exeSize, &rErr)) {
             SendJsonError(s, 500, "FS Error", "EXE_READ_FAILED", "Unable to read OT-Baza.exe binary", FALSE);
         } else {
             SendHttpResponse(
@@ -818,13 +1260,13 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
         if (strcmp(path, "/api/shutdown") != 0) {
             InterlockedExchange(&g_shutdownPending, 0);
             InterlockedExchange(&g_clientEverConnected, 1);
-            g_lastClientTick = GetTickCount64();
+            WriteTick64(&g_lastClientTick, GetTickCount64());
         }
 
         /* Route: GET /api/health or GET /api/heartbeat */
         if (StrCaseEq(method, "GET") && (strcmp(path, "/api/health") == 0 || strcmp(path, "/api/heartbeat") == 0)) {
             EnterCriticalSection(&g_fsLock);
-            DWORD attr = GetFileAttributesW(g_pathData);
+            DWORD attr = OtGetFileAttributesW(g_pathData);
             DWORD lastErr = (attr == INVALID_FILE_ATTRIBUTES) ? GetLastError() : 0;
             uint64_t rev = g_revision;
             BOOL restored = g_restoredFromBackup;
@@ -839,8 +1281,9 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
                 SendJsonError(s, st, "Service Unavailable", code, "Data directory inaccessible (drive disconnected?)", TRUE);
             } else {
                 char json[512];
-                int len = sprintf(
+                int len = snprintf(
                     json,
+                    sizeof(json),
                     "{\"ok\":true,\"mode\":\"native-fs\",\"revision\":%llu,\"restoredFromBackup\":%s,\"corruptedWarning\":%s,\"storage\":\"./data/ot_database.json\"}",
                     (unsigned long long)rev,
                     restored ? "true" : "false",
@@ -855,7 +1298,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
 
         /* Route: POST /api/shutdown */
         if (StrCaseEq(method, "POST") && strcmp(path, "/api/shutdown") == 0) {
-            g_shutdownTick = GetTickCount64();
+            WriteTick64(&g_shutdownTick, GetTickCount64());
             InterlockedExchange(&g_shutdownPending, 1);
             const char* resp = "{\"ok\":true,\"status\":\"shutting_down\"}";
             SendHttpResponse(s, 200, "OK", "application/json; charset=utf-8", NULL, resp, (DWORD)strlen(resp));
@@ -952,17 +1395,18 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
         if (StrCaseEq(method, "POST") && strcmp(path, "/api/backup") == 0) {
             SYSTEMTIME stNow;
             GetLocalTime(&stNow);
-            wchar_t bakName[128], bakFull[MAX_PATH * 2];
-            wsprintfW(
+            wchar_t bakName[128], bakFull[OT_PATH_CAP];
+            FormatW(
                 bakName,
+                128,
                 L"ot_backup_%04d%02d%02d_%02d%02d%02d.json",
                 stNow.wYear, stNow.wMonth, stNow.wDay,
                 stNow.wHour, stNow.wMinute, stNow.wSecond
             );
-            wsprintfW(bakFull, L"%s\\%s", g_pathBackups, bakName);
+            FormatW(bakFull, OT_PATH_CAP, L"%s\\%s", g_pathBackups, bakName);
 
             EnterCriticalSection(&g_fsLock);
-            BOOL copied = CopyFileW(g_pathDb, bakFull, FALSE);
+            BOOL copied = OtCopyFileW(g_pathDb, bakFull, FALSE);
             DWORD fsErr = copied ? 0 : GetLastError();
             LeaveCriticalSection(&g_fsLock);
 
@@ -975,9 +1419,13 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
             } else {
                 char utfName[256] = {0};
                 WideCharToMultiByte(CP_UTF8, 0, bakName, -1, utfName, sizeof(utfName) - 1, NULL, NULL);
-                char json[384];
-                int len = sprintf(json, "{\"ok\":true,\"fileName\":\"%s\"}", utfName);
-                SendHttpResponse(s, 200, "OK", "application/json; charset=utf-8", NULL, json, (DWORD)len);
+                char json[512];
+                size_t pos = 0;
+                json[0] = '\0';
+                JsonAppendRaw(json, sizeof(json), &pos, "{\"ok\":true,\"fileName\":\"");
+                JsonAppendEscaped(json, sizeof(json), &pos, utfName);
+                JsonAppendRaw(json, sizeof(json), &pos, "\"}");
+                SendHttpResponse(s, 200, "OK", "application/json; charset=utf-8", NULL, json, (DWORD)pos);
             }
             if (bodyBuf) free(bodyBuf);
             closesocket(s);
@@ -986,33 +1434,38 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
 
         /* Route: POST /api/files-move/documents?from=...&to=... */
         if (StrCaseEq(method, "POST") && strcmp(path, "/api/files-move/documents") == 0) {
-            char fromUtf8[1024] = {0};
-            char toUtf8[1024] = {0};
-            wchar_t wFromRel[MAX_PATH] = {0};
-            wchar_t wToRel[MAX_PATH] = {0};
+            char fromUtf8[2048] = {0};
+            char toUtf8[2048] = {0};
+            wchar_t wFromRel[1024] = {0};
+            wchar_t wToRel[1024] = {0};
 
             if (!ExtractQueryParam(query, "from", fromUtf8, sizeof(fromUtf8)) ||
                 !ExtractQueryParam(query, "to", toUtf8, sizeof(toUtf8)) ||
-                !IsSafeSubpath(fromUtf8, wFromRel, MAX_PATH) ||
-                !IsSafeSubpath(toUtf8, wToRel, MAX_PATH)) {
+                !IsSafeSubpath(fromUtf8, wFromRel, 1024) ||
+                !IsSafeSubpath(toUtf8, wToRel, 1024)) {
                 SendJsonError(s, 400, "Bad Request", "INVALID_MOVE_PATH", "Unsafe or missing source/target path", FALSE);
                 if (bodyBuf) free(bodyBuf);
                 closesocket(s);
                 return 0;
             }
 
-            wchar_t srcFull[MAX_PATH * 2], dstFull[MAX_PATH * 2];
-            wsprintfW(srcFull, L"%s\\%s", g_pathDocs, wFromRel);
-            wsprintfW(dstFull, L"%s\\%s", g_pathDocs, wToRel);
+            wchar_t srcFull[OT_PATH_CAP], dstFull[OT_PATH_CAP];
+            if (!FormatW(srcFull, OT_PATH_CAP, L"%s\\%s", g_pathDocs, wFromRel) ||
+                !FormatW(dstFull, OT_PATH_CAP, L"%s\\%s", g_pathDocs, wToRel)) {
+                SendJsonError(s, 414, "URI Too Long", "PATH_TOO_LONG", "Document path exceeds buffer limit", FALSE);
+                if (bodyBuf) free(bodyBuf);
+                closesocket(s);
+                return 0;
+            }
 
             EnterCriticalSection(&g_fsLock);
-            BOOL srcExists = (GetFileAttributesW(srcFull) != INVALID_FILE_ATTRIBUTES);
+            BOOL srcExists = (OtGetFileAttributesW(srcFull) != INVALID_FILE_ATTRIBUTES);
             BOOL movedOk = TRUE;
             DWORD mErr = 0;
             if (srcExists) {
-                CreateDirectoryW(g_pathDocs, NULL);
+                OtCreateDirectoryW(g_pathDocs);
                 EnsureParentDirectoriesW(dstFull);
-                movedOk = MoveFileExW(srcFull, dstFull, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+                movedOk = OtMoveFileExW(srcFull, dstFull, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
                 if (!movedOk) mErr = GetLastError();
             }
             LeaveCriticalSection(&g_fsLock);
@@ -1061,13 +1514,13 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
                 return 0;
             }
 
-            char decodedName[1024] = {0};
-            wchar_t safeWName[MAX_PATH] = {0};
+            char decodedName[2048] = {0};
+            wchar_t safeWName[1024] = {0};
             BOOL allowSubpath = (strcmp(bucket, "documents") == 0);
             BOOL nameOk = UrlDecodeUtf8(slash + 1, decodedName, sizeof(decodedName)) &&
                 (allowSubpath
-                    ? IsSafeSubpath(decodedName, safeWName, MAX_PATH)
-                    : IsSafeSingleFilename(decodedName, safeWName, MAX_PATH));
+                    ? IsSafeSubpath(decodedName, safeWName, 1024)
+                    : IsSafeSingleFilename(decodedName, safeWName, 1024));
             if (!nameOk) {
                 SendJsonError(s, 400, "Bad Request", "UNSAFE_FILENAME", "Filename rejected by path traversal filter", FALSE);
                 if (bodyBuf) free(bodyBuf);
@@ -1075,9 +1528,14 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
                 return 0;
             }
 
-            wchar_t fullFile[MAX_PATH * 2], tmpFile[MAX_PATH * 2];
-            wsprintfW(fullFile, L"%s\\%s", bucketDir, safeWName);
-            wsprintfW(tmpFile, L"%s\\%s.tmp", bucketDir, safeWName);
+            wchar_t fullFile[OT_PATH_CAP], tmpFile[OT_PATH_CAP];
+            if (!FormatW(fullFile, OT_PATH_CAP, L"%s\\%s", bucketDir, safeWName) ||
+                !FormatW(tmpFile, OT_PATH_CAP, L"%s\\%s.tmp", bucketDir, safeWName)) {
+                SendJsonError(s, 414, "URI Too Long", "PATH_TOO_LONG", "Target file path exceeds buffer limit", FALSE);
+                if (bodyBuf) free(bodyBuf);
+                closesocket(s);
+                return 0;
+            }
 
             if (StrCaseEq(method, "PUT") || StrCaseEq(method, "POST")) {
                 if (!bodyBuf || contentLen == 0) {
@@ -1087,7 +1545,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
                     return 0;
                 }
                 EnterCriticalSection(&g_fsLock);
-                CreateDirectoryW(bucketDir, NULL);
+                OtCreateDirectoryW(bucketDir);
                 EnsureParentDirectoriesW(fullFile);
                 DWORD wErr = 0;
                 BOOL ok = WriteBytesAtomicW(fullFile, tmpFile, bodyBuf, contentLen, &wErr);
@@ -1134,7 +1592,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
 
             if (StrCaseEq(method, "DELETE")) {
                 EnterCriticalSection(&g_fsLock);
-                BOOL deleted = DeleteFileW(fullFile);
+                BOOL deleted = OtDeleteFileW(fullFile);
                 DWORD dErr = deleted ? 0 : GetLastError();
                 LeaveCriticalSection(&g_fsLock);
 
@@ -1190,10 +1648,10 @@ static void LaunchBrowserWindow(uint16_t port, const char* token) {
     MultiByteToWideChar(CP_UTF8, 0, token, -1, wToken, 64);
 
     wchar_t appUrl[256];
-    wsprintfW(appUrl, L"http://127.0.0.1:%u/#token=%s", (unsigned)port, wToken);
+    FormatW(appUrl, 256, L"http://127.0.0.1:%u/#token=%s", (unsigned)port, wToken);
 
     wchar_t appArgs[320];
-    wsprintfW(appArgs, L"--app=%s", appUrl);
+    FormatW(appArgs, 320, L"--app=%s", appUrl);
 
     HINSTANCE hRun = ShellExecuteW(NULL, L"open", L"msedge.exe", appArgs, g_dirPath, SW_SHOWNORMAL);
     if ((INT_PTR)hRun <= 32) {
@@ -1211,23 +1669,10 @@ static BOOL TryForwardToRunningInstance(void) {
 
     unsigned int existingPort = 0;
     char existingToken[64] = {0};
-
-    const char* pPort = strstr(rtBuf, "\"port\":");
-    if (pPort) {
-        existingPort = (unsigned int)strtoul(pPort + 7, NULL, 10);
-    }
-    const char* pTok = strstr(rtBuf, "\"token\":\"");
-    if (pTok) {
-        pTok += 9;
-        const char* pEnd = strchr(pTok, '"');
-        if (pEnd && (size_t)(pEnd - pTok) < sizeof(existingToken)) {
-            memcpy(existingToken, pTok, (size_t)(pEnd - pTok));
-            existingToken[pEnd - pTok] = '\0';
-        }
-    }
+    BOOL parsed = ExtractRuntimePortAndToken(rtBuf, rtSz, &existingPort, existingToken, sizeof(existingToken));
     free(rtBuf);
 
-    if (existingPort > 0 && existingPort < 65536 && existingToken[0] != '\0') {
+    if (parsed) {
         LaunchBrowserWindow((uint16_t)existingPort, existingToken);
         return TRUE;
     }
@@ -1242,7 +1687,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     (void)lpCmdLine;
     (void)nCmdShow;
 
-    if (GetModuleFileNameW(NULL, g_dirPath, MAX_PATH * 2) == 0) {
+    DWORD modLen = GetModuleFileNameW(NULL, g_dirPath, OT_PATH_CAP);
+    if (modLen == 0 || modLen >= OT_PATH_CAP) {
         return 1;
     }
     wchar_t* lastSlash = wcsrchr(g_dirPath, L'\\');
@@ -1253,21 +1699,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
     SetCurrentDirectoryW(g_dirPath);
 
-    wsprintfW(g_pathData, L"%s\\data", g_dirPath);
-    wsprintfW(g_pathBackups, L"%s\\data\\backups", g_dirPath);
-    wsprintfW(g_pathDocs, L"%s\\documents", g_dirPath);
-    wsprintfW(g_pathNorm, L"%s\\normatives", g_dirPath);
-    wsprintfW(g_pathTpl, L"%s\\templates", g_dirPath);
-    wsprintfW(g_pathDb, L"%s\\data\\ot_database.json", g_dirPath);
-    wsprintfW(g_pathDbTmp, L"%s\\data\\ot_database.json.tmp", g_dirPath);
-    wsprintfW(g_pathDbPrev, L"%s\\data\\backups\\ot_database_prev.json", g_dirPath);
-    wsprintfW(g_pathRev, L"%s\\data\\.ot_database.rev", g_dirPath);
-    wsprintfW(g_pathRuntime, L"%s\\data\\.ot_runtime.json", g_dirPath);
+    if (!FormatW(g_pathData, OT_PATH_CAP, L"%s\\data", g_dirPath) ||
+        !FormatW(g_pathBackups, OT_PATH_CAP, L"%s\\data\\backups", g_dirPath) ||
+        !FormatW(g_pathDocs, OT_PATH_CAP, L"%s\\documents", g_dirPath) ||
+        !FormatW(g_pathNorm, OT_PATH_CAP, L"%s\\normatives", g_dirPath) ||
+        !FormatW(g_pathTpl, OT_PATH_CAP, L"%s\\templates", g_dirPath) ||
+        !FormatW(g_pathDb, OT_PATH_CAP, L"%s\\data\\ot_database.json", g_dirPath) ||
+        !FormatW(g_pathDbTmp, OT_PATH_CAP, L"%s\\data\\ot_database.json.tmp", g_dirPath) ||
+        !FormatW(g_pathDbPrev, OT_PATH_CAP, L"%s\\data\\backups\\ot_database_prev.json", g_dirPath) ||
+        !FormatW(g_pathRev, OT_PATH_CAP, L"%s\\data\\.ot_database.rev", g_dirPath) ||
+        !FormatW(g_pathRuntime, OT_PATH_CAP, L"%s\\data\\.ot_runtime.json", g_dirPath)) {
+        return 1;
+    }
 
     /* Single-instance lock per folder */
     uint64_t dirHash = fnv1a_lower_w(g_dirPath);
     wchar_t mutexName[128];
-    wsprintfW(mutexName, L"Local\\OTBaza_%08lX%08lX", (unsigned long)(dirHash >> 32), (unsigned long)(dirHash & 0xFFFFFFFFULL));
+    FormatW(mutexName, 128, L"Local\\OTBaza_%08lX%08lX", (unsigned long)(dirHash >> 32), (unsigned long)(dirHash & 0xFFFFFFFFULL));
     HANDLE hMutex = CreateMutexW(NULL, TRUE, mutexName);
     if (hMutex != NULL && GetLastError() == ERROR_ALREADY_EXISTS) {
         if (!TryForwardToRunningInstance()) {
@@ -1349,14 +1797,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     /* Persist runtime coordinates strictly inside protected data dir */
     char rtJson[256];
-    int rtLen = sprintf(rtJson, "{\"port\":%u,\"pid\":%lu,\"token\":\"%s\"}", (unsigned)g_port, (unsigned long)GetCurrentProcessId(), g_token);
-    if (rtLen > 0) {
-        wchar_t rtTmp[MAX_PATH * 2];
-        wsprintfW(rtTmp, L"%s.tmp", g_pathRuntime);
-        WriteBytesAtomicW(g_pathRuntime, rtTmp, rtJson, (DWORD)rtLen, NULL);
+    size_t rtPos = 0;
+    rtJson[0] = '\0';
+    char rtPrefix[96];
+    snprintf(rtPrefix, sizeof(rtPrefix), "{\"port\":%u,\"pid\":%lu,\"token\":\"", (unsigned)g_port, (unsigned long)GetCurrentProcessId());
+    JsonAppendRaw(rtJson, sizeof(rtJson), &rtPos, rtPrefix);
+    JsonAppendEscaped(rtJson, sizeof(rtJson), &rtPos, g_token);
+    JsonAppendRaw(rtJson, sizeof(rtJson), &rtPos, "\"}");
+    if (rtPos > 0) {
+        wchar_t rtTmp[OT_PATH_CAP];
+        if (FormatW(rtTmp, OT_PATH_CAP, L"%s.tmp", g_pathRuntime)) {
+            WriteBytesAtomicW(g_pathRuntime, rtTmp, rtJson, (DWORD)rtPos, NULL);
+        }
     }
 
-    g_lastClientTick = GetTickCount64();
+    WriteTick64(&g_lastClientTick, GetTickCount64());
     HANDLE hAccept = CreateThread(NULL, 0, AcceptLoopProc, NULL, 0, NULL);
 
     /* Open Edge / Chrome App Window pointing to embedded loopback HTTP server */
@@ -1367,21 +1822,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     while (1) {
         Sleep(500);
         ULONGLONG now = GetTickCount64();
+        ULONGLONG shutTick = ReadTick64(&g_shutdownTick);
 
         if (InterlockedCompareExchange(&g_shutdownPending, 1, 1) == 1) {
             /* 2-second grace allows F5 reloads before shutting down */
-            if (now - g_shutdownTick >= 2000) {
+            if (now >= shutTick && (now - shutTick) >= 2000ULL) {
                 break;
             }
         }
 
+        ULONGLONG lastTick = ReadTick64(&g_lastClientTick);
         if (InterlockedCompareExchange(&g_clientEverConnected, 1, 1) == 1) {
-            if (now - g_lastClientTick >= 60000) {
+            if (now >= lastTick && (now - lastTick) >= 60000ULL) {
                 /* No heartbeat for 60s (e.g. browser killed externally) */
                 break;
             }
         } else {
-            if (now - bootTick >= 120000) {
+            if (now >= bootTick && (now - bootTick) >= 120000ULL) {
                 /* Browser never connected within 120s */
                 break;
             }
@@ -1399,7 +1856,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         CloseHandle(hAccept);
     }
 
-    DeleteFileW(g_pathRuntime);
+    OtDeleteFileW(g_pathRuntime);
     WSACleanup();
     DeleteCriticalSection(&g_fsLock);
     if (hMutex) {

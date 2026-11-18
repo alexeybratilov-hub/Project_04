@@ -338,6 +338,7 @@ export const INITIAL_DATABASE_STATE: DatabaseState = {
     portableMode: true,
     theme: 'light',
     autoSave: true,
+    tabBarMode: 'single',
     lastBackupDate: '2026-03-01'
   }
 };

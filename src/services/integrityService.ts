@@ -583,5 +583,37 @@ export const integrityService = {
       }
     });
     return orphaned;
+  },
+
+  /**
+   * Check which document templates (active or archived) reference a given tag name
+   */
+  getTagDeleteImpact(
+    tagName: string,
+    templates: DocumentTemplate[]
+  ): {
+    isUsed: boolean;
+    usedInTemplates: { id: string; name: string; isArchived?: boolean }[];
+  } {
+    const clean = String(tagName || '').trim();
+    if (!clean) {
+      return { isUsed: false, usedInTemplates: [] };
+    }
+    const usedInTemplates = templates
+      .filter(
+        (tpl) =>
+          (tpl.contentTemplate && tpl.contentTemplate.includes(clean)) ||
+          (tpl.namingPattern && tpl.namingPattern.includes(clean))
+      )
+      .map((tpl) => ({
+        id: tpl.id,
+        name: tpl.name,
+        isArchived: tpl.isArchived
+      }));
+
+    return {
+      isUsed: usedInTemplates.length > 0,
+      usedInTemplates
+    };
   }
 };

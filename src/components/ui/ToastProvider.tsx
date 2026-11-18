@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useState } from 'react';
 import { CheckCircle2, AlertTriangle, Info, X } from 'lucide-react';
+import { Z_INDEX } from './zIndex';
 
 export type ToastVariant = 'success' | 'error' | 'info' | 'warning';
 
@@ -40,7 +41,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       {children}
       {toasts.length > 0 && (
         <div
-          className="fixed bottom-9 right-4 z-[200] flex flex-col gap-2 max-w-sm w-full pointer-events-none"
+          className={`fixed bottom-9 right-4 ${Z_INDEX.toast} flex flex-col gap-2 max-w-sm w-full pointer-events-none`}
           role="status"
           aria-live="polite"
         >

@@ -7,6 +7,7 @@ import {
 import { AppSettings, LegalEntity } from '../types/database';
 import { SaveStatusState } from '../services/storageService';
 import { StorageMode } from '../services/localApiClient';
+import { Z_INDEX } from './ui';
 
 interface TitleBarProps {
   settings: AppSettings;
@@ -85,10 +86,10 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   })();
 
   return (
-    <header className="h-10 bg-slate-900 text-slate-200 select-none flex items-center justify-between gap-4 px-3 border-b border-slate-800 text-xs shrink-0 z-50 relative">
+    <header className={`h-9 bg-slate-900 text-slate-200 select-none flex items-center justify-between gap-2 sm:gap-3 px-3 border-b border-slate-800 text-xs shrink-0 ${Z_INDEX.topbar} relative`}>
       {/* Left Zone: Brand + Legal Entity Switcher */}
-      <div className="flex items-center gap-3 min-w-0">
-        <div className="flex items-center gap-2 shrink-0">
+      <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
+        <div className="flex items-center gap-1.5 shrink-0">
           <div className="w-5 h-5 rounded bg-blue-600 flex items-center justify-center text-white font-bold text-[10px]">
             ОТ
           </div>
@@ -99,14 +100,14 @@ export const TitleBar: React.FC<TitleBarProps> = ({
 
         <span className="text-slate-700 hidden sm:inline" aria-hidden="true">|</span>
 
-        <div className="relative" ref={entityMenuRef}>
+        <div className="relative min-w-0" ref={entityMenuRef}>
           <button
             type="button"
             onClick={() => {
               setIsEntityMenuOpen((v) => !v);
               setConfirmDeleteId(null);
             }}
-            className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700/80 text-slate-100 transition-colors max-w-[260px] sm:max-w-[340px] cursor-pointer"
+            className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700/80 text-slate-100 transition-colors max-w-[210px] sm:max-w-[260px] lg:max-w-[340px] cursor-pointer"
             title="Переключить организацию или открыть карточку юрлица"
           >
             <Building2 className="w-3.5 h-3.5 text-blue-400 shrink-0" />
@@ -114,7 +115,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
               {activeEntity.profile.shortName || activeEntity.profile.fullName}
             </span>
             {activeEntity.profile.inn && (
-              <span className="hidden md:inline text-[10px] font-mono tabular-nums text-slate-400 shrink-0">
+              <span className="hidden lg:inline text-[10px] font-mono tabular-nums text-slate-400 shrink-0">
                 · ИНН {activeEntity.profile.inn}
               </span>
             )}
@@ -122,7 +123,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
           </button>
 
           {isEntityMenuOpen && (
-            <div className="fixed sm:absolute top-10 sm:top-full left-2 sm:left-0 mt-1 w-[360px] max-w-[calc(100vw-16px)] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-[120] overflow-hidden text-slate-800 dark:text-slate-100 animate-in fade-in zoom-in-95 duration-100">
+            <div className={`fixed sm:absolute top-10 sm:top-full left-2 sm:left-0 mt-1 w-[360px] max-w-[calc(100vw-16px)] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl ${Z_INDEX.popover} overflow-hidden text-slate-800 dark:text-slate-100 animate-in fade-in zoom-in-95 duration-100`}>
               <div className="px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
                 <div>
                   <div className="font-semibold text-xs text-slate-900 dark:text-slate-100">
@@ -289,7 +290,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       </div>
 
       {/* Center Zone: Honest Save Status */}
-      <div className="hidden md:flex items-center gap-2 text-[11px] shrink-0">
+      <div className="hidden sm:flex items-center gap-2 text-[11px] shrink-0">
         {saveStatus === 'saving' ? (
           <span className="flex items-center gap-1.5 text-blue-300 whitespace-nowrap">
             <RefreshCw className="w-3 h-3 animate-spin" />
@@ -350,10 +351,10 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         <button
           type="button"
           onClick={onOpenPortableModal}
-          className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-slate-300 hover:text-white hover:bg-slate-800 rounded transition-colors whitespace-nowrap cursor-pointer"
+          className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-slate-300 hover:text-white hover:bg-slate-800 rounded transition-colors whitespace-nowrap cursor-pointer"
           title="Портативная версия для Windows (OT-Baza.exe и папка базы данных)"
         >
-          <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+          <HardDrive className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
           <span className="hidden sm:inline">Портативная сборка</span>
         </button>
 

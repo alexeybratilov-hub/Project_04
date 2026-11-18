@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import {
-  X, BookOpen, Upload, Trash2, Eye,
+  BookOpen, Upload, Trash2, Eye,
   File, Globe2, Download, CheckCircle2, AlertTriangle
 } from 'lucide-react';
 import { AttachedDoc, Tab } from '../types/database';
 import { localApiClient, sanitizeSafeFilename } from '../services/localApiClient';
-import { useToast } from './ui/ToastProvider';
+import { AppButton, AppModal, InlineConfirm, useToast } from './ui';
 
 interface NormativeDocsModalProps {
   isOpen: boolean;
@@ -57,17 +57,6 @@ export const NormativeDocsModal: React.FC<NormativeDocsModalProps> = ({
       }
     }
   }, [isOpen, normativeDocs, selectedDoc]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, onClose]);
-
-  if (!isOpen) return null;
 
   const isNative = localApiClient.isNative();
 
@@ -199,225 +188,186 @@ export const NormativeDocsModal: React.FC<NormativeDocsModalProps> = ({
     Boolean((isNative && doc.storageFileName) || doc.dataBase64 || doc.contentSnippet);
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4"
-      role="dialog"
-      aria-modal="true"
+    <AppModal
+      isOpen={isOpen}
+      onClose={onClose}
+      size="5xl"
+      icon={<BookOpen className="w-5 h-5" />}
+      iconTone="purple"
+      title="Общая база нормативных документов (ГОСТ, СП, Приказы)"
+      subtitle={
+        <span className="inline-flex items-center gap-1.5">
+          <Globe2 className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+          <span>
+            Единая библиотека нормативов для всех юридических лиц
+            {isNative ? ' · Файлы сохраняются в ./normatives/' : ''}
+          </span>
+        </span>
+      }
+      footer={
+        <AppButton variant="secondary" onClick={onClose}>
+          Закрыть
+        </AppButton>
+      }
     >
-      <div className="w-full max-w-5xl max-h-[92vh] bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-400 rounded-lg">
-              <BookOpen className="w-5 h-5" />
-            </div>
-            <div>
-              <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                Общая база нормативных документов (ГОСТ, СП, Приказы)
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
-                <Globe2 className="w-3.5 h-3.5 text-purple-600 shrink-0" />
-                <span>
-                  Единая библиотека нормативов для всех юридических лиц
-                  {isNative ? ' · Файлы сохраняются в ./normatives/' : ''}
-                </span>
-              </p>
-            </div>
+      {/* Content Body (2-panel workbench) */}
+      <div className="flex-1 overflow-hidden grid grid-cols-1 md:grid-cols-12 divide-y md:divide-y-0 md:divide-x divide-slate-200 dark:divide-slate-800">
+        {/* Left: Library */}
+        <div className="md:col-span-5 p-5 overflow-y-auto space-y-4 text-xs">
+          <label className="flex flex-col items-center justify-center w-full h-24 border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-purple-500 rounded-xl cursor-pointer bg-slate-50 dark:bg-slate-800/40 hover:bg-purple-50/30 dark:hover:bg-purple-950/20 transition-all px-4 text-center">
+            <Upload className="w-5 h-5 text-purple-600 mb-1" />
+            <span className="font-semibold text-slate-700 dark:text-slate-200 text-xs">
+              {isUploading ? 'Сохранение файла...' : 'Добавить акт в общую базу (.docx, .pdf, .txt)'}
+            </span>
+            <span className="text-[11px] text-slate-400 mt-0.5">
+              {isNative
+                ? 'Содержимое файла физически сохраняется в папку ./normatives/'
+                : 'Встроенная библиотека для всех организаций'}
+            </span>
+            <input
+              type="file"
+              accept=".docx,.pdf,.txt,.doc,.md"
+              onChange={handleFileUpload}
+              disabled={isUploading}
+              className="hidden"
+            />
+          </label>
+
+          <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg w-fit">
+            <button
+              type="button"
+              onClick={() => setFilterMode('all')}
+              className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors cursor-pointer ${
+                filterMode === 'all'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}
+            >
+              Все акты ({normativeDocs.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setFilterMode('tab')}
+              className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors cursor-pointer ${
+                filterMode === 'tab'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}
+            >
+              По теме «{currentTab.name}»
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg transition-colors"
-            aria-label="Закрыть"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
 
-        {/* Content Body */}
-        <div className="flex-1 overflow-hidden grid grid-cols-1 md:grid-cols-12 divide-y md:divide-y-0 md:divide-x divide-slate-200 dark:divide-slate-800">
-          {/* Left: Library */}
-          <div className="md:col-span-5 p-5 overflow-y-auto space-y-4 text-xs">
-            <label className="flex flex-col items-center justify-center w-full h-24 border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-purple-500 rounded-xl cursor-pointer bg-slate-50 dark:bg-slate-800/40 hover:bg-purple-50/30 dark:hover:bg-purple-950/20 transition-all px-4 text-center">
-              <Upload className="w-5 h-5 text-purple-600 mb-1" />
-              <span className="font-semibold text-slate-700 dark:text-slate-200 text-xs">
-                {isUploading ? 'Сохранение файла...' : 'Добавить акт в общую базу (.docx, .pdf, .txt)'}
-              </span>
-              <span className="text-[11px] text-slate-400 mt-0.5">
-                {isNative
-                  ? 'Содержимое файла физически сохраняется в папку ./normatives/'
-                  : 'Встроенная библиотека для всех организаций'}
-              </span>
-              <input
-                type="file"
-                accept=".docx,.pdf,.txt,.doc,.md"
-                onChange={handleFileUpload}
-                disabled={isUploading}
-                className="hidden"
-              />
-            </label>
-
-            <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg w-fit">
-              <button
-                type="button"
-                onClick={() => setFilterMode('all')}
-                className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${
-                  filterMode === 'all'
-                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
-                    : 'text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                Все акты ({normativeDocs.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setFilterMode('tab')}
-                className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${
-                  filterMode === 'tab'
-                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
-                    : 'text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                По теме «{currentTab.name}»
-              </button>
-            </div>
-
-            <div className="space-y-2">
-              {displayedDocs.length === 0 ? (
-                <p className="p-4 text-center text-slate-400 border border-dashed border-slate-200 dark:border-slate-800 rounded-lg">
-                  Нормативные документы не найдены.
-                </p>
-              ) : (
-                displayedDocs.map((doc) => {
-                  const isSelected = selectedDoc?.id === doc.id;
-                  const isConfirming = confirmDeleteId === doc.id;
-                  return (
-                    <div
-                      key={doc.id}
-                      onClick={() => setSelectedDoc(doc)}
-                      className={`p-3 rounded-lg border transition-colors cursor-pointer space-y-2 ${
-                        isSelected
-                          ? 'bg-purple-50/80 dark:bg-purple-950/40 border-purple-300 dark:border-purple-700'
-                          : 'bg-white dark:bg-slate-800/40 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex items-start gap-2.5 min-w-0">
-                          <File className="w-4 h-4 text-purple-600 shrink-0 mt-0.5" />
-                          <div className="min-w-0">
-                            <p className="font-semibold text-slate-800 dark:text-slate-100 break-words leading-snug">
-                              {doc.fileName}
-                            </p>
-                            <p className="text-[10px] text-slate-400 mt-0.5 font-mono tabular-nums">
-                              {doc.sizeFormatted} · {doc.uploadDate}
-                              {doc.relatedTabName ? ` · ${doc.relatedTabName}` : ''}
-                            </p>
-                          </div>
+          <div className="space-y-2">
+            {displayedDocs.length === 0 ? (
+              <p className="p-4 text-center text-slate-400 border border-dashed border-slate-200 dark:border-slate-800 rounded-lg">
+                Нормативные документы не найдены.
+              </p>
+            ) : (
+              displayedDocs.map((doc) => {
+                const isSelected = selectedDoc?.id === doc.id;
+                const isConfirming = confirmDeleteId === doc.id;
+                return (
+                  <div
+                    key={doc.id}
+                    onClick={() => setSelectedDoc(doc)}
+                    className={`p-3 rounded-lg border transition-colors cursor-pointer space-y-2 ${
+                      isSelected
+                        ? 'bg-purple-50/80 dark:bg-purple-950/40 border-purple-300 dark:border-purple-700'
+                        : 'bg-white dark:bg-slate-800/40 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        <File className="w-4 h-4 text-purple-600 shrink-0 mt-0.5" />
+                        <div className="min-w-0">
+                          <p className="font-semibold text-slate-800 dark:text-slate-100 break-words leading-snug">
+                            {doc.fileName}
+                          </p>
+                          <p className="text-[10px] text-slate-400 mt-0.5 font-mono tabular-nums">
+                            {doc.sizeFormatted} · {doc.uploadDate}
+                            {doc.relatedTabName ? ` · ${doc.relatedTabName}` : ''}
+                          </p>
                         </div>
-
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setConfirmDeleteId(isConfirming ? null : doc.id);
-                          }}
-                          className="p-1 text-slate-400 hover:text-red-600 rounded transition-colors shrink-0"
-                          title="Удалить из общей нормативки"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
                       </div>
 
-                      {isConfirming && (
-                        <div
-                          onClick={(e) => e.stopPropagation()}
-                          className="p-2 bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 rounded flex items-center justify-between gap-2 text-[11px]"
-                        >
-                          <span className="text-red-800 dark:text-red-200">Удалить для всех юрлиц?</span>
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => setConfirmDeleteId(null)}
-                              className="px-2 py-0.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
-                            >
-                              Нет
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteDoc(doc)}
-                              className="px-2 py-0.5 bg-red-600 text-white rounded font-semibold"
-                            >
-                              Удалить
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-
-          {/* Right: Document Viewer & Download */}
-          <div className="md:col-span-7 flex flex-col bg-slate-50/50 dark:bg-slate-950/40 p-5 overflow-hidden">
-            {selectedDoc ? (
-              <>
-                <div className="flex items-center justify-between gap-3 mb-3 shrink-0">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Eye className="w-4 h-4 text-purple-600 shrink-0" />
-                    <span className="font-semibold text-xs text-slate-800 dark:text-slate-100 truncate">
-                      {selectedDoc.fileName}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    {selectedDoc.storageFileName || selectedDoc.dataBase64 ? (
-                      <span className="inline-flex items-center gap-1 text-[11px] text-emerald-700 dark:text-emerald-400 font-medium">
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        <span>Файл сохранен</span>
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-[11px] text-slate-500">
-                        <AlertTriangle className="w-3.5 h-3.5" />
-                        <span>Текстовая выдержка</span>
-                      </span>
-                    )}
-                    {hasBinaryStored(selectedDoc) && (
                       <button
                         type="button"
-                        onClick={() => handleDownloadDoc(selectedDoc)}
-                        className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmDeleteId(isConfirming ? null : doc.id);
+                        }}
+                        className="p-1 text-slate-400 hover:text-red-600 rounded transition-colors shrink-0 cursor-pointer"
+                        title="Удалить из общей нормативки"
                       >
-                        <Download className="w-3.5 h-3.5" />
-                        <span>Скачать файл</span>
+                        <Trash2 className="w-3.5 h-3.5" />
                       </button>
+                    </div>
+
+                    {isConfirming && (
+                      <InlineConfirm
+                        compact
+                        message="Удалить для всех юрлиц?"
+                        cancelLabel="Нет"
+                        confirmLabel="Удалить"
+                        onCancel={() => setConfirmDeleteId(null)}
+                        onConfirm={() => void handleDeleteDoc(doc)}
+                      />
                     )}
                   </div>
-                </div>
-
-                <div className="flex-1 overflow-y-auto bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 font-mono text-[11px] text-slate-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap select-text">
-                  {selectedDoc.contentSnippet || 'Содержимое документа готово к скачиванию.'}
-                </div>
-              </>
-            ) : (
-              <div className="flex-1 flex items-center justify-center text-slate-400 text-xs">
-                Выберите документ из списка слева для просмотра или скачивания
-              </div>
+                );
+              })
             )}
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="flex items-center justify-end px-6 py-3.5 bg-slate-50/70 dark:bg-slate-800/40 border-t border-slate-200 dark:border-slate-800 text-xs shrink-0">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-800 dark:text-slate-100 rounded-lg font-medium transition-colors"
-          >
-            Закрыть
-          </button>
+        {/* Right: Document Viewer & Download */}
+        <div className="md:col-span-7 flex flex-col bg-slate-50/50 dark:bg-slate-950/40 p-5 overflow-hidden">
+          {selectedDoc ? (
+            <>
+              <div className="flex items-center justify-between gap-3 mb-3 shrink-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Eye className="w-4 h-4 text-purple-600 shrink-0" />
+                  <span className="font-semibold text-xs text-slate-800 dark:text-slate-100 truncate">
+                    {selectedDoc.fileName}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {selectedDoc.storageFileName || selectedDoc.dataBase64 ? (
+                    <span className="inline-flex items-center gap-1 text-[11px] text-emerald-700 dark:text-emerald-400 font-medium">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Файл сохранен</span>
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-[11px] text-slate-500">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      <span>Текстовая выдержка</span>
+                    </span>
+                  )}
+                  {hasBinaryStored(selectedDoc) && (
+                    <AppButton
+                      variant="primary"
+                      size="sm"
+                      onClick={() => void handleDownloadDoc(selectedDoc)}
+                      icon={<Download className="w-3.5 h-3.5" />}
+                    >
+                      Скачать файл
+                    </AppButton>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 font-mono text-[11px] text-slate-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap select-text">
+                {selectedDoc.contentSnippet || 'Содержимое документа готово к скачиванию.'}
+              </div>
+            </>
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-slate-400 text-xs">
+              Выберите документ из списка слева для просмотра или скачивания
+            </div>
+          )}
         </div>
       </div>
-    </div>
+    </AppModal>
   );
 };

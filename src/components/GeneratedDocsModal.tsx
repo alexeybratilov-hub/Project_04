@@ -1,13 +1,13 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import {
-  X, FolderOpen, FolderArchive, FileText, Download, Trash2,
+  FolderOpen, FolderArchive, FileText, Download, Trash2,
   Search, ChevronDown, ChevronRight, Archive
 } from 'lucide-react';
 import { GeneratedDocRecord, LegalEntityProfile } from '../types/database';
 import { DOCUMENT_CATEGORIES } from '../services/generatedDocsService';
 import { localApiClient } from '../services/localApiClient';
 import { portablePackageService } from '../services/portablePackageService';
-import { useToast } from './ui/ToastProvider';
+import { AppButton, AppInput, AppModal, ConfirmDialog, useToast } from './ui';
 
 interface GeneratedDocsModalProps {
   isOpen: boolean;
@@ -41,16 +41,13 @@ export const GeneratedDocsModal: React.FC<GeneratedDocsModalProps> = ({
   const [formatFilter, setFormatFilter] = useState<'all' | 'docx' | 'pdf'>('all');
   const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [pendingArchiveDeleteDoc, setPendingArchiveDeleteDoc] = useState<GeneratedDocRecord | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
     setConfirmDeleteId(null);
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, onClose]);
+    setPendingArchiveDeleteDoc(null);
+  }, [isOpen]);
 
   const categoriesList = useMemo(() => {
     const known = new Set<string>([...DOCUMENT_CATEGORIES]);
@@ -110,8 +107,6 @@ export const GeneratedDocsModal: React.FC<GeneratedDocsModalProps> = ({
     );
   }, [filteredDocs]);
 
-  if (!isOpen) return null;
-
   const handleDownload = async (doc: GeneratedDocRecord) => {
     try {
       if (localApiClient.isNative()) {
@@ -150,52 +145,30 @@ export const GeneratedDocsModal: React.FC<GeneratedDocsModalProps> = ({
   const totalArchived = generatedDocs.filter((d) => d.isArchived).length;
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4"
-      role="dialog"
-      aria-modal="true"
-    >
-      <div className="w-full max-w-6xl h-[88vh] bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 shrink-0 gap-4">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="p-2 bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-400 rounded-lg shrink-0">
-              <FolderOpen className="w-5 h-5" />
-            </div>
-            <div className="min-w-0">
-              <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100 truncate">
-                Сгенерированные документы
-                {entityProfile?.shortName ? ` · ${entityProfile.shortName}` : ''}
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                Структурированы по категориям · повторное имя файла автоматически переносит старую версию в АРХИВ/дд.мм.гггг
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => {
-                onClose();
-                onOpenTemplates();
-              }}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer"
-            >
-              <FileText className="w-3.5 h-3.5" />
-              <span>Шаблоны</span>
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg transition-colors cursor-pointer"
-              aria-label="Закрыть"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-        </div>
-
+    <>
+      <AppModal
+        isOpen={isOpen}
+        onClose={onClose}
+        size="6xl"
+        heightClass="h-[88vh]"
+        icon={<FolderOpen className="w-5 h-5" />}
+        iconTone="blue"
+        title={`Сгенерированные документы${entityProfile?.shortName ? ` · ${entityProfile.shortName}` : ''}`}
+        subtitle="Структурированы по категориям · повторное имя файла автоматически переносит старую версию в АРХИВ/дд.мм.гггг"
+        headerRight={
+          <AppButton
+            variant="primary"
+            size="sm"
+            onClick={() => {
+              onClose();
+              onOpenTemplates();
+            }}
+            icon={<FileText className="w-3.5 h-3.5" />}
+          >
+            Шаблоны
+          </AppButton>
+        }
+      >
         {/* Body: Two-Pane Layout */}
         <div className="flex-1 overflow-hidden grid grid-cols-1 md:grid-cols-12 divide-y md:divide-y-0 md:divide-x divide-slate-200 dark:divide-slate-800">
           {/* Left Pane: Category Tree */}
@@ -252,13 +225,14 @@ export const GeneratedDocsModal: React.FC<GeneratedDocsModalProps> = ({
             {/* Search & Filter Toolbar */}
             <div className="px-5 py-3 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 bg-white dark:bg-slate-900 shrink-0 text-xs">
               <div className="relative flex-1 min-w-[200px]">
-                <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
+                <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                <AppInput
                   type="text"
+                  compact
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Поиск по названию, файлу, дате (дд.мм.гггг) или сотруднику..."
-                  className="w-full pl-8 pr-3 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs"
+                  className="!pl-8 bg-slate-50 dark:bg-slate-800"
                 />
               </div>
 
@@ -347,23 +321,23 @@ export const GeneratedDocsModal: React.FC<GeneratedDocsModalProps> = ({
                             <td className="px-3.5 py-2.5 text-right whitespace-nowrap">
                               {confirmDeleteId === doc.id ? (
                                 <span className="inline-flex items-center gap-1">
-                                  <button
-                                    type="button"
+                                  <AppButton
+                                    variant="danger"
+                                    size="xs"
                                     onClick={() => {
                                       void onDeleteDoc(doc.id);
                                       setConfirmDeleteId(null);
                                     }}
-                                    className="px-2 py-1 bg-red-600 text-white rounded text-[11px] font-semibold cursor-pointer"
                                   >
                                     Удалить
-                                  </button>
-                                  <button
-                                    type="button"
+                                  </AppButton>
+                                  <AppButton
+                                    variant="secondary"
+                                    size="xs"
                                     onClick={() => setConfirmDeleteId(null)}
-                                    className="px-2 py-1 bg-slate-200 dark:bg-slate-700 rounded text-[11px] cursor-pointer"
                                   >
                                     Отмена
-                                  </button>
+                                  </AppButton>
                                 </span>
                               ) : (
                                 <span className="inline-flex items-center gap-1">
@@ -476,7 +450,7 @@ export const GeneratedDocsModal: React.FC<GeneratedDocsModalProps> = ({
                                     </button>
                                     <button
                                       type="button"
-                                      onClick={() => void onDeleteDoc(doc.id)}
+                                      onClick={() => setPendingArchiveDeleteDoc(doc)}
                                       className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/50 rounded transition-colors cursor-pointer"
                                       title="Удалить из архива"
                                     >
@@ -496,7 +470,27 @@ export const GeneratedDocsModal: React.FC<GeneratedDocsModalProps> = ({
             </div>
           </div>
         </div>
-      </div>
-    </div>
+      </AppModal>
+
+      <ConfirmDialog
+        isOpen={Boolean(pendingArchiveDeleteDoc)}
+        danger
+        title="Удаление архивной версии документа"
+        description={
+          pendingArchiveDeleteDoc
+            ? `Удалить архивный файл «${pendingArchiveDeleteDoc.fileName}» (${pendingArchiveDeleteDoc.category} / АРХИВ / ${pendingArchiveDeleteDoc.archiveDateFolder || pendingArchiveDeleteDoc.dateFormatted}) из реестра и с диска?\n\nЭто действие необратимо.`
+            : ''
+        }
+        confirmLabel="Удалить навсегда"
+        cancelLabel="Отмена"
+        onConfirm={() => {
+          if (pendingArchiveDeleteDoc) {
+            void onDeleteDoc(pendingArchiveDeleteDoc.id);
+          }
+          setPendingArchiveDeleteDoc(null);
+        }}
+        onCancel={() => setPendingArchiveDeleteDoc(null)}
+      />
+    </>
   );
 };

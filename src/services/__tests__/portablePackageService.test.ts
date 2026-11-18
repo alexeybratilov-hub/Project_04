@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { portablePackageService } from '../portablePackageService';
+import { INITIAL_DATABASE_STATE } from '../../data/initialDatabase';
+import { DatabaseState } from '../../types/database';
 
 describe('portablePackageService binary payload validation', () => {
   it('accepts valid PE32+ (.exe) binary with MZ header and sufficient size', () => {
@@ -47,5 +49,21 @@ describe('portablePackageService binary payload validation', () => {
     const buf = new TextEncoder().encode(spaShell);
     const res = portablePackageService.validateBinaryPayload(buf.buffer, 'appHtml', 'text/html');
     expect(res.valid).toBe(false);
+  });
+
+  it('T-28: strips LLM API key from portable snapshot by default', () => {
+    const stateWithKey: DatabaseState = {
+      ...JSON.parse(JSON.stringify(INITIAL_DATABASE_STATE)),
+      llmConfig: {
+        ...INITIAL_DATABASE_STATE.llmConfig,
+        providerId: 'gemini',
+        apiKey: 'AIza-secret-portable-test'
+      }
+    };
+
+    const sanitized = portablePackageService.preparePortableDatabaseSnapshot(stateWithKey);
+    expect(sanitized.llmConfig.apiKey).toBe('');
+    expect(sanitized.llmConfig.providerId).toBe('gemini');
+    expect(stateWithKey.llmConfig.apiKey).toBe('AIza-secret-portable-test');
   });
 });

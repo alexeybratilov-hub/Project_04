@@ -26,14 +26,15 @@ import { MasterDependenciesModal } from './components/MasterDependenciesModal';
 import { LegalEntityModal, LegalEntityModalMode } from './components/LegalEntityModal';
 import { GeneratedDocsModal } from './components/GeneratedDocsModal';
 import { RecordGeneratedDocPayload } from './components/LLMStudioModal';
-import { ConfirmDialog } from './components/ui/ConfirmDialog';
-import { useToast } from './components/ui/ToastProvider';
+import { AppButton, AppModal, ConfirmDialog, StatusBanner, useToast } from './components/ui';
 
 import { Column, DatabaseState, LegalEntity, LegalEntityProfile, Row, Tab } from './types/database';
 import {
   CloneEntityMode,
+  DatabaseTransitionOptions,
   NativeBootstrapResult,
   SaveStatusState,
+  applyDatabaseTransition,
   cloneLegalEntity,
   createIsolatedEmptyEntity,
   normalizeDatabaseState,
@@ -73,6 +74,7 @@ export default function App() {
   const latestDbRef = useRef<DatabaseState>(dbState);
   latestDbRef.current = dbState;
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const docRecordQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   // Modals state
   const [isExcelImportOpen, setIsExcelImportOpen] = useState(false);
@@ -129,9 +131,9 @@ export default function App() {
 
   // Sequential persistence engine (prevents concurrent PUT races and revision 409 on rapid edits)
   const persistState = useCallback(
-    (targetState: DatabaseState, notifySuccess = false) => {
+    (targetState: DatabaseState, notifySuccess = false): Promise<void> => {
       setSaveStatus('saving');
-      saveQueueRef.current = saveQueueRef.current
+      const nextTask = saveQueueRef.current
         .then(async () => {
           const res = await storageService.saveDatabaseAsync(targetState);
           if (res.ok) {
@@ -157,6 +159,8 @@ export default function App() {
           setSaveStatus('error');
           setSaveErrorMessage(err?.message || 'Непредвиденная ошибка сохранения');
         });
+      saveQueueRef.current = nextTask;
+      return nextTask;
     },
     [showToast]
   );
@@ -228,41 +232,23 @@ export default function App() {
   const activeEntity =
     dbState.entities.find((e) => e.id === dbState.activeEntityId) || dbState.entities[0];
 
-  // Unified database state updater + disk persistence
+  // Unified database state updater + optional disk persistence (pure state transition, no side effects inside React updater)
   const updateDbState = useCallback(
-    (updater: (prev: DatabaseState) => DatabaseState) => {
-      setDbState((prev) => {
-        const updated = updater(prev);
-        const now = new Date().toISOString();
-
-        const entityExplicitlyChanged =
-          updated.activeEntityId !== prev.activeEntityId || updated.entities !== prev.entities;
-
-        const syncedEntities = entityExplicitlyChanged
-          ? updated.entities
-          : updated.entities.map((ent) =>
-              ent.id === updated.activeEntityId
-                ? {
-                    ...ent,
-                    tabs: updated.tabs,
-                    tags: updated.tags,
-                    templates: updated.templates,
-                    generatedDocs: updated.generatedDocs,
-                    llmLogs: updated.llmLogs,
-                    updatedAt: now
-                  }
-                : ent
-            );
-
-        const finalState: DatabaseState = {
-          ...updated,
-          entities: syncedEntities,
-          lastSaved: now
-        };
-        latestDbRef.current = finalState;
-        persistState(finalState);
-        return finalState;
+    (
+      updater: (prev: DatabaseState) => DatabaseState,
+      options?: DatabaseTransitionOptions & { persist?: boolean }
+    ) => {
+      const nextState = applyDatabaseTransition(latestDbRef.current, updater, {
+        touchTimestamp: options?.touchTimestamp
       });
+      if (nextState === latestDbRef.current) {
+        return;
+      }
+      latestDbRef.current = nextState;
+      setDbState(nextState);
+      if (options?.persist !== false) {
+        void persistState(nextState);
+      }
     },
     [persistState]
   );
@@ -740,22 +726,25 @@ export default function App() {
   // ===================== LEGAL ENTITIES OPERATIONS =====================
 
   const handleSelectEntity = (entityId: string) => {
-    const target = dbState.entities.find((e) => e.id === entityId);
-    if (!target || target.id === dbState.activeEntityId) return;
+    const target = latestDbRef.current.entities.find((e) => e.id === entityId);
+    if (!target || target.id === latestDbRef.current.activeEntityId) return;
 
-    updateDbState((prev) => {
-      const nextTarget = prev.entities.find((e) => e.id === entityId);
-      if (!nextTarget) return prev;
-      return {
-        ...prev,
-        activeEntityId: nextTarget.id,
-        tabs: nextTarget.tabs,
-        tags: nextTarget.tags,
-        templates: nextTarget.templates,
-        generatedDocs: nextTarget.generatedDocs || [],
-        llmLogs: nextTarget.llmLogs || []
-      };
-    });
+    updateDbState(
+      (prev) => {
+        const nextTarget = prev.entities.find((e) => e.id === entityId);
+        if (!nextTarget) return prev;
+        return {
+          ...prev,
+          activeEntityId: nextTarget.id,
+          tabs: nextTarget.tabs,
+          tags: nextTarget.tags,
+          templates: nextTarget.templates,
+          generatedDocs: nextTarget.generatedDocs || [],
+          llmLogs: nextTarget.llmLogs || []
+        };
+      },
+      { persist: false, touchTimestamp: false }
+    );
 
     setActiveTabId(target.tabs[0]?.id || '');
     setHighlightedRowId(null);
@@ -843,58 +832,64 @@ export default function App() {
 
   // ===================== GENERATED DOCS & ARCHIVE LIFECYCLE =====================
 
-  const handleRecordGeneratedDoc = async (payload: RecordGeneratedDocPayload) => {
-    const dataBase64 =
-      !localApiClient.isNative() && payload.blob.size <= 1_500_000
-        ? await documentGenerator.blobToBase64(payload.blob)
-        : undefined;
+  const handleRecordGeneratedDoc = (payload: RecordGeneratedDocPayload): Promise<void> => {
+    const run = docRecordQueueRef.current.then(async () => {
+      const dataBase64 =
+        !localApiClient.isNative() && payload.blob.size <= 1_500_000
+          ? await documentGenerator.blobToBase64(payload.blob)
+          : undefined;
 
-    const regResult = registerGeneratedDocument(latestDbRef.current.generatedDocs || [], {
-      id: createUniqueId('gdoc'),
-      title: payload.title,
-      fileName: payload.fileName,
-      category: payload.category,
-      format: payload.format,
-      sourceTabName: payload.sourceTabName,
-      rowIdentifier: payload.rowIdentifier,
-      sizeFormatted: formatBytesReadable(payload.blob.size),
-      dataBase64
-    });
+      const regResult = registerGeneratedDocument(latestDbRef.current.generatedDocs || [], {
+        id: createUniqueId('gdoc'),
+        title: payload.title,
+        fileName: payload.fileName,
+        category: payload.category,
+        format: payload.format,
+        sourceTabName: payload.sourceTabName,
+        rowIdentifier: payload.rowIdentifier,
+        sizeFormatted: formatBytesReadable(payload.blob.size),
+        dataBase64
+      });
 
-    if (localApiClient.isNative()) {
-      for (const transition of regResult.archivedTransitions) {
-        const moveRes = await localApiClient.moveDocumentInBucket(
-          transition.fromPath,
-          transition.toPath
-        );
-        if (!moveRes.ok) {
-          showToast(
-            moveRes.message || `Не удалось перенести старую версию в ${transition.toPath}`,
-            'warning'
+      if (localApiClient.isNative()) {
+        for (const transition of regResult.archivedTransitions) {
+          const moveRes = await localApiClient.moveDocumentInBucket(
+            transition.fromPath,
+            transition.toPath
           );
+          if (!moveRes.ok) {
+            showToast(
+              moveRes.message || `Не удалось перенести старую версию в ${transition.toPath}`,
+              'warning'
+            );
+          }
         }
       }
-    }
 
-    await documentGenerator.saveAndDownloadBlob(
-      payload.blob,
-      regResult.newRecord.fileName,
-      true,
-      regResult.newRecord.relativePath
-    );
-
-    updateDbState((prev) => ({
-      ...prev,
-      generatedDocs: regResult.nextDocs
-    }));
-
-    if (regResult.archivedTransitions.length > 0) {
-      const folder = regResult.archivedTransitions[0].archivedRecord.archiveDateFolder;
-      showToast(
-        `Предыдущая версия перенесена в «${payload.category}/АРХИВ/${folder}»`,
-        'info'
+      await documentGenerator.saveAndDownloadBlob(
+        payload.blob,
+        regResult.newRecord.fileName,
+        true,
+        regResult.newRecord.relativePath
       );
-    }
+
+      updateDbState((prev) => ({
+        ...prev,
+        generatedDocs: regResult.nextDocs
+      }));
+      await saveQueueRef.current;
+
+      if (regResult.archivedTransitions.length > 0) {
+        const folder = regResult.archivedTransitions[0].archivedRecord.archiveDateFolder;
+        showToast(
+          `Предыдущая версия перенесена в «${payload.category}/АРХИВ/${folder}»`,
+          'info'
+        );
+      }
+    });
+
+    docRecordQueueRef.current = run.catch(() => undefined);
+    return run;
   };
 
   const handleArchiveDoc = async (docId: string) => {
@@ -1046,6 +1041,13 @@ export default function App() {
       <TabBar
         tabs={dbState.tabs}
         activeTabId={activeTabId}
+        tabBarMode={dbState.settings.tabBarMode || 'single'}
+        onChangeTabBarMode={(mode) =>
+          updateDbState((p) => ({
+            ...p,
+            settings: { ...p.settings, tabBarMode: mode }
+          }))
+        }
         onSelectTab={(tabId) => setActiveTabId(tabId)}
         onAddTab={handleAddTab}
         onRenameTab={handleRenameTab}
@@ -1273,12 +1275,25 @@ export default function App() {
         isOpen={isBackupOpen}
         onClose={() => setIsBackupOpen(false)}
         databaseState={dbState}
-        onRestoreDatabase={(restored) => {
-          const normalized = normalizeDatabaseState(restored);
-          setDbState(normalized);
-          latestDbRef.current = normalized;
-          persistState(normalized, true);
-          if (normalized.tabs[0]) setActiveTabId(normalized.tabs[0].id);
+        onRestoreDatabase={async (nextState) => {
+          const res = await storageService.restoreDatabaseSafely(latestDbRef.current, nextState);
+          if (res.ok) {
+            setDbState(res.state);
+            latestDbRef.current = res.state;
+            setActiveTabId(res.state.tabs[0]?.id || '');
+            setSelectedRowIds(new Set());
+            setHighlightedRowId(null);
+            setSaveStatus('saved');
+            setSaveErrorMessage(null);
+            const backupNote = res.backupFileName ? ` (бэкап: ${res.backupFileName})` : '';
+            showToast(`База данных восстановлена${backupNote}`, 'success');
+          } else {
+            showToast(
+              res.error || 'Не удалось восстановить базу данных. Исходная база сохранена.',
+              'error'
+            );
+          }
+          return res;
         }}
         onResetDatabase={async () => {
           const { state, saveResult } = await storageService.resetDatabaseAsync();
@@ -1385,20 +1400,42 @@ export default function App() {
           dbState.generatedDocs
         );
         return (
-          <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
-            <div className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 p-5 space-y-4 text-xs">
-              <div className="flex items-start gap-2.5">
-                <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                    Удаление таблицы «{tabToDel.name}»
-                  </h3>
-                  <p className="text-[11px] text-slate-500 mt-0.5">
-                    Записей в таблице: <span className="font-mono tabular-nums">{tabToDel.rows.length}</span>
-                  </p>
-                </div>
-              </div>
-
+          <AppModal
+            isOpen={Boolean(tabToDel)}
+            onClose={() => setPendingDeleteTabId(null)}
+            size="lg"
+            layer="nested"
+            icon={<AlertTriangle className="w-5 h-5" />}
+            iconTone="red"
+            title={`Удаление таблицы «${tabToDel.name}»`}
+            subtitle={
+              <>
+                Записей в таблице: <span className="font-mono tabular-nums">{tabToDel.rows.length}</span>
+              </>
+            }
+            footer={
+              <>
+                <AppButton variant="secondary" size="sm" onClick={() => setPendingDeleteTabId(null)}>
+                  Отмена
+                </AppButton>
+                <AppButton
+                  variant="danger"
+                  size="sm"
+                  onClick={() => void confirmExecuteDeleteTab('purge')}
+                >
+                  Нет — удалить всё
+                </AppButton>
+                <AppButton
+                  variant="primary"
+                  size="sm"
+                  onClick={() => void confirmExecuteDeleteTab('archive')}
+                >
+                  Да — переместить в архив
+                </AppButton>
+              </>
+            }
+          >
+            <div className="p-5 space-y-4 text-xs">
               <div className="text-slate-600 dark:text-slate-300 leading-relaxed space-y-2 bg-slate-50 dark:bg-slate-800/40 p-3.5 rounded-lg border border-slate-200 dark:border-slate-800">
                 {impact.affectedTabs.length > 0 && (
                   <p className="text-red-700 dark:text-red-300 font-medium">
@@ -1432,35 +1469,11 @@ export default function App() {
                 )}
               </div>
 
-              <div className="p-3 rounded-lg bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/70 text-amber-950 dark:text-amber-200 font-medium">
+              <StatusBanner variant="warning" compact>
                 Удалить все связанные данные или переместить в архив?
-              </div>
-
-              <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => setPendingDeleteTabId(null)}
-                  className="px-3.5 py-1.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-lg font-medium hover:bg-slate-200 cursor-pointer"
-                >
-                  Отмена
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void confirmExecuteDeleteTab('purge')}
-                  className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold cursor-pointer"
-                >
-                  Нет — удалить всё
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void confirmExecuteDeleteTab('archive')}
-                  className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold cursor-pointer"
-                >
-                  Да — переместить в архив
-                </button>
-              </div>
+              </StatusBanner>
             </div>
-          </div>
+          </AppModal>
         );
       })()}
     </div>

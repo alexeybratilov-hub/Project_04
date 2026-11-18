@@ -10,6 +10,13 @@
     --text-primary: #0f172a;
     --text-muted: #64748b;
     --accent-primary: #2563eb;
+    --z-sticky: 20;
+    --z-topbar: 50;
+    --z-popover: 80;
+    --z-modal: 100;
+    --z-modal-nested: 130;
+    --z-confirm: 160;
+    --z-toast: 200;
   }
 
   .dark {

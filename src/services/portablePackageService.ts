@@ -1,4 +1,5 @@
 import { DatabaseState } from '../types/database';
+import { ExportDatabaseOptions, sanitizeDatabaseForExport } from './storageService';
 
 export const portablePackageService = {
   /**
@@ -173,9 +174,21 @@ exit
   },
 
   /**
+   * Prepare database snapshot for portable starter export (strips LLM API key by default)
+   */
+  preparePortableDatabaseSnapshot(
+    state: DatabaseState,
+    options?: ExportDatabaseOptions
+  ): DatabaseState {
+    return sanitizeDatabaseForExport(state, options);
+  },
+
+  /**
    * Trigger download of the Windows Portable Starter Pack
    */
-  downloadWindowsPortableStarter(state: DatabaseState): void {
+  downloadWindowsPortableStarter(state: DatabaseState, options?: ExportDatabaseOptions): void {
+    const safeSnapshot = portablePackageService.preparePortableDatabaseSnapshot(state, options);
+
     portablePackageService.downloadTextFile(
       portablePackageService.generateBatLauncher(),
       'Запустить_ОТ_База.bat',
@@ -192,7 +205,7 @@ exit
 
     setTimeout(() => {
       portablePackageService.downloadTextFile(
-        JSON.stringify(state, null, 2),
+        JSON.stringify(safeSnapshot, null, 2),
         'ot_database_portable_snapshot.json',
         'application/json;charset=utf-8'
       );

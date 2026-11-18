@@ -1,14 +1,24 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  X, FileText, Download, BookOpen, Eye, FileDown, RefreshCw,
-  Plus, FolderOpen, FolderArchive, Edit2, Trash2, ArchiveRestore, Table2, Check, AlertTriangle
+  FileText, Download, BookOpen, Eye, FileDown, RefreshCw,
+  Plus, FolderOpen, FolderArchive, Edit2, Trash2, ArchiveRestore, Table2, Check
 } from 'lucide-react';
 import { DocumentTemplate, LegalEntityProfile, Tab, Tag } from '../types/database';
 import { documentGenerator } from '../services/documentGenerator';
 import { DOCUMENT_CATEGORIES, inferDocumentCategory } from '../services/generatedDocsService';
 import { RecordGeneratedDocPayload } from './LLMStudioModal';
 import { createUniqueId } from '../services/integrityService';
-import { useToast } from './ui/ToastProvider';
+import {
+  AppButton,
+  AppInput,
+  AppModal,
+  AppSelect,
+  AppTextarea,
+  FormField,
+  InlineConfirm,
+  StatusBanner,
+  useToast
+} from './ui';
 
 export type TemplatesModalScope = 'tab' | 'all' | 'archive';
 
@@ -78,18 +88,19 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
     setIsBatchMode(Boolean(selectedRowIds && selectedRowIds.length > 1));
   }, [isOpen, initialScope, currentTab.id]);
 
-  // Esc closes modal
+  // Esc exits template sub-editor without closing the modal (AppModal handles main Esc via closeOnEscape)
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || editorMode === 'none') return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (editorMode !== 'none') setEditorMode('none');
-        else onClose();
+        e.preventDefault();
+        e.stopPropagation();
+        setEditorMode('none');
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, onClose, editorMode]);
+  }, [isOpen, editorMode]);
 
   const getTemplateCategory = (tpl: DocumentTemplate): string => {
     if (tpl.category && tpl.category.trim()) return tpl.category;
@@ -155,15 +166,13 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
     }
   }, [isOpen, boundTab.id, boundTab.rows, currentTab.id, selectedRowIds, targetRowId]);
 
-  if (!isOpen) return null;
-
   const targetRow = boundTab.rows.find((r) => r.id === targetRowId) || boundTab.rows[0];
   const currentCategory = currentTemplate
     ? getTemplateCategory(currentTemplate)
     : inferDocumentCategory('', boundTab.name);
 
   const previewResolution =
-    currentTemplate && targetRow
+    isOpen && currentTemplate && targetRow
       ? documentGenerator.resolveTemplateTagsWithReport(
           currentTemplate.contentTemplate,
           targetRow,
@@ -440,31 +449,25 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
   const availableTagsForDraftTab = tags.filter((t) => t.tabId === draftTabId);
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4"
-      role="dialog"
-      aria-modal="true"
-    >
-      <div className="w-full max-w-6xl h-[90vh] bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col overflow-hidden">
-        {/* Header */}
-        <div className="flex flex-wrap items-center justify-between px-6 py-3.5 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 shrink-0 gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="p-2 bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-400 rounded-lg shrink-0">
-              <FileText className="w-5 h-5" />
-            </div>
-            <div className="min-w-0">
-              <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100 truncate">
-                Шаблоны документов
-                {entityProfile?.shortName ? ` · ${entityProfile.shortName}` : ''}
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                У каждой таблицы свой набор шаблонов · прямая подстановка тегов работает автономно (DOCX и PDF)
-              </p>
-            </div>
-          </div>
-
+    <AppModal
+      isOpen={isOpen}
+      onClose={onClose}
+      closeOnEscape={editorMode === 'none'}
+      size="6xl"
+      heightClass="h-[90vh]"
+      icon={<FileText className="w-5 h-5" />}
+      iconTone="blue"
+      title={
+        <>
+          Шаблоны документов
+          {entityProfile?.shortName ? ` · ${entityProfile.shortName}` : ''}
+        </>
+      }
+      subtitle="У каждой таблицы свой набор шаблонов · прямая подстановка тегов работает автономно (DOCX и PDF)"
+      headerRight={
+        <div className="flex flex-wrap items-center gap-2">
           {/* View Scope Switcher */}
-          <div className="flex items-center gap-1.5 bg-slate-200/70 dark:bg-slate-800 p-1 rounded-lg text-xs">
+          <div className="flex items-center gap-1 bg-slate-200/70 dark:bg-slate-800 p-1 rounded-lg text-xs">
             <button
               type="button"
               onClick={() => {
@@ -512,25 +515,17 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
             )}
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={openCreateForm}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Новый шаблон</span>
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg transition-colors cursor-pointer"
-              aria-label="Закрыть"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
+          <AppButton
+            variant="primary"
+            size="sm"
+            onClick={openCreateForm}
+            icon={<Plus className="w-3.5 h-3.5" />}
+          >
+            Новый шаблон
+          </AppButton>
         </div>
+      }
+    >
 
         {/* Main Body */}
         <div className="flex-1 overflow-hidden grid grid-cols-1 md:grid-cols-12 divide-y md:divide-y-0 md:divide-x divide-slate-200 dark:divide-slate-800">
@@ -590,14 +585,14 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
                     </p>
                   </div>
                   {scope !== 'archive' && (
-                    <button
-                      type="button"
+                    <AppButton
+                      variant="primary"
+                      size="sm"
                       onClick={openCreateForm}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium cursor-pointer"
+                      icon={<Plus className="w-3.5 h-3.5" />}
                     >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Создать шаблон для «{currentTab.name}»</span>
-                    </button>
+                      Создать шаблон для «{currentTab.name}»
+                    </AppButton>
                   )}
                 </div>
               ) : scope === 'all' && selectedSection === 'ALL' ? (
@@ -668,28 +663,14 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
                                 </span>
                               </div>
                               {confirmDeleteId === tpl.id && (
-                                <div
-                                  onClick={(e) => e.stopPropagation()}
-                                  className="mt-2 pt-2 border-t border-red-200 dark:border-red-900 flex items-center justify-between text-[11px]"
-                                >
-                                  <span className="text-red-700 dark:text-red-300 font-medium">Удалить шаблон?</span>
-                                  <div className="flex items-center gap-1.5">
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDeleteTemplate(tpl.id)}
-                                      className="px-2 py-0.5 bg-red-600 text-white rounded font-semibold"
-                                    >
-                                      Удалить
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => setConfirmDeleteId(null)}
-                                      className="px-2 py-0.5 bg-slate-200 dark:bg-slate-700 rounded"
-                                    >
-                                      Отмена
-                                    </button>
-                                  </div>
-                                </div>
+                                <InlineConfirm
+                                  compact
+                                  className="mt-2"
+                                  message="Удалить шаблон?"
+                                  confirmLabel="Удалить"
+                                  onConfirm={() => handleDeleteTemplate(tpl.id)}
+                                  onCancel={() => setConfirmDeleteId(null)}
+                                />
                               )}
                             </div>
                           );
@@ -772,28 +753,14 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
                         </div>
 
                         {confirmDeleteId === tpl.id && (
-                          <div
-                            onClick={(e) => e.stopPropagation()}
-                            className="mt-2 pt-2 border-t border-red-200 dark:border-red-900 flex items-center justify-between text-[11px]"
-                          >
-                            <span className="text-red-700 dark:text-red-300 font-medium">Удалить шаблон?</span>
-                            <div className="flex items-center gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteTemplate(tpl.id)}
-                                className="px-2 py-0.5 bg-red-600 text-white rounded font-semibold"
-                              >
-                                Удалить
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setConfirmDeleteId(null)}
-                                className="px-2 py-0.5 bg-slate-200 dark:bg-slate-700 rounded"
-                              >
-                                Отмена
-                              </button>
-                            </div>
-                          </div>
+                          <InlineConfirm
+                            compact
+                            className="mt-2"
+                            message="Удалить шаблон?"
+                            confirmLabel="Удалить"
+                            onConfirm={() => handleDeleteTemplate(tpl.id)}
+                            onCancel={() => setConfirmDeleteId(null)}
+                          />
                         )}
                       </div>
                     );
@@ -836,61 +803,50 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                      Название шаблона *
-                    </label>
-                    <input
+                  <FormField label="Название шаблона" required>
+                    <AppInput
                       type="text"
+                      compact
                       required
                       value={draftName}
                       onChange={(e) => setDraftName(e.target.value)}
                       placeholder="Например: Приказ о проведении обучения"
-                      className="w-full px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg"
                     />
-                  </div>
+                  </FormField>
 
-                  <div>
-                    <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                      Раздел документов
-                    </label>
-                    <select
+                  <FormField label="Раздел документов">
+                    <AppSelect
+                      compact
                       value={draftCategory}
                       onChange={(e) => setDraftCategory(e.target.value)}
-                      className="w-full px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg"
                     >
                       {DOCUMENT_CATEGORIES.map((cat) => (
                         <option key={cat} value={cat}>{cat}</option>
                       ))}
-                    </select>
-                  </div>
+                    </AppSelect>
+                  </FormField>
 
-                  <div>
-                    <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                      Привязанная таблица
-                    </label>
-                    <select
+                  <FormField label="Привязанная таблица">
+                    <AppSelect
+                      compact
                       value={draftTabId}
                       onChange={(e) => setDraftTabId(e.target.value)}
-                      className="w-full px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg"
                     >
                       {allTabs.map((t) => (
                         <option key={t.id} value={t.id}>{t.name}</option>
                       ))}
-                    </select>
-                  </div>
+                    </AppSelect>
+                  </FormField>
 
-                  <div>
-                    <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                      Шаблон имени файла
-                    </label>
-                    <input
+                  <FormField label="Шаблон имени файла">
+                    <AppInput
                       type="text"
+                      compact
+                      mono
                       value={draftNaming}
                       onChange={(e) => setDraftNaming(e.target.value)}
-                      className="w-full px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg font-mono"
                     />
-                  </div>
+                  </FormField>
                 </div>
 
                 {availableTagsForDraftTab.length > 0 && (
@@ -913,35 +869,34 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
                   </div>
                 )}
 
-                <div className="flex-1">
-                  <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                    Текст шаблона с тегами &#123;...&#125; *
-                  </label>
-                  <textarea
+                <FormField label="Текст шаблона с тегами {...}" required className="flex-1">
+                  <AppTextarea
                     required
+                    mono
                     rows={12}
                     value={draftContent}
                     onChange={(e) => setDraftContent(e.target.value)}
                     placeholder="Введите текст приказа, инструкции или направления с тегами {Организация}, {ФИО}, {Должность}..."
-                    className="w-full p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg font-mono text-xs leading-relaxed"
+                    className="p-3 leading-relaxed"
                   />
-                </div>
+                </FormField>
 
                 <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-                  <button
-                    type="button"
+                  <AppButton
+                    variant="ghost"
+                    size="md"
                     onClick={() => setEditorMode('none')}
-                    className="px-4 py-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg font-medium"
                   >
                     Отмена
-                  </button>
-                  <button
+                  </AppButton>
+                  <AppButton
                     type="submit"
-                    className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold flex items-center gap-1.5 cursor-pointer"
+                    variant="primary"
+                    size="md"
+                    icon={<Check className="w-4 h-4" />}
                   >
-                    <Check className="w-4 h-4" />
-                    <span>Сохранить шаблон</span>
-                  </button>
+                    Сохранить шаблон
+                  </AppButton>
                 </div>
               </form>
             ) : (
@@ -954,17 +909,17 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
                         Строка таблицы «{boundTab.name}»:
                       </label>
                       {boundTab.rows.length > 0 ? (
-                        <select
+                        <AppSelect
+                          compact
                           value={targetRowId}
                           onChange={(e) => setTargetRowId(e.target.value)}
-                          className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs"
                         >
                           {boundTab.rows.map((row, idx) => (
                             <option key={row.id} value={row.id}>
                               #{idx + 1}: {getRowLabel(row, boundTab)}
                             </option>
                           ))}
-                        </select>
+                        </AppSelect>
                       ) : (
                         <div className="px-2.5 py-1.5 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg text-[11px] text-amber-800 dark:text-amber-300">
                           В таблице «{boundTab.name}» пока нет строк
@@ -1009,22 +964,19 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
                 </div>
 
                 {previewIssues.length > 0 && (
-                  <div
+                  <StatusBanner
+                    variant="warning"
                     role="alert"
-                    className="flex items-start gap-2 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-[11px] shrink-0"
+                    compact
+                    className="shrink-0"
+                    title={`Предупреждение о связях (${previewIssues.length}): автоматический выбор неоднозначной или отсутствующей записи отключён`}
                   >
-                    <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-                    <div className="space-y-0.5 min-w-0">
-                      <div className="font-semibold">
-                        Предупреждение о связях ({previewIssues.length}): автоматический выбор неоднозначной или отсутствующей записи отключён
+                    {previewIssues.map((issue, idx) => (
+                      <div key={`${issue.type}-${issue.tagName}-${idx}`} className="leading-snug">
+                        {issue.reason}
                       </div>
-                      {previewIssues.map((issue, idx) => (
-                        <div key={`${issue.type}-${issue.tagName}-${idx}`} className="leading-snug">
-                          {issue.reason}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+                    ))}
+                  </StatusBanner>
                 )}
 
                 {/* Preview Body */}
@@ -1043,45 +995,49 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
                     <div className="flex items-center gap-2">
                       {isBatchMode ? (
                         <>
-                          <button
-                            type="button"
+                          <AppButton
+                            variant="primary"
+                            size="md"
+                            loading={isGenerating}
+                            disabled={boundTab.rows.length === 0}
                             onClick={() => handleBatchGenerate('docx')}
-                            disabled={isGenerating || boundTab.rows.length === 0}
-                            className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-400 text-white rounded-lg font-semibold text-xs flex items-center gap-1.5 cursor-pointer"
+                            icon={isGenerating ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}
                           >
-                            {isGenerating ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}
-                            <span>Пакет .DOCX</span>
-                          </button>
-                          <button
-                            type="button"
+                            Пакет .DOCX
+                          </AppButton>
+                          <AppButton
+                            variant="danger"
+                            size="md"
+                            loading={isGenerating}
+                            disabled={boundTab.rows.length === 0}
                             onClick={() => handleBatchGenerate('pdf')}
-                            disabled={isGenerating || boundTab.rows.length === 0}
-                            className="px-3.5 py-2 bg-red-600 hover:bg-red-700 disabled:bg-slate-400 text-white rounded-lg font-semibold text-xs flex items-center gap-1.5 cursor-pointer"
+                            icon={isGenerating ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}
                           >
-                            {isGenerating ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}
-                            <span>Пакет .PDF</span>
-                          </button>
+                            Пакет .PDF
+                          </AppButton>
                         </>
                       ) : (
                         <>
-                          <button
-                            type="button"
+                          <AppButton
+                            variant="primary"
+                            size="md"
+                            loading={isGenerating}
+                            disabled={!targetRow}
                             onClick={() => handleGenerateSingle('docx')}
-                            disabled={isGenerating || !targetRow}
-                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-400 text-white rounded-lg font-semibold text-xs flex items-center gap-1.5 cursor-pointer"
+                            icon={isGenerating ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
                           >
-                            {isGenerating ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-                            <span>Сформировать .DOCX</span>
-                          </button>
-                          <button
-                            type="button"
+                            Сформировать .DOCX
+                          </AppButton>
+                          <AppButton
+                            variant="danger"
+                            size="md"
+                            loading={isGenerating}
+                            disabled={!targetRow}
                             onClick={() => handleGenerateSingle('pdf')}
-                            disabled={isGenerating || !targetRow}
-                            className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-slate-400 text-white rounded-lg font-semibold text-xs flex items-center gap-1.5 cursor-pointer"
+                            icon={isGenerating ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
                           >
-                            {isGenerating ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-                            <span>Сформировать .PDF</span>
-                          </button>
+                            Сформировать .PDF
+                          </AppButton>
                         </>
                       )}
                     </div>
@@ -1091,7 +1047,6 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
             )}
           </div>
         </div>
-      </div>
-    </div>
+    </AppModal>
   );
 };

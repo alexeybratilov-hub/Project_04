@@ -18,9 +18,12 @@ import {
   SaveDatabaseResult,
   StorageMode
 } from './localApiClient';
+import { integrityService } from './integrityService';
 
 export const STORAGE_KEY = 'ot_base_database_v1';
 const LEGACY_MIGRATION_DONE_KEY = 'ot_base_migrated_to_native_v1';
+export const PRE_RESTORE_BACKUP_KEY = 'ot_base_pre_restore_backup_v1';
+export const CURRENT_APP_DB_VERSION = '1.3.0';
 
 export type CloneEntityMode = 'structure_only' | 'structure_and_masters' | 'full_copy';
 
@@ -44,11 +47,296 @@ export interface NativeBootstrapResult {
   loadError?: string;
 }
 
+export interface DatabaseSummary {
+  version: string;
+  lastSaved: string;
+  entitiesCount: number;
+  entityNames: string[];
+  tabsCount: number;
+  rowsCount: number;
+  tagsCount: number;
+  templatesCount: number;
+  generatedDocsCount: number;
+}
+
+export interface DatabaseImportPreview {
+  fileName?: string;
+  sourceFormat: 'multi-entity' | 'legacy-v1';
+  sourceVersion: string;
+  incomingSummary: DatabaseSummary;
+  normalizedState: DatabaseState;
+  integritySummary: {
+    brokenRelationsCount: number;
+    orphanedCellsCount: number;
+    brokenTagsCount: number;
+  };
+  warnings: string[];
+}
+
+export interface SafeRestoreResult {
+  ok: boolean;
+  state: DatabaseState;
+  rolledBack: boolean;
+  backupFileName?: string;
+  error?: string;
+}
+
+export interface DatabaseTransitionOptions {
+  touchTimestamp?: boolean;
+}
+
+export interface ExportDatabaseOptions {
+  includeLlmApiKey?: boolean;
+}
+
+/**
+ * Returns a safe copy of DatabaseState for file export/snapshots,
+ * stripping sensitive credentials (LLM API key) by default.
+ */
+export function sanitizeDatabaseForExport(
+  state: DatabaseState,
+  options?: ExportDatabaseOptions
+): DatabaseState {
+  if (options?.includeLlmApiKey) {
+    return state;
+  }
+  return {
+    ...state,
+    llmConfig: state.llmConfig
+      ? {
+          ...state.llmConfig,
+          apiKey: ''
+        }
+      : normalizeLLMConfig()
+  };
+}
+
+/**
+ * Pure state transition for DatabaseState:
+ * syncs active entity fields into `entities` and updates timestamps
+ * only when `touchTimestamp !== false` (e.g. skipped on entity switch).
+ */
+export function applyDatabaseTransition(
+  prev: DatabaseState,
+  updater: (current: DatabaseState) => DatabaseState,
+  options?: DatabaseTransitionOptions
+): DatabaseState {
+  const updated = updater(prev);
+  if (updated === prev) {
+    return prev;
+  }
+
+  const touchTimestamp = options?.touchTimestamp !== false;
+  const now = touchTimestamp ? new Date().toISOString() : undefined;
+
+  const entityExplicitlyChanged =
+    updated.activeEntityId !== prev.activeEntityId || updated.entities !== prev.entities;
+
+  const syncedEntities = entityExplicitlyChanged
+    ? updated.entities
+    : updated.entities.map((ent) =>
+        ent.id === updated.activeEntityId
+          ? {
+              ...ent,
+              tabs: updated.tabs,
+              tags: updated.tags,
+              templates: updated.templates,
+              generatedDocs: updated.generatedDocs,
+              llmLogs: updated.llmLogs,
+              ...(now ? { updatedAt: now } : {})
+            }
+          : ent
+      );
+
+  return {
+    ...updated,
+    entities: syncedEntities,
+    lastSaved: now ?? updated.lastSaved
+  };
+}
+
+let persistenceChain: Promise<unknown> = Promise.resolve();
+
+function enqueuePersistenceTask<T>(task: () => Promise<T>): Promise<T> {
+  const run = persistenceChain.then(task, task);
+  persistenceChain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
 function countTotalRows(state: DatabaseState): number {
   return (state.entities || []).reduce(
     (sum, ent) => sum + (ent.tabs || []).reduce((tSum, tab) => tSum + (tab.rows?.length || 0), 0),
     0
   );
+}
+
+export function summarizeDatabaseState(state: DatabaseState): DatabaseSummary {
+  const entities = Array.isArray(state.entities) ? state.entities : [];
+  let tabsCount = 0;
+  let rowsCount = 0;
+  let tagsCount = 0;
+  let templatesCount = 0;
+  let generatedDocsCount = 0;
+  const entityNames: string[] = [];
+
+  entities.forEach((ent) => {
+    const shortName = ent.profile?.shortName || ent.profile?.fullName || ent.id;
+    if (shortName) entityNames.push(shortName);
+    const entTabs = Array.isArray(ent.tabs) ? ent.tabs : [];
+    tabsCount += entTabs.length;
+    rowsCount += entTabs.reduce((acc, t) => acc + (Array.isArray(t.rows) ? t.rows.length : 0), 0);
+    tagsCount += Array.isArray(ent.tags) ? ent.tags.length : 0;
+    templatesCount += Array.isArray(ent.templates) ? ent.templates.length : 0;
+    generatedDocsCount += Array.isArray(ent.generatedDocs) ? ent.generatedDocs.length : 0;
+  });
+
+  if (entities.length === 0) {
+    const fallbackTabs = Array.isArray(state.tabs) ? state.tabs : [];
+    tabsCount = fallbackTabs.length;
+    rowsCount = fallbackTabs.reduce((acc, t) => acc + (Array.isArray(t.rows) ? t.rows.length : 0), 0);
+    tagsCount = Array.isArray(state.tags) ? state.tags.length : 0;
+    templatesCount = Array.isArray(state.templates) ? state.templates.length : 0;
+    generatedDocsCount = Array.isArray(state.generatedDocs) ? state.generatedDocs.length : 0;
+  }
+
+  return {
+    version: state.version || CURRENT_APP_DB_VERSION,
+    lastSaved: state.lastSaved || '',
+    entitiesCount: entities.length || 1,
+    entityNames,
+    tabsCount,
+    rowsCount,
+    tagsCount,
+    templatesCount,
+    generatedDocsCount
+  };
+}
+
+function validateTabStructure(tab: any, contextLabel: string): void {
+  if (!tab || typeof tab !== 'object' || Array.isArray(tab)) {
+    throw new Error(`${contextLabel}: вкладка имеет некорректный формат`);
+  }
+  if (typeof tab.id !== 'string' || !tab.id.trim()) {
+    throw new Error(`${contextLabel}: отсутствует корректный идентификатор вкладки`);
+  }
+  if (typeof tab.name !== 'string' || !tab.name.trim()) {
+    throw new Error(`${contextLabel}: отсутствует название вкладки (${tab.id})`);
+  }
+  if (!Array.isArray(tab.columns)) {
+    throw new Error(`${contextLabel}: во вкладке «${tab.name}» отсутствует массив столбцов`);
+  }
+  tab.columns.forEach((col: any, idx: number) => {
+    if (!col || typeof col !== 'object' || typeof col.id !== 'string' || typeof col.name !== 'string') {
+      throw new Error(`${contextLabel}: столбец №${idx + 1} во вкладке «${tab.name}» повреждён`);
+    }
+  });
+  if (!Array.isArray(tab.rows)) {
+    throw new Error(`${contextLabel}: во вкладке «${tab.name}» отсутствует массив строк`);
+  }
+}
+
+export function inspectDatabaseBackupText(
+  jsonText: string,
+  fileName?: string
+): DatabaseImportPreview {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    throw new Error('Файл не является корректным JSON. Проверьте целостность резервной копии.');
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Корневая структура файла должна быть JSON-объектом базы данных.');
+  }
+
+  const warnings: string[] = [];
+
+  // 1. Version compatibility check
+  const sourceVersion =
+    parsed.version === undefined || parsed.version === null ? '1.0.0' : String(parsed.version).trim();
+  if (parsed.version !== undefined && parsed.version !== null) {
+    if (typeof parsed.version !== 'string' || !/^\d+(\.\d+)*$/.test(sourceVersion)) {
+      throw new Error(`Некорректный формат версии резервной копии: «${String(parsed.version)}».`);
+    }
+    const [majorStr, minorStr] = sourceVersion.split('.');
+    const major = Number(majorStr);
+    const minor = Number(minorStr || 0);
+    if (major > 1) {
+      throw new Error(
+        `Версия файла (${sourceVersion}) несовместима с текущей версией программы (${CURRENT_APP_DB_VERSION}).`
+      );
+    }
+    if (major === 1 && minor > 3) {
+      warnings.push(
+        `Файл создан в более новой минорной версии (${sourceVersion} > ${CURRENT_APP_DB_VERSION}). Проверьте сводку данных перед восстановлением.`
+      );
+    }
+  } else {
+    warnings.push('В файле не указана версия — будет выполнена совместимая миграция из формата v1.0.');
+  }
+
+  // 2. Structural validation (entities vs legacy tabs)
+  const hasEntities = Array.isArray(parsed.entities) && parsed.entities.length > 0;
+  const hasLegacyTabs = Array.isArray(parsed.tabs) && parsed.tabs.length > 0;
+
+  if (!hasEntities && !hasLegacyTabs) {
+    throw new Error('Файл не содержит корректных таблиц (tabs) или карточек организаций (entities).');
+  }
+
+  if (hasEntities) {
+    parsed.entities.forEach((ent: any, eIdx: number) => {
+      if (!ent || typeof ent !== 'object' || Array.isArray(ent)) {
+        throw new Error(`Карточка организации №${eIdx + 1} повреждена.`);
+      }
+      if (!Array.isArray(ent.tabs) || ent.tabs.length === 0) {
+        throw new Error(`В организации №${eIdx + 1} отсутствуют таблицы.`);
+      }
+      const entName = ent.profile?.shortName || ent.profile?.fullName || `Организация №${eIdx + 1}`;
+      ent.tabs.forEach((t: any) => validateTabStructure(t, entName));
+    });
+  } else {
+    parsed.tabs.forEach((t: any) => validateTabStructure(t, 'База v1'));
+  }
+
+  // 3. Normalize in memory without touching storage
+  const normalizedState = normalizeDatabaseState(parsed);
+  const incomingSummary = summarizeDatabaseState(normalizedState);
+
+  // 4. Referential integrity audit across all entities in imported database
+  let brokenRelationsCount = 0;
+  let orphanedCellsCount = 0;
+  let brokenTagsCount = 0;
+
+  normalizedState.entities.forEach((ent) => {
+    const audit = integrityService.auditIntegrity(ent.tabs || [], ent.tags || []);
+    brokenRelationsCount += audit.brokenRelations.length;
+    orphanedCellsCount += audit.orphanedCells.length;
+    brokenTagsCount += audit.brokenTags.length;
+  });
+
+  if (brokenRelationsCount > 0 || orphanedCellsCount > 0 || brokenTagsCount > 0) {
+    warnings.push(
+      `Аудит импортируемого файла выявил замечания целостности: битых связей — ${brokenRelationsCount}, несовпадающих значений связей — ${orphanedCellsCount}, битых тегов — ${brokenTagsCount}.`
+    );
+  }
+
+  return {
+    fileName,
+    sourceFormat: hasEntities ? 'multi-entity' : 'legacy-v1',
+    sourceVersion,
+    incomingSummary,
+    normalizedState,
+    integritySummary: {
+      brokenRelationsCount,
+      orphanedCellsCount,
+      brokenTagsCount
+    },
+    warnings
+  };
 }
 
 function uidSuffix(): string {
@@ -139,7 +427,11 @@ export function normalizeDatabaseState(raw: any): DatabaseState {
     generatedDocs: activeEntity.generatedDocs || [],
     llmConfig: normalizeLLMConfig(raw.llmConfig || INITIAL_DATABASE_STATE.llmConfig),
     llmLogs: activeEntity.llmLogs || [],
-    settings: raw.settings || INITIAL_DATABASE_STATE.settings
+    settings: {
+      ...INITIAL_DATABASE_STATE.settings,
+      ...(raw.settings || {}),
+      tabBarMode: raw.settings?.tabBarMode === 'auto' ? 'auto' : 'single'
+    }
   };
 }
 
@@ -348,46 +640,48 @@ export const storageService = {
   },
 
   async saveDatabaseAsync(state: DatabaseState): Promise<SaveDatabaseResult> {
-    const toSave: DatabaseState = {
-      ...state,
-      lastSaved: new Date().toISOString()
-    };
-
-    if (localApiClient.isNative()) {
-      return await localApiClient.saveDatabase(toSave);
-    }
-
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
-      return { ok: true };
-    } catch (e: any) {
-      const isQuota =
-        e?.name === 'QuotaExceededError' ||
-        e?.code === 22 ||
-        String(e?.message || '').toLowerCase().includes('quota');
-      return {
-        ok: false,
-        errorCode: isQuota ? 'QUOTA_EXCEEDED' : 'LOCALSTORAGE_ERROR',
-        message: isQuota
-          ? 'Превышен лимит памяти браузера (QuotaExceeded). Запустите ОТ-База.exe или удалите крупные вложения.'
-          : (e?.message || 'Ошибка сохранения в локальное хранилище браузера')
+    return enqueuePersistenceTask(async () => {
+      const toSave: DatabaseState = {
+        ...state,
+        lastSaved: state.lastSaved || new Date().toISOString()
       };
-    }
+
+      if (localApiClient.isNative()) {
+        return await localApiClient.saveDatabase(toSave);
+      }
+
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+        return { ok: true };
+      } catch (e: any) {
+        const isQuota =
+          e?.name === 'QuotaExceededError' ||
+          e?.code === 22 ||
+          String(e?.message || '').toLowerCase().includes('quota');
+        return {
+          ok: false,
+          errorCode: isQuota ? 'QUOTA_EXCEEDED' : 'LOCALSTORAGE_ERROR',
+          message: isQuota
+            ? 'Превышен лимит памяти браузера (QuotaExceeded). Запустите ОТ-База.exe или удалите крупные вложения.'
+            : (e?.message || 'Ошибка сохранения в локальное хранилище браузера')
+        };
+      }
+    });
   },
 
   saveDatabase(state: DatabaseState): SaveDatabaseResult {
     if (localApiClient.isNative()) {
-      // Trigger async atomic write on disk; synchronous return tracks initiation
-      void localApiClient.saveDatabase({
+      // Trigger async atomic write through serialized persistence queue
+      void storageService.saveDatabaseAsync({
         ...state,
-        lastSaved: new Date().toISOString()
+        lastSaved: state.lastSaved || new Date().toISOString()
       });
       return { ok: true };
     }
     try {
       const toSave: DatabaseState = {
         ...state,
-        lastSaved: new Date().toISOString()
+        lastSaved: state.lastSaved || new Date().toISOString()
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
       return { ok: true };
@@ -402,18 +696,20 @@ export const storageService = {
   },
 
   async resetDatabaseAsync(): Promise<{ state: DatabaseState; saveResult: SaveDatabaseResult }> {
-    const fresh: DatabaseState = JSON.parse(JSON.stringify(INITIAL_DATABASE_STATE));
-    fresh.lastSaved = new Date().toISOString();
-    if (localApiClient.isNative()) {
-      const saveResult = await localApiClient.saveDatabase(fresh);
-      return { state: fresh, saveResult };
-    }
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch {
-      // ignore
-    }
-    return { state: fresh, saveResult: { ok: true } };
+    return enqueuePersistenceTask(async () => {
+      const fresh: DatabaseState = JSON.parse(JSON.stringify(INITIAL_DATABASE_STATE));
+      fresh.lastSaved = new Date().toISOString();
+      if (localApiClient.isNative()) {
+        const saveResult = await localApiClient.saveDatabase(fresh);
+        return { state: fresh, saveResult };
+      }
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+      } catch {
+        // ignore
+      }
+      return { state: fresh, saveResult: { ok: true } };
+    });
   },
 
   resetDatabase(): DatabaseState {
@@ -425,8 +721,13 @@ export const storageService = {
     return INITIAL_DATABASE_STATE;
   },
 
-  exportDatabaseToFile(state: DatabaseState, filename = 'ot_database_backup.json'): void {
-    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json;charset=utf-8' });
+  exportDatabaseToFile(
+    state: DatabaseState,
+    filename = 'ot_database_backup.json',
+    options?: ExportDatabaseOptions
+  ): void {
+    const safeState = sanitizeDatabaseForExport(state, options);
+    const blob = new Blob([JSON.stringify(safeState, null, 2)], { type: 'application/json;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const downloadAnchor = document.createElement('a');
     downloadAnchor.setAttribute('href', url);
@@ -437,30 +738,92 @@ export const storageService = {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   },
 
-  async importDatabaseFromFile(file: File): Promise<DatabaseState> {
+  async inspectDatabaseBackupFile(file: File): Promise<DatabaseImportPreview> {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onload = async (event) => {
+      reader.onload = (event) => {
         try {
-          const content = event.target?.result as string;
-          const parsed = JSON.parse(content);
-          const hasLegacyTabs = Array.isArray(parsed?.tabs);
-          const hasEntities = Array.isArray(parsed?.entities) && parsed.entities.length > 0;
-          if (!hasLegacyTabs && !hasEntities) {
-            throw new Error('Файл не содержит корректных таблиц или карточек организаций');
-          }
-          const normalized = normalizeDatabaseState(parsed);
-          const saveRes = await storageService.saveDatabaseAsync(normalized);
-          if (!saveRes.ok) {
-            throw new Error(saveRes.message || 'Не удалось записать восстановленную базу');
-          }
-          resolve(normalized);
+          const content = String(event.target?.result ?? '');
+          const preview = inspectDatabaseBackupText(content, file.name);
+          resolve(preview);
         } catch (err: any) {
-          reject(new Error('Ошибка чтения файла резервной копии: ' + err.message));
+          reject(new Error(err?.message || 'Ошибка проверки файла резервной копии'));
         }
       };
-      reader.onerror = () => reject(new Error('Не удалось прочитать файл'));
+      reader.onerror = () => reject(new Error('Не удалось прочитать выбранный файл'));
       reader.readAsText(file);
     });
+  },
+
+  async restoreDatabaseSafely(
+    currentState: DatabaseState,
+    nextState: DatabaseState
+  ): Promise<SafeRestoreResult> {
+    // Wait for any in-flight persistence write so the pre-restore backup reflects latest disk state
+    await persistenceChain;
+
+    const rollbackSnapshot: DatabaseState = JSON.parse(JSON.stringify(currentState));
+    const normalizedNext = normalizeDatabaseState(nextState);
+    const toSave: DatabaseState = {
+      ...normalizedNext,
+      lastSaved: new Date().toISOString()
+    };
+
+    let backupFileName: string | undefined;
+
+    if (localApiClient.isNative()) {
+      const backupRes = await localApiClient.createDiskBackup();
+      if (!backupRes.ok) {
+        return {
+          ok: false,
+          state: rollbackSnapshot,
+          rolledBack: true,
+          error:
+            backupRes.message ||
+            'Не удалось создать резервную копию текущей базы перед восстановлением. Операция отменена.'
+        };
+      }
+      backupFileName = backupRes.fileName;
+    } else {
+      try {
+        localStorage.setItem(PRE_RESTORE_BACKUP_KEY, JSON.stringify(rollbackSnapshot));
+      } catch {
+        // Pre-restore backup key in localStorage is best-effort; rollbackSnapshot stays intact in memory
+      }
+    }
+
+    const saveRes = await storageService.saveDatabaseAsync(toSave);
+    if (!saveRes.ok) {
+      if (!localApiClient.isNative()) {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(rollbackSnapshot));
+        } catch {
+          // ignore if original storage was untouched by QuotaExceededError
+        }
+      }
+      return {
+        ok: false,
+        state: rollbackSnapshot,
+        rolledBack: true,
+        backupFileName,
+        error: saveRes.message || 'Не удалось сохранить восстановленную базу. Выполнен откат.'
+      };
+    }
+
+    return {
+      ok: true,
+      state: toSave,
+      rolledBack: false,
+      backupFileName
+    };
+  },
+
+  async importDatabaseFromFile(file: File): Promise<DatabaseState> {
+    const preview = await storageService.inspectDatabaseBackupFile(file);
+    const saveRes = await storageService.saveDatabaseAsync(preview.normalizedState);
+    if (!saveRes.ok) {
+      throw new Error(saveRes.message || 'Не удалось записать восстановленную базу');
+    }
+    return preview.normalizedState;
   }
 };

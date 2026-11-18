@@ -90,11 +90,11 @@ export const MenuBar: React.FC<MenuBarProps> = ({
       className="h-7 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs border-b border-slate-200 dark:border-slate-700/80 flex items-center px-2 select-none relative shrink-0 z-40"
     >
       {/* Файл */}
-      <div className="relative">
+      <div className="relative shrink-0">
         <button
           type="button"
           onClick={() => setActiveMenu(activeMenu === 'file' ? null : 'file')}
-          className={`px-2.5 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors ${activeMenu === 'file' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
+          className={`px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer whitespace-nowrap ${activeMenu === 'file' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
         >
           Файл
         </button>
@@ -186,11 +186,11 @@ export const MenuBar: React.FC<MenuBarProps> = ({
       </div>
 
       {/* Правка */}
-      <div className="relative">
+      <div className="relative shrink-0">
         <button
           type="button"
           onClick={() => setActiveMenu(activeMenu === 'edit' ? null : 'edit')}
-          className={`px-2.5 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors ${activeMenu === 'edit' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
+          className={`px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer whitespace-nowrap ${activeMenu === 'edit' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
         >
           Правка
         </button>
@@ -243,11 +243,11 @@ export const MenuBar: React.FC<MenuBarProps> = ({
       </div>
 
       {/* Вкладки */}
-      <div className="relative">
+      <div className="relative shrink-0">
         <button
           type="button"
           onClick={() => setActiveMenu(activeMenu === 'tabs' ? null : 'tabs')}
-          className={`px-2.5 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors ${activeMenu === 'tabs' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
+          className={`px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer whitespace-nowrap ${activeMenu === 'tabs' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
         >
           Вкладки
         </button>
@@ -275,11 +275,11 @@ export const MenuBar: React.FC<MenuBarProps> = ({
       </div>
 
       {/* Связи */}
-      <div className="relative">
+      <div className="relative shrink-0">
         <button
           type="button"
           onClick={() => setActiveMenu(activeMenu === 'relations' ? null : 'relations')}
-          className={`px-2.5 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors ${activeMenu === 'relations' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
+          className={`px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer whitespace-nowrap ${activeMenu === 'relations' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
         >
           Связи
         </button>
@@ -307,11 +307,11 @@ export const MenuBar: React.FC<MenuBarProps> = ({
       </div>
 
       {/* Документы */}
-      <div className="relative">
+      <div className="relative shrink-0">
         <button
           type="button"
           onClick={() => setActiveMenu(activeMenu === 'docs' ? null : 'docs')}
-          className={`px-2.5 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors ${activeMenu === 'docs' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
+          className={`px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer whitespace-nowrap ${activeMenu === 'docs' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
         >
           Документы
         </button>
@@ -366,11 +366,11 @@ export const MenuBar: React.FC<MenuBarProps> = ({
       </div>
 
       {/* LLM-Сервер */}
-      <div className="relative">
+      <div className="relative shrink-0">
         <button
           type="button"
           onClick={() => setActiveMenu(activeMenu === 'llm' ? null : 'llm')}
-          className={`px-2.5 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors ${activeMenu === 'llm' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
+          className={`px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer whitespace-nowrap ${activeMenu === 'llm' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
         >
           LLM-Сервер
         </button>
@@ -398,11 +398,11 @@ export const MenuBar: React.FC<MenuBarProps> = ({
       </div>
 
       {/* Справка */}
-      <div className="relative">
+      <div className="relative shrink-0">
         <button
           type="button"
           onClick={() => setActiveMenu(activeMenu === 'help' ? null : 'help')}
-          className={`px-2.5 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors ${activeMenu === 'help' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
+          className={`px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer whitespace-nowrap ${activeMenu === 'help' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
         >
           Справка
         </button>
@@ -421,11 +421,11 @@ export const MenuBar: React.FC<MenuBarProps> = ({
       </div>
 
       {/* Topbar Visible LLM Connection Indicator */}
-      <div className="ml-auto flex items-center gap-2 min-w-0">
+      <div className="ml-auto flex items-center gap-2 min-w-0 pl-2">
         <button
           type="button"
           onClick={onOpenLLMSettings}
-          className={`flex items-center gap-1.5 px-2 py-0.5 rounded transition-colors cursor-pointer whitespace-nowrap truncate max-w-[440px] ${
+          className={`flex items-center gap-1.5 px-2 py-0.5 rounded transition-colors cursor-pointer whitespace-nowrap truncate max-w-[260px] xl:max-w-[440px] ${
             llmConfig.status === 'connected'
               ? 'text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100/70 dark:hover:bg-emerald-950/40'
               : llmConfig.status === 'error'
@@ -449,14 +449,14 @@ export const MenuBar: React.FC<MenuBarProps> = ({
             <>
               <AlertCircle className="w-3.5 h-3.5 text-red-600 dark:text-red-400 shrink-0" />
               <span className="truncate text-[11px]">
-                LLM: ошибка подключения <span className="hidden lg:inline text-slate-500 dark:text-slate-400 font-normal">· генерация по тегам работает</span>
+                LLM: ошибка подключения <span className="hidden xl:inline text-slate-500 dark:text-slate-400 font-normal">· генерация по тегам работает</span>
               </span>
             </>
           ) : (
             <>
               <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
               <span className="truncate text-[11px]">
-                LLM не подключена <span className="hidden lg:inline text-slate-500 dark:text-slate-400 font-normal">· генерация по тегам работает</span>
+                LLM не подключена <span className="hidden xl:inline text-slate-500 dark:text-slate-400 font-normal">· генерация по тегам работает</span>
               </span>
             </>
           )}

@@ -142,11 +142,14 @@ export interface LegalEntity {
   updatedAt: string;
 }
 
+export type TabBarMode = 'single' | 'auto';
+
 export interface AppSettings {
   databaseDirectory: string;
   portableMode: boolean;
   theme: 'light' | 'dark';
   autoSave: boolean;
+  tabBarMode?: TabBarMode;
   lastBackupDate?: string;
 }
 

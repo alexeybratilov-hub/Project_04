@@ -4,11 +4,14 @@ import {
   Plus, Key, MoreVertical, Edit2, Trash2, 
   Columns, Maximize2, Minimize2, Link2, GripVertical
 } from 'lucide-react';
-import { Tab } from '../types/database';
+import { Tab, TabBarMode } from '../types/database';
+import { Z_INDEX } from './ui';
 
 interface TabBarProps {
   tabs: Tab[];
   activeTabId: string;
+  tabBarMode?: TabBarMode;
+  onChangeTabBarMode?: (mode: TabBarMode) => void;
   onSelectTab: (tabId: string) => void;
   onAddTab: () => void;
   onRenameTab: (tabId: string, newName: string) => void;
@@ -28,6 +31,8 @@ interface ContextMenuState {
 export const TabBar: React.FC<TabBarProps> = ({
   tabs,
   activeTabId,
+  tabBarMode = 'single',
+  onChangeTabBarMode,
   onSelectTab,
   onAddTab,
   onRenameTab,
@@ -45,15 +50,18 @@ export const TabBar: React.FC<TabBarProps> = ({
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
 
-  // Height modes: 'auto' (all rows visible), or numeric height in px
-  const [isAutoHeight, setIsAutoHeight] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem('ot_tabbar_auto');
-      return saved !== null ? saved === 'true' : true;
-    } catch {
-      return true;
+  // Fallback state if controlled mode callback is not passed
+  const [internalMode, setInternalMode] = useState<TabBarMode>(tabBarMode);
+  const effectiveMode = onChangeTabBarMode ? tabBarMode : internalMode;
+  const isSingleRow = effectiveMode === 'single';
+
+  const setMode = (next: TabBarMode) => {
+    if (onChangeTabBarMode) {
+      onChangeTabBarMode(next);
+    } else {
+      setInternalMode(next);
     }
-  });
+  };
 
   const [tabBarHeight, setTabBarHeight] = useState<number>(() => {
     try {
@@ -64,17 +72,11 @@ export const TabBar: React.FC<TabBarProps> = ({
     }
   });
 
+  const [isCustomMultiHeight, setIsCustomMultiHeight] = useState<boolean>(false);
   const [isResizing, setIsResizing] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const tabsScrollRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('ot_tabbar_auto', String(isAutoHeight));
-    } catch {
-      // Ignore storage access errors in restricted file:// policies
-    }
-  }, [isAutoHeight]);
 
   useEffect(() => {
     try {
@@ -83,6 +85,15 @@ export const TabBar: React.FC<TabBarProps> = ({
       // Ignore storage access errors in restricted file:// policies
     }
   }, [tabBarHeight]);
+
+  // Keep active tab scrolled into view in 1-row mode
+  useEffect(() => {
+    if (!isSingleRow || !tabsScrollRef.current) return;
+    const activeEl = tabsScrollRef.current.querySelector<HTMLElement>(`[data-tab-id="${activeTabId}"]`);
+    if (activeEl) {
+      activeEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+  }, [activeTabId, isSingleRow]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -102,9 +113,10 @@ export const TabBar: React.FC<TabBarProps> = ({
     const handleMouseMove = (e: MouseEvent) => {
       if (!containerRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
-      const newHeight = Math.max(38, Math.min(320, e.clientY - rect.top));
+      const newHeight = Math.max(40, Math.min(260, e.clientY - rect.top));
       setTabBarHeight(newHeight);
-      setIsAutoHeight(false);
+      setIsCustomMultiHeight(true);
+      setMode('auto');
     };
 
     const handleMouseUp = () => {
@@ -179,44 +191,58 @@ export const TabBar: React.FC<TabBarProps> = ({
   };
 
   return (
-    <div 
+    <div
       ref={containerRef}
       className="relative z-30 bg-slate-200/90 dark:bg-slate-900 border-b border-slate-300 dark:border-slate-800 select-none flex flex-col shrink-0 transition-[height] duration-75"
-      style={{
-        height: isAutoHeight ? 'auto' : `${tabBarHeight}px`,
-        maxHeight: isAutoHeight ? '300px' : undefined
-      }}
+      style={
+        isSingleRow
+          ? { height: 'auto' }
+          : {
+              height: isCustomMultiHeight ? `${tabBarHeight}px` : 'auto',
+              maxHeight: isCustomMultiHeight ? undefined : '240px'
+            }
+      }
     >
-      {/* Tabs and Controls Container: Wrapped, NO horizontal scroll, draggable tabs */}
-      <div className="flex-1 overflow-x-hidden overflow-y-auto p-1.5 flex flex-wrap items-center gap-1.5 content-start">
-        {tabs.map((tab) => {
-          const isActive = tab.id === activeTabId;
-          const isMaster = tab.isMaster;
-          const isDragging = draggedTabId === tab.id;
-          const isDropTarget = dragOverTabId === tab.id;
+      {/* Tabs Row + Pinned Controls */}
+      <div className={`flex ${isSingleRow ? 'items-center' : 'items-start'} min-w-0 flex-1 overflow-hidden`}>
+        {/* Tabs Strip: single horizontal row by default, or wrapped multi-row when expanded */}
+        <div
+          ref={tabsScrollRef}
+          className={`flex-1 min-w-0 px-2 py-1 flex items-center gap-1.5 ${
+            isSingleRow
+              ? 'flex-nowrap overflow-x-auto no-scrollbar'
+              : 'flex-wrap overflow-x-hidden overflow-y-auto content-start max-h-full'
+          }`}
+        >
+          {tabs.map((tab) => {
+            const isActive = tab.id === activeTabId;
+            const isMaster = tab.isMaster;
+            const isDragging = draggedTabId === tab.id;
+            const isDropTarget = dragOverTabId === tab.id;
 
-          return (
-            <div
-              key={tab.id}
-              draggable={editingTabId !== tab.id}
-              onDragStart={(e) => handleDragStart(e, tab.id)}
-              onDragOver={(e) => handleDragOver(e, tab.id)}
-              onDragLeave={() => {
-                if (dragOverTabId === tab.id) setDragOverTabId(null);
-              }}
-              onDrop={(e) => handleDrop(e, tab.id)}
-              onDragEnd={handleDragEnd}
-              className={`group relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer border ${
-                isActive
-                  ? 'bg-white dark:bg-slate-800 text-blue-700 dark:text-blue-400 border-blue-400/70 dark:border-blue-600/80 shadow-xs font-semibold ring-1 ring-blue-500/20'
-                  : 'bg-white/60 dark:bg-slate-800/60 text-slate-700 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800 border-slate-300/80 dark:border-slate-700/80 hover:border-slate-400'
-              } ${isDragging ? 'opacity-40 scale-95' : ''} ${
-                isDropTarget ? 'ring-2 ring-blue-600 border-blue-600 bg-blue-50 dark:bg-blue-950/60' : ''
-              }`}
-              onClick={() => onSelectTab(tab.id)}
-              title="Перетащите мышкой для изменения порядка вкладок"
-            >
-              <GripVertical className="w-3 h-3 text-slate-300 dark:text-slate-600 opacity-0 group-hover:opacity-100 -ml-1 shrink-0 cursor-grab" />
+            return (
+              <div
+                key={tab.id}
+                data-tab-id={tab.id}
+                draggable={editingTabId !== tab.id}
+                onDragStart={(e) => handleDragStart(e, tab.id)}
+                onDragOver={(e) => handleDragOver(e, tab.id)}
+                onDragLeave={() => {
+                  if (dragOverTabId === tab.id) setDragOverTabId(null);
+                }}
+                onDrop={(e) => handleDrop(e, tab.id)}
+                onDragEnd={handleDragEnd}
+                className={`group relative flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer border shrink-0 ${
+                  isActive
+                    ? 'bg-white dark:bg-slate-800 text-blue-700 dark:text-blue-400 border-blue-400/70 dark:border-blue-600/80 shadow-xs font-semibold ring-1 ring-blue-500/20'
+                    : 'bg-white/60 dark:bg-slate-800/60 text-slate-700 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800 border-slate-300/80 dark:border-slate-700/80 hover:border-slate-400'
+                } ${isDragging ? 'opacity-40 scale-95' : ''} ${
+                  isDropTarget ? 'ring-2 ring-blue-600 border-blue-600 bg-blue-50 dark:bg-blue-950/60' : ''
+                }`}
+                onClick={() => onSelectTab(tab.id)}
+                title="Перетащите мышкой для изменения порядка вкладок"
+              >
+                <GripVertical className="w-3 h-3 text-slate-300 dark:text-slate-600 opacity-0 group-hover:opacity-100 -ml-1 shrink-0 cursor-grab" />
 
               {isMaster && (
                 <span title="Мастер-таблица (источник данных для связей)" className="text-amber-500 shrink-0">
@@ -275,89 +301,121 @@ export const TabBar: React.FC<TabBarProps> = ({
           );
         })}
 
-        {/* Add tab button */}
-        {tabs.length < 20 ? (
-          <button
-            type="button"
-            onClick={onAddTab}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 text-slate-600 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 hover:border-blue-400 dark:hover:border-blue-500 bg-white/40 dark:bg-slate-800/40 hover:bg-white dark:hover:bg-slate-800 transition-colors text-xs font-medium"
-            title="Создать новую вкладку (максимум 20)"
-          >
-            <Plus className="w-3.5 h-3.5 text-blue-600" />
-            <span>Новая вкладка</span>
-          </button>
-        ) : (
-          <span className="text-[11px] text-amber-600 dark:text-amber-400 px-2 font-medium">
-            Лимит 20 вкладок
-          </span>
-        )}
+          {/* Add tab button inside strip when in multi-row mode */}
+          {!isSingleRow && (
+            tabs.length < 20 ? (
+              <button
+                type="button"
+                onClick={onAddTab}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 text-slate-600 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 hover:border-blue-400 dark:hover:border-blue-500 bg-white/40 dark:bg-slate-800/40 hover:bg-white dark:hover:bg-slate-800 transition-colors text-xs font-medium shrink-0 cursor-pointer"
+                title="Создать новую вкладку (максимум 20)"
+              >
+                <Plus className="w-3.5 h-3.5 text-blue-600" />
+                <span>Новая вкладка</span>
+              </button>
+            ) : (
+              <span className="text-[11px] text-amber-600 dark:text-amber-400 px-2 font-medium shrink-0">
+                Лимит 20 вкладок
+              </span>
+            )
+          )}
+        </div>
 
-        {/* Height Adjuster Controls */}
-        <div className="ml-auto flex items-center gap-1 pl-2 border-l border-slate-300 dark:border-slate-700">
+        {/* Pinned Right Controls (always reachable on 1366x768 & 125%/150% DPI) */}
+        <div className="flex items-center gap-1 px-2 py-1 border-l border-slate-300 dark:border-slate-700/80 shrink-0 bg-slate-200/70 dark:bg-slate-900">
+          {isSingleRow && (
+            tabs.length < 20 ? (
+              <button
+                type="button"
+                onClick={onAddTab}
+                className="flex items-center gap-1 px-2 py-1 rounded-md border border-dashed border-slate-300 dark:border-slate-700 text-slate-700 hover:text-blue-600 dark:text-slate-300 dark:hover:text-blue-400 hover:border-blue-400 bg-white/60 dark:bg-slate-800/60 hover:bg-white dark:hover:bg-slate-800 transition-colors text-[11px] font-medium whitespace-nowrap cursor-pointer"
+                title="Создать новую вкладку (максимум 20)"
+              >
+                <Plus className="w-3.5 h-3.5 text-blue-600" />
+                <span>Новая</span>
+              </button>
+            ) : (
+              <span className="text-[11px] text-amber-600 dark:text-amber-400 px-1.5 font-medium whitespace-nowrap">
+                Лимит 20
+              </span>
+            )
+          )}
+
           <button
             type="button"
-            onClick={() => setIsAutoHeight(!isAutoHeight)}
-            className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-colors ${
-              isAutoHeight
+            onClick={() => {
+              if (isSingleRow) {
+                setIsCustomMultiHeight(false);
+                setMode('auto');
+              } else {
+                setIsCustomMultiHeight(false);
+                setMode('single');
+              }
+            }}
+            className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap cursor-pointer ${
+              !isSingleRow
                 ? 'bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border border-blue-300 dark:border-blue-800'
-                : 'text-slate-600 dark:text-slate-400 hover:bg-slate-300/60 dark:hover:bg-slate-800'
+                : 'text-slate-600 dark:text-slate-300 hover:bg-slate-300/60 dark:hover:bg-slate-800'
             }`}
-            title={isAutoHeight ? 'Включен автоподбор: видны все ряды вкладок сразу' : 'Компактная высота с прокруткой'}
+            title={
+              isSingleRow
+                ? 'Развернуть панель вкладок в несколько рядов (настройка сохраняется)'
+                : 'Свернуть панель вкладок в 1 компактную строку (настройка сохраняется)'
+            }
           >
-            {isAutoHeight ? (
+            {isSingleRow ? (
               <>
-                <Minimize2 className="w-3 h-3 text-blue-600 dark:text-blue-400" />
-                <span className="hidden sm:inline">Все ряды</span>
+                <Maximize2 className="w-3 h-3" />
+                <span>Все ряды</span>
               </>
             ) : (
               <>
-                <Maximize2 className="w-3 h-3" />
-                <span className="hidden sm:inline">Развернуть ряды</span>
+                <Minimize2 className="w-3 h-3 text-blue-600 dark:text-blue-400" />
+                <span>1 ряд</span>
               </>
             )}
           </button>
 
-          {!isAutoHeight && (
-            <div className="flex items-center gap-0.5 text-[10px] text-slate-500 font-mono">
-              <button
-                type="button"
-                onClick={() => setTabBarHeight(42)}
-                className={`px-1.5 py-0.5 rounded ${tabBarHeight <= 48 ? 'bg-slate-300 dark:bg-slate-700 font-bold' : 'hover:bg-slate-200 dark:hover:bg-slate-800'}`}
-                title="Высота 1 ряд"
-              >
-                1 ряд
-              </button>
-              <button
-                type="button"
-                onClick={() => setTabBarHeight(84)}
-                className={`px-1.5 py-0.5 rounded ${tabBarHeight > 48 && tabBarHeight <= 100 ? 'bg-slate-300 dark:bg-slate-700 font-bold' : 'hover:bg-slate-200 dark:hover:bg-slate-800'}`}
-                title="Высота 2 ряда"
-              >
-                2 ряда
-              </button>
-            </div>
+          {!isSingleRow && (
+            <button
+              type="button"
+              onClick={() => {
+                setTabBarHeight(84);
+                setIsCustomMultiHeight((v) => !v);
+              }}
+              className={`px-1.5 py-1 rounded-md text-[10px] font-mono whitespace-nowrap cursor-pointer ${
+                isCustomMultiHeight
+                  ? 'bg-slate-300 dark:bg-slate-700 text-slate-900 dark:text-white font-bold'
+                  : 'text-slate-500 hover:bg-slate-300/60 dark:hover:bg-slate-800'
+              }`}
+              title="Ограничить высоту до 2 рядов"
+            >
+              2 ряда
+            </button>
           )}
         </div>
       </div>
 
-      {/* Resize Drag-Handle */}
-      <div
-        onMouseDown={(e) => {
-          e.preventDefault();
-          setIsResizing(true);
-        }}
-        className="w-full h-1.5 cursor-row-resize bg-slate-300/40 dark:bg-slate-800/80 hover:bg-blue-500 dark:hover:bg-blue-600 transition-colors flex items-center justify-center group relative z-10"
-        title="Потяните вниз или вверх для ручной регулировки высоты поля вкладок"
-      >
-        <div className="w-10 h-0.5 rounded-full bg-slate-400 dark:bg-slate-600 group-hover:bg-white" />
-      </div>
+      {/* Resize Drag-Handle (only in expanded multi-row mode) */}
+      {!isSingleRow && (
+        <div
+          onMouseDown={(e) => {
+            e.preventDefault();
+            setIsResizing(true);
+          }}
+          className="w-full h-1.5 cursor-row-resize bg-slate-300/40 dark:bg-slate-800/80 hover:bg-blue-500 dark:hover:bg-blue-600 transition-colors flex items-center justify-center group relative z-10"
+          title="Потяните вниз или вверх для ручной регулировки высоты поля вкладок"
+        >
+          <div className="w-10 h-0.5 rounded-full bg-slate-400 dark:bg-slate-600 group-hover:bg-white" />
+        </div>
+      )}
 
       {/* PORTAL: Tab Options Context Menu */}
       {contextMenu && createPortal(
         <div
           ref={menuRef}
           style={{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }}
-          className="fixed z-[9999] w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl py-1.5 text-xs text-slate-700 dark:text-slate-200 animate-in fade-in-50 zoom-in-95 duration-100 select-none ring-1 ring-black/5"
+          className={`fixed ${Z_INDEX.popover} w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl py-1.5 text-xs text-slate-700 dark:text-slate-200 animate-in fade-in-50 zoom-in-95 duration-100 select-none ring-1 ring-black/5`}
           onClick={(e) => e.stopPropagation()}
         >
           <div className="px-3 py-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 mb-1 truncate">
