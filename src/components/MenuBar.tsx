@@ -36,6 +36,9 @@ interface MenuBarProps {
   onOpenHelp: () => void;
 }
 
+type MenuKey = 'file' | 'edit' | 'tabs' | 'relations' | 'docs' | 'llm' | 'help';
+const MENU_KEYS: readonly MenuKey[] = ['file', 'edit', 'tabs', 'relations', 'docs', 'llm', 'help'];
+
 export const MenuBar: React.FC<MenuBarProps> = ({
   onSave,
   onExportExcel,
@@ -61,8 +64,14 @@ export const MenuBar: React.FC<MenuBarProps> = ({
   onOpenHelp
 }) => {
   const { showToast } = useToast();
-  const [activeMenu, setActiveMenu] = useState<string | null>(null);
+  const [activeMenu, setActiveMenu] = useState<MenuKey | null>(null);
+  const [rovingIndex, setRovingIndex] = useState<number>(0);
   const barRef = useRef<HTMLDivElement>(null);
+  const triggerRefs = useRef<Partial<Record<MenuKey, HTMLButtonElement | null>>>({});
+  const dropdownRef = useRef<HTMLDivElement | null>(null);
+  const pendingItemFocusRef = useRef<'first' | 'last' | null>(null);
+  const activeMenuRef = useRef<MenuKey | null>(activeMenu);
+  activeMenuRef.current = activeMenu;
   const llmPreset = getLLMProviderPreset(llmConfig?.providerId);
 
   useEffect(() => {
@@ -72,7 +81,13 @@ export const MenuBar: React.FC<MenuBarProps> = ({
       }
     };
     const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setActiveMenu(null);
+      if (e.key === 'Escape' && activeMenuRef.current) {
+        const current = activeMenuRef.current;
+        setActiveMenu(null);
+        if (barRef.current?.contains(document.activeElement)) {
+          triggerRefs.current[current]?.focus();
+        }
+      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     window.addEventListener('keydown', handleEsc);
@@ -82,342 +97,620 @@ export const MenuBar: React.FC<MenuBarProps> = ({
     };
   }, []);
 
-  const closeMenu = () => setActiveMenu(null);
+  useEffect(() => {
+    if (!activeMenu || !pendingItemFocusRef.current) return;
+    const target = pendingItemFocusRef.current;
+    pendingItemFocusRef.current = null;
+    const rafId = requestAnimationFrame(() => {
+      const items = dropdownRef.current?.querySelectorAll<HTMLButtonElement>(
+        '[role="menuitem"]:not(:disabled)'
+      );
+      if (!items || items.length === 0) return;
+      if (target === 'last') {
+        items[items.length - 1].focus();
+      } else {
+        items[0].focus();
+      }
+    });
+    return () => cancelAnimationFrame(rafId);
+  }, [activeMenu]);
+
+  const closeMenu = (restoreFocus = false) => {
+    const current = activeMenuRef.current;
+    setActiveMenu(null);
+    if (restoreFocus && current) {
+      triggerRefs.current[current]?.focus();
+    }
+  };
+
+  const focusTopTrigger = (index: number, openDropdown: boolean, focusItem?: 'first' | 'last') => {
+    const normalized = (index + MENU_KEYS.length) % MENU_KEYS.length;
+    const key = MENU_KEYS[normalized];
+    setRovingIndex(normalized);
+    if (openDropdown) {
+      pendingItemFocusRef.current = focusItem ?? null;
+      setActiveMenu(key);
+      if (!focusItem) {
+        triggerRefs.current[key]?.focus();
+      }
+    } else {
+      triggerRefs.current[key]?.focus();
+    }
+  };
+
+  const handleTriggerKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>, key: MenuKey, idx: number) => {
+    if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      focusTopTrigger(idx + 1, activeMenu !== null);
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      focusTopTrigger(idx - 1, activeMenu !== null);
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      focusTopTrigger(0, activeMenu !== null);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      focusTopTrigger(MENU_KEYS.length - 1, activeMenu !== null);
+    } else if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      pendingItemFocusRef.current = 'first';
+      setRovingIndex(idx);
+      setActiveMenu(key);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      pendingItemFocusRef.current = 'last';
+      setRovingIndex(idx);
+      setActiveMenu(key);
+    }
+  };
+
+  const handleDropdownKeyDown = (e: React.KeyboardEvent<HTMLDivElement>, idx: number) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closeMenu(true);
+      return;
+    }
+    if (e.key === 'Tab') {
+      setActiveMenu(null);
+      return;
+    }
+    if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      focusTopTrigger(idx + 1, true, 'first');
+      return;
+    }
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      focusTopTrigger(idx - 1, true, 'first');
+      return;
+    }
+
+    const items = Array.from(
+      dropdownRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') || []
+    );
+    if (items.length === 0) return;
+
+    const currentIdx = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next = currentIdx === -1 ? 0 : (currentIdx + 1) % items.length;
+      items[next].focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prev = currentIdx <= 0 ? items.length - 1 : currentIdx - 1;
+      items[prev].focus();
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      items[0].focus();
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      items[items.length - 1].focus();
+    }
+  };
+
+  const topTriggerClass = (key: MenuKey) =>
+    `px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500 transition-colors cursor-pointer whitespace-nowrap ${
+      activeMenu === key ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''
+    }`;
 
   return (
     <div
       ref={barRef}
       className="h-7 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs border-b border-slate-200 dark:border-slate-700/80 flex items-center px-2 select-none relative shrink-0 z-40"
     >
-      {/* Файл */}
-      <div className="relative shrink-0">
-        <button
-          type="button"
-          onClick={() => setActiveMenu(activeMenu === 'file' ? null : 'file')}
-          className={`px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer whitespace-nowrap ${activeMenu === 'file' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
-        >
-          Файл
-        </button>
-        {activeMenu === 'file' && (
-          <div className="absolute top-full left-0 mt-0.5 w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 text-xs z-50 animate-in fade-in-50 duration-100">
-            <button
-              type="button"
-              onClick={() => { onSave(); closeMenu(); }}
-              className="w-full flex items-center justify-between px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400"
+      <div role="menubar" aria-label="Главное меню" className="flex items-center">
+        {/* Файл */}
+        <div className="relative shrink-0">
+          <button
+            ref={(el) => { triggerRefs.current.file = el; }}
+            type="button"
+            role="menuitem"
+            aria-haspopup="menu"
+            aria-expanded={activeMenu === 'file'}
+            aria-controls="menubar-menu-file"
+            tabIndex={rovingIndex === 0 ? 0 : -1}
+            onClick={() => {
+              setRovingIndex(0);
+              setActiveMenu(activeMenu === 'file' ? null : 'file');
+            }}
+            onKeyDown={(e) => handleTriggerKeyDown(e, 'file', 0)}
+            className={topTriggerClass('file')}
+          >
+            Файл
+          </button>
+          {activeMenu === 'file' && (
+            <div
+              id="menubar-menu-file"
+              ref={dropdownRef}
+              role="menu"
+              aria-label="Файл"
+              onKeyDown={(e) => handleDropdownKeyDown(e, 0)}
+              className="absolute top-full left-0 mt-0.5 w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 text-xs z-50 animate-in fade-in-50 duration-100"
             >
-              <span className="flex items-center gap-2">
-                <Database className="w-3.5 h-3.5" />
-                <span>Сохранить базу</span>
-              </span>
-              <kbd className="text-[10px] text-slate-400 font-mono">Ctrl+S</kbd>
-            </button>
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onSave(); closeMenu(); }}
+                className="w-full flex items-center justify-between px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 focus:text-blue-600 dark:focus:text-blue-400 focus:outline-hidden"
+              >
+                <span className="flex items-center gap-2">
+                  <Database className="w-3.5 h-3.5" />
+                  <span>Сохранить базу</span>
+                </span>
+                <kbd className="text-[10px] text-slate-400 font-mono">Ctrl+S</kbd>
+              </button>
 
-            <button
-              type="button"
-              onClick={() => { onExportExcel(); closeMenu(); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400"
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onExportExcel(); closeMenu(); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 focus:text-blue-600 dark:focus:text-blue-400 focus:outline-hidden"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Экспорт вкладки в Excel (.xlsx)</span>
+              </button>
+
+              <div role="separator" className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
+
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onFullBackup(); closeMenu(); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 focus:text-blue-600 dark:focus:text-blue-400 focus:outline-hidden"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Резервная копия всей базы...</span>
+              </button>
+
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onRestore(); closeMenu(); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 focus:text-blue-600 dark:focus:text-blue-400 focus:outline-hidden"
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>Восстановить из копии...</span>
+              </button>
+
+              <div role="separator" className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
+
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => {
+                  closeMenu();
+                  portablePackageService
+                    .downloadExe()
+                    .then(() => showToast('OT-Baza.exe проверен и сохранён', 'success'))
+                    .catch((err: any) => showToast(err?.message || 'Ошибка скачивания OT-Baza.exe', 'error'));
+                }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-blue-600 dark:text-blue-400 font-semibold focus:outline-hidden"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Скачать OT-Baza.exe (.exe файл)</span>
+              </button>
+
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => {
+                  closeMenu();
+                  portablePackageService
+                    .downloadZip()
+                    .then(() => showToast('OT-Baza-Windows.zip проверен и сохранён', 'success'))
+                    .catch((err: any) => showToast(err?.message || 'Ошибка скачивания OT-Baza-Windows.zip', 'error'));
+                }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 font-medium focus:outline-hidden"
+              >
+                <Download className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Скачать OT-Baza-Windows.zip (Архив)</span>
+              </button>
+
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onOpenPortableModal(); closeMenu(); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 focus:bg-emerald-50 dark:focus:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 font-medium focus:outline-hidden"
+              >
+                <HardDrive className="w-3.5 h-3.5" />
+                <span>Параметры папки и Portable...</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Правка */}
+        <div className="relative shrink-0">
+          <button
+            ref={(el) => { triggerRefs.current.edit = el; }}
+            type="button"
+            role="menuitem"
+            aria-haspopup="menu"
+            aria-expanded={activeMenu === 'edit'}
+            aria-controls="menubar-menu-edit"
+            tabIndex={rovingIndex === 1 ? 0 : -1}
+            onClick={() => {
+              setRovingIndex(1);
+              setActiveMenu(activeMenu === 'edit' ? null : 'edit');
+            }}
+            onKeyDown={(e) => handleTriggerKeyDown(e, 'edit', 1)}
+            className={topTriggerClass('edit')}
+          >
+            Правка
+          </button>
+          {activeMenu === 'edit' && (
+            <div
+              id="menubar-menu-edit"
+              ref={dropdownRef}
+              role="menu"
+              aria-label="Правка"
+              onKeyDown={(e) => handleDropdownKeyDown(e, 1)}
+              className="absolute top-full left-0 mt-0.5 w-60 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 text-xs z-50"
             >
-              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Экспорт вкладки в Excel (.xlsx)</span>
-            </button>
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onAddRow(); closeMenu(); }}
+                className="w-full flex items-center justify-between px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 focus:outline-hidden"
+              >
+                <span className="flex items-center gap-2">
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Добавить строку</span>
+                </span>
+                <kbd className="text-[10px] text-slate-400 font-mono">Ctrl+N</kbd>
+              </button>
 
-            <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                disabled={selectedRowsCount === 0}
+                onClick={() => { onDeleteSelectedRows(); closeMenu(); }}
+                className="w-full flex items-center justify-between px-3 py-1.5 hover:bg-red-50 dark:hover:bg-red-950/40 focus:bg-red-50 dark:focus:bg-red-950/40 text-red-600 dark:text-red-400 disabled:opacity-40 disabled:pointer-events-none focus:outline-hidden"
+              >
+                <span className="flex items-center gap-2">
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Удалить выбранные строки</span>
+                </span>
+                {selectedRowsCount > 0 && (
+                  <span className="text-[10px] font-mono tabular-nums font-semibold">
+                    ({selectedRowsCount})
+                  </span>
+                )}
+              </button>
 
-            <button
-              type="button"
-              onClick={() => { onFullBackup(); closeMenu(); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400"
+              <div role="separator" className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
+
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onFocusSearch(); closeMenu(); }}
+                className="w-full flex items-center justify-between px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 focus:outline-hidden"
+              >
+                <span className="flex items-center gap-2">
+                  <Search className="w-3.5 h-3.5" />
+                  <span>Поиск по таблице</span>
+                </span>
+                <kbd className="text-[10px] text-slate-400 font-mono">Ctrl+F</kbd>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Вкладки */}
+        <div className="relative shrink-0">
+          <button
+            ref={(el) => { triggerRefs.current.tabs = el; }}
+            type="button"
+            role="menuitem"
+            aria-haspopup="menu"
+            aria-expanded={activeMenu === 'tabs'}
+            aria-controls="menubar-menu-tabs"
+            tabIndex={rovingIndex === 2 ? 0 : -1}
+            onClick={() => {
+              setRovingIndex(2);
+              setActiveMenu(activeMenu === 'tabs' ? null : 'tabs');
+            }}
+            onKeyDown={(e) => handleTriggerKeyDown(e, 'tabs', 2)}
+            className={topTriggerClass('tabs')}
+          >
+            Вкладки
+          </button>
+          {activeMenu === 'tabs' && (
+            <div
+              id="menubar-menu-tabs"
+              ref={dropdownRef}
+              role="menu"
+              aria-label="Вкладки"
+              onKeyDown={(e) => handleDropdownKeyDown(e, 2)}
+              className="absolute top-full left-0 mt-0.5 w-60 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 text-xs z-50"
             >
-              <Download className="w-3.5 h-3.5" />
-              <span>Резервная копия всей базы...</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => { onRestore(); closeMenu(); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400"
-            >
-              <Upload className="w-3.5 h-3.5" />
-              <span>Восстановить из копии...</span>
-            </button>
-
-            <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
-
-            <button
-              type="button"
-              onClick={() => {
-                closeMenu();
-                portablePackageService
-                  .downloadExe()
-                  .then(() => showToast('OT-Baza.exe проверен и сохранён', 'success'))
-                  .catch((err: any) => showToast(err?.message || 'Ошибка скачивания OT-Baza.exe', 'error'));
-              }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-blue-600 dark:text-blue-400 font-semibold"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Скачать OT-Baza.exe (.exe файл)</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                closeMenu();
-                portablePackageService
-                  .downloadZip()
-                  .then(() => showToast('OT-Baza-Windows.zip проверен и сохранён', 'success'))
-                  .catch((err: any) => showToast(err?.message || 'Ошибка скачивания OT-Baza-Windows.zip', 'error'));
-              }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-300 font-medium"
-            >
-              <Download className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Скачать OT-Baza-Windows.zip (Архив)</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => { onOpenPortableModal(); closeMenu(); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 font-medium"
-            >
-              <HardDrive className="w-3.5 h-3.5" />
-              <span>Параметры папки и Portable...</span>
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Правка */}
-      <div className="relative shrink-0">
-        <button
-          type="button"
-          onClick={() => setActiveMenu(activeMenu === 'edit' ? null : 'edit')}
-          className={`px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer whitespace-nowrap ${activeMenu === 'edit' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
-        >
-          Правка
-        </button>
-        {activeMenu === 'edit' && (
-          <div className="absolute top-full left-0 mt-0.5 w-60 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 text-xs z-50">
-            <button
-              type="button"
-              onClick={() => { onAddRow(); closeMenu(); }}
-              className="w-full flex items-center justify-between px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-300"
-            >
-              <span className="flex items-center gap-2">
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onAddTab(); closeMenu(); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 focus:outline-hidden"
+              >
                 <Plus className="w-3.5 h-3.5" />
-                <span>Добавить строку</span>
-              </span>
-              <kbd className="text-[10px] text-slate-400 font-mono">Ctrl+N</kbd>
-            </button>
+                <span>Создать новую вкладку (до 20)</span>
+              </button>
 
-            <button
-              type="button"
-              disabled={selectedRowsCount === 0}
-              onClick={() => { onDeleteSelectedRows(); closeMenu(); }}
-              className="w-full flex items-center justify-between px-3 py-1.5 hover:bg-red-50 dark:hover:bg-red-950/40 text-red-600 dark:text-red-400 disabled:opacity-40 disabled:pointer-events-none"
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onOpenColumnEditor(); closeMenu(); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 focus:outline-hidden"
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>Настройка столбцов вкладки...</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Связи */}
+        <div className="relative shrink-0">
+          <button
+            ref={(el) => { triggerRefs.current.relations = el; }}
+            type="button"
+            role="menuitem"
+            aria-haspopup="menu"
+            aria-expanded={activeMenu === 'relations'}
+            aria-controls="menubar-menu-relations"
+            tabIndex={rovingIndex === 3 ? 0 : -1}
+            onClick={() => {
+              setRovingIndex(3);
+              setActiveMenu(activeMenu === 'relations' ? null : 'relations');
+            }}
+            onKeyDown={(e) => handleTriggerKeyDown(e, 'relations', 3)}
+            className={topTriggerClass('relations')}
+          >
+            Связи
+          </button>
+          {activeMenu === 'relations' && (
+            <div
+              id="menubar-menu-relations"
+              ref={dropdownRef}
+              role="menu"
+              aria-label="Связи"
+              onKeyDown={(e) => handleDropdownKeyDown(e, 3)}
+              className="absolute top-full left-0 mt-0.5 w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 text-xs z-50"
             >
-              <span className="flex items-center gap-2">
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Удалить выбранные строки</span>
-              </span>
-              {selectedRowsCount > 0 && (
-                <span className="text-[10px] font-mono tabular-nums font-semibold">
-                  ({selectedRowsCount})
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onOpenRelationsSchema(); closeMenu(); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 font-medium focus:outline-hidden"
+              >
+                <LinkIcon className="w-3.5 h-3.5 text-blue-600" />
+                <span>Схема связей (Мастер → Зависимые)</span>
+              </button>
+
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onAuditRelations(); closeMenu(); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 focus:outline-hidden"
+              >
+                <ShieldAlert className="w-3.5 h-3.5 text-amber-600" />
+                <span>Проверить целостность связей</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Документы */}
+        <div className="relative shrink-0">
+          <button
+            ref={(el) => { triggerRefs.current.docs = el; }}
+            type="button"
+            role="menuitem"
+            aria-haspopup="menu"
+            aria-expanded={activeMenu === 'docs'}
+            aria-controls="menubar-menu-docs"
+            tabIndex={rovingIndex === 4 ? 0 : -1}
+            onClick={() => {
+              setRovingIndex(4);
+              setActiveMenu(activeMenu === 'docs' ? null : 'docs');
+            }}
+            onKeyDown={(e) => handleTriggerKeyDown(e, 'docs', 4)}
+            className={topTriggerClass('docs')}
+          >
+            Документы
+          </button>
+          {activeMenu === 'docs' && (
+            <div
+              id="menubar-menu-docs"
+              ref={dropdownRef}
+              role="menu"
+              aria-label="Документы"
+              onKeyDown={(e) => handleDropdownKeyDown(e, 4)}
+              className="absolute top-full left-0 mt-0.5 w-72 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 text-xs z-50"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onOpenAllTemplates(); closeMenu(); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 font-medium focus:outline-hidden"
+              >
+                <FileText className="w-3.5 h-3.5 text-blue-600" />
+                <span>Шаблоны</span>
+              </button>
+
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onOpenGeneratedDocs(); closeMenu(); }}
+                className="w-full flex items-center justify-between px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 font-medium focus:outline-hidden"
+              >
+                <span className="flex items-center gap-2">
+                  <FolderOpen className="w-3.5 h-3.5 text-amber-600" />
+                  <span>Сгенерированные документы</span>
                 </span>
-              )}
-            </button>
+                {generatedDocsCount > 0 && (
+                  <span className="text-[11px] font-mono tabular-nums text-slate-400">
+                    {generatedDocsCount}
+                  </span>
+                )}
+              </button>
 
-            <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
+              <div role="separator" className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
 
-            <button
-              type="button"
-              onClick={() => { onFocusSearch(); closeMenu(); }}
-              className="w-full flex items-center justify-between px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-300"
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onOpenTagsModal(); closeMenu(); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 focus:outline-hidden"
+              >
+                <BookOpen className="w-3.5 h-3.5" />
+                <span>Справочник тегов &#123;Имя_тега&#125;</span>
+              </button>
+
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onOpenNormativeDocs(); closeMenu(); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 focus:outline-hidden"
+              >
+                <BookOpen className="w-3.5 h-3.5 text-purple-600" />
+                <span>Нормативные документы (ГОСТ / Приказы)</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* LLM-Сервер */}
+        <div className="relative shrink-0">
+          <button
+            ref={(el) => { triggerRefs.current.llm = el; }}
+            type="button"
+            role="menuitem"
+            aria-haspopup="menu"
+            aria-expanded={activeMenu === 'llm'}
+            aria-controls="menubar-menu-llm"
+            tabIndex={rovingIndex === 5 ? 0 : -1}
+            onClick={() => {
+              setRovingIndex(5);
+              setActiveMenu(activeMenu === 'llm' ? null : 'llm');
+            }}
+            onKeyDown={(e) => handleTriggerKeyDown(e, 'llm', 5)}
+            className={topTriggerClass('llm')}
+          >
+            LLM-Сервер
+          </button>
+          {activeMenu === 'llm' && (
+            <div
+              id="menubar-menu-llm"
+              ref={dropdownRef}
+              role="menu"
+              aria-label="LLM-Сервер"
+              onKeyDown={(e) => handleDropdownKeyDown(e, 5)}
+              className="absolute top-full left-0 mt-0.5 w-72 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 text-xs z-50"
             >
-              <span className="flex items-center gap-2">
-                <Search className="w-3.5 h-3.5" />
-                <span>Поиск по таблице</span>
-              </span>
-              <kbd className="text-[10px] text-slate-400 font-mono">Ctrl+F</kbd>
-            </button>
-          </div>
-        )}
-      </div>
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onOpenLLMStudio(); closeMenu(); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 font-medium focus:outline-hidden"
+              >
+                <Cpu className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Студия генерации документов (LLM)</span>
+              </button>
 
-      {/* Вкладки */}
-      <div className="relative shrink-0">
-        <button
-          type="button"
-          onClick={() => setActiveMenu(activeMenu === 'tabs' ? null : 'tabs')}
-          className={`px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer whitespace-nowrap ${activeMenu === 'tabs' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
-        >
-          Вкладки
-        </button>
-        {activeMenu === 'tabs' && (
-          <div className="absolute top-full left-0 mt-0.5 w-60 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 text-xs z-50">
-            <button
-              type="button"
-              onClick={() => { onAddTab(); closeMenu(); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-300"
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onOpenLLMSettings(); closeMenu(); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 focus:outline-hidden"
+              >
+                <Settings className="w-3.5 h-3.5" />
+                <span>Провайдер и настройки подключения...</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Справка */}
+        <div className="relative shrink-0">
+          <button
+            ref={(el) => { triggerRefs.current.help = el; }}
+            type="button"
+            role="menuitem"
+            aria-haspopup="menu"
+            aria-expanded={activeMenu === 'help'}
+            aria-controls="menubar-menu-help"
+            tabIndex={rovingIndex === 6 ? 0 : -1}
+            onClick={() => {
+              setRovingIndex(6);
+              setActiveMenu(activeMenu === 'help' ? null : 'help');
+            }}
+            onKeyDown={(e) => handleTriggerKeyDown(e, 'help', 6)}
+            className={topTriggerClass('help')}
+          >
+            Справка
+          </button>
+          {activeMenu === 'help' && (
+            <div
+              id="menubar-menu-help"
+              ref={dropdownRef}
+              role="menu"
+              aria-label="Справка"
+              onKeyDown={(e) => handleDropdownKeyDown(e, 6)}
+              className="absolute top-full left-0 mt-0.5 w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 text-xs z-50"
             >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Создать новую вкладку (до 20)</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => { onOpenColumnEditor(); closeMenu(); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-300"
-            >
-              <Layers className="w-3.5 h-3.5" />
-              <span>Настройка столбцов вкладки...</span>
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Связи */}
-      <div className="relative shrink-0">
-        <button
-          type="button"
-          onClick={() => setActiveMenu(activeMenu === 'relations' ? null : 'relations')}
-          className={`px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer whitespace-nowrap ${activeMenu === 'relations' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
-        >
-          Связи
-        </button>
-        {activeMenu === 'relations' && (
-          <div className="absolute top-full left-0 mt-0.5 w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 text-xs z-50">
-            <button
-              type="button"
-              onClick={() => { onOpenRelationsSchema(); closeMenu(); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-300 font-medium"
-            >
-              <LinkIcon className="w-3.5 h-3.5 text-blue-600" />
-              <span>Схема связей (Мастер → Зависимые)</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => { onAuditRelations(); closeMenu(); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-300"
-            >
-              <ShieldAlert className="w-3.5 h-3.5 text-amber-600" />
-              <span>Проверить целостность связей</span>
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Документы */}
-      <div className="relative shrink-0">
-        <button
-          type="button"
-          onClick={() => setActiveMenu(activeMenu === 'docs' ? null : 'docs')}
-          className={`px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer whitespace-nowrap ${activeMenu === 'docs' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
-        >
-          Документы
-        </button>
-        {activeMenu === 'docs' && (
-          <div className="absolute top-full left-0 mt-0.5 w-72 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 text-xs z-50">
-            <button
-              type="button"
-              onClick={() => { onOpenAllTemplates(); closeMenu(); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-300 font-medium"
-            >
-              <FileText className="w-3.5 h-3.5 text-blue-600" />
-              <span>Шаблоны</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => { onOpenGeneratedDocs(); closeMenu(); }}
-              className="w-full flex items-center justify-between px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-300 font-medium"
-            >
-              <span className="flex items-center gap-2">
-                <FolderOpen className="w-3.5 h-3.5 text-amber-600" />
-                <span>Сгенерированные документы</span>
-              </span>
-              {generatedDocsCount > 0 && (
-                <span className="text-[11px] font-mono tabular-nums text-slate-400">
-                  {generatedDocsCount}
-                </span>
-              )}
-            </button>
-
-            <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
-
-            <button
-              type="button"
-              onClick={() => { onOpenTagsModal(); closeMenu(); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-300"
-            >
-              <BookOpen className="w-3.5 h-3.5" />
-              <span>Справочник тегов &#123;Имя_тега&#125;</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => { onOpenNormativeDocs(); closeMenu(); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-300"
-            >
-              <BookOpen className="w-3.5 h-3.5 text-purple-600" />
-              <span>Нормативные документы (ГОСТ / Приказы)</span>
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* LLM-Сервер */}
-      <div className="relative shrink-0">
-        <button
-          type="button"
-          onClick={() => setActiveMenu(activeMenu === 'llm' ? null : 'llm')}
-          className={`px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer whitespace-nowrap ${activeMenu === 'llm' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
-        >
-          LLM-Сервер
-        </button>
-        {activeMenu === 'llm' && (
-          <div className="absolute top-full left-0 mt-0.5 w-72 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 text-xs z-50">
-            <button
-              type="button"
-              onClick={() => { onOpenLLMStudio(); closeMenu(); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-300 font-medium"
-            >
-              <Cpu className="w-3.5 h-3.5 text-indigo-600" />
-              <span>Студия генерации документов (LLM)</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => { onOpenLLMSettings(); closeMenu(); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-300"
-            >
-              <Settings className="w-3.5 h-3.5" />
-              <span>Провайдер и настройки подключения...</span>
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Справка */}
-      <div className="relative shrink-0">
-        <button
-          type="button"
-          onClick={() => setActiveMenu(activeMenu === 'help' ? null : 'help')}
-          className={`px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer whitespace-nowrap ${activeMenu === 'help' ? 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white' : ''}`}
-        >
-          Справка
-        </button>
-        {activeMenu === 'help' && (
-          <div className="absolute top-full left-0 mt-0.5 w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 text-xs z-50">
-            <button
-              type="button"
-              onClick={() => { onOpenHelp(); closeMenu(); }}
-              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-300"
-            >
-              <HelpCircle className="w-3.5 h-3.5" />
-              <span>О системе «ОТ-База»</span>
-            </button>
-          </div>
-        )}
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onOpenHelp(); closeMenu(); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 focus:outline-hidden"
+              >
+                <HelpCircle className="w-3.5 h-3.5" />
+                <span>О системе «ОТ-База»</span>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Topbar Visible LLM Connection Indicator */}

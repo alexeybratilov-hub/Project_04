@@ -412,4 +412,73 @@ describe('storageService', () => {
       expect(normalizedInvalid.settings.pageSize).toBe(100);
     });
   });
+
+  describe('T-35: pre-reset backup safety in web and native modes', () => {
+    const store = new Map<string, string>();
+    const mockLocalStorage = {
+      getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+      setItem: (k: string, v: string) => {
+        store.set(k, String(v));
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+      clear: () => store.clear()
+    };
+
+    beforeEach(() => {
+      store.clear();
+      vi.stubGlobal('localStorage', mockLocalStorage);
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    });
+
+    it('snapshots existing browser database into PRE_RESTORE_BACKUP_KEY before resetting', async () => {
+      vi.spyOn(localApiClient, 'isNative').mockReturnValue(false);
+      const customState: DatabaseState = {
+        ...JSON.parse(JSON.stringify(INITIAL_DATABASE_STATE)),
+        tags: [{ id: 'custom_tag', name: '{МойТег}', tabId: 't1', columnId: 'c1' }]
+      };
+      store.set(STORAGE_KEY, JSON.stringify(customState));
+
+      const res = await storageService.resetDatabaseAsync(customState);
+      expect(res.saveResult.ok).toBe(true);
+      expect(store.has(STORAGE_KEY)).toBe(false);
+      expect(store.has(PRE_RESTORE_BACKUP_KEY)).toBe(true);
+      const savedSnapshot = JSON.parse(store.get(PRE_RESTORE_BACKUP_KEY)!);
+      expect(savedSnapshot.tags).toHaveLength(1);
+      expect(savedSnapshot.tags[0].id).toBe('custom_tag');
+    });
+
+    it('creates native disk backup before reset and aborts reset without saving if backup fails', async () => {
+      vi.spyOn(localApiClient, 'isNative').mockReturnValue(true);
+      const customState: DatabaseState = {
+        ...JSON.parse(JSON.stringify(INITIAL_DATABASE_STATE)),
+        tags: [{ id: 'native_tag', name: '{НативТег}', tabId: 't1', columnId: 'c1' }]
+      };
+
+      const backupSpy = vi
+        .spyOn(localApiClient, 'createDiskBackup')
+        .mockResolvedValueOnce({ ok: false, message: 'Диск защищён от записи' });
+      const saveSpy = vi.spyOn(localApiClient, 'saveDatabase');
+
+      const aborted = await storageService.resetDatabaseAsync(customState);
+      expect(backupSpy).toHaveBeenCalledTimes(1);
+      expect(saveSpy).not.toHaveBeenCalled();
+      expect(aborted.saveResult.ok).toBe(false);
+      expect(aborted.saveResult.message).toContain('Диск защищён от записи');
+      expect(aborted.state.tags[0].id).toBe('native_tag');
+
+      backupSpy.mockResolvedValueOnce({ ok: true, fileName: 'ot_backup_pre_reset.json' });
+      saveSpy.mockResolvedValueOnce({ ok: true, revision: 99 });
+
+      const succeeded = await storageService.resetDatabaseAsync(customState);
+      expect(succeeded.saveResult.ok).toBe(true);
+      expect(succeeded.backupFileName).toBe('ot_backup_pre_reset.json');
+      expect(saveSpy).toHaveBeenCalledTimes(1);
+    });
+  });
 });

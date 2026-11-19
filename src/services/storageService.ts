@@ -700,18 +700,48 @@ export const storageService = {
     }
   },
 
-  async resetDatabaseAsync(): Promise<{ state: DatabaseState; saveResult: SaveDatabaseResult }> {
+  async resetDatabaseAsync(
+    currentState?: DatabaseState
+  ): Promise<{ state: DatabaseState; saveResult: SaveDatabaseResult; backupFileName?: string }> {
     return enqueuePersistenceTask(async () => {
       const fresh: DatabaseState = JSON.parse(JSON.stringify(INITIAL_DATABASE_STATE));
       fresh.lastSaved = new Date().toISOString();
+      const preservedState: DatabaseState = currentState
+        ? JSON.parse(JSON.stringify(currentState))
+        : fresh;
+
       if (localApiClient.isNative()) {
+        const backupRes = await localApiClient.createDiskBackup();
+        if (!backupRes.ok) {
+          return {
+            state: preservedState,
+            saveResult: {
+              ok: false,
+              errorCode: 'DISK_BACKUP_ERROR',
+              message:
+                backupRes.message ||
+                'Не удалось создать резервную копию текущей базы перед сбросом. Сброс отменён.'
+            }
+          };
+        }
         const saveResult = await localApiClient.saveDatabase(fresh);
-        return { state: fresh, saveResult };
+        return {
+          state: saveResult.ok ? fresh : preservedState,
+          saveResult,
+          backupFileName: backupRes.fileName
+        };
       }
+
       try {
+        const existingRaw = localStorage.getItem(STORAGE_KEY);
+        if (existingRaw) {
+          localStorage.setItem(PRE_RESTORE_BACKUP_KEY, existingRaw);
+        } else if (currentState) {
+          localStorage.setItem(PRE_RESTORE_BACKUP_KEY, JSON.stringify(currentState));
+        }
         localStorage.removeItem(STORAGE_KEY);
       } catch {
-        // ignore
+        // Best-effort pre-reset snapshot in localStorage
       }
       return { state: fresh, saveResult: { ok: true } };
     });

@@ -47,7 +47,8 @@ import { documentGenerator } from './services/documentGenerator';
 import {
   archiveExistingDocManually,
   formatBytesReadable,
-  registerGeneratedDocument
+  registerGeneratedDocument,
+  restoreArchivedDocument
 } from './services/generatedDocsService';
 
 export default function App() {
@@ -75,6 +76,35 @@ export default function App() {
   latestDbRef.current = dbState;
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const docRecordQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const highlightTimerRef = useRef<number | null>(null);
+
+  const clearRowHighlight = useCallback(() => {
+    if (highlightTimerRef.current !== null) {
+      window.clearTimeout(highlightTimerRef.current);
+      highlightTimerRef.current = null;
+    }
+    setHighlightedRowId(null);
+  }, []);
+
+  const highlightRowTemporarily = useCallback((rowId: string) => {
+    if (highlightTimerRef.current !== null) {
+      window.clearTimeout(highlightTimerRef.current);
+    }
+    setHighlightedRowId(rowId);
+    highlightTimerRef.current = window.setTimeout(() => {
+      highlightTimerRef.current = null;
+      setHighlightedRowId(null);
+    }, 3500);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current !== null) {
+        window.clearTimeout(highlightTimerRef.current);
+        highlightTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // Modals state
   const [isExcelImportOpen, setIsExcelImportOpen] = useState(false);
@@ -688,8 +718,7 @@ export default function App() {
     if (masterJumpInfo.targetMasterTabId) {
       setActiveTabId(masterJumpInfo.targetMasterTabId);
       if (masterJumpInfo.targetMasterRowId) {
-        setHighlightedRowId(masterJumpInfo.targetMasterRowId);
-        setTimeout(() => setHighlightedRowId(null), 3500);
+        highlightRowTemporarily(masterJumpInfo.targetMasterRowId);
       }
     }
     setMasterJumpInfo((prev) => ({ ...prev, isOpen: false }));
@@ -747,7 +776,7 @@ export default function App() {
     );
 
     setActiveTabId(target.tabs[0]?.id || '');
-    setHighlightedRowId(null);
+    clearRowHighlight();
     setPendingDeleteTabId(null);
     setMasterDepsTabId(null);
     setSelectedRowIds(new Set());
@@ -799,7 +828,7 @@ export default function App() {
       llmLogs: newEntity.llmLogs
     }));
     setActiveTabId(newEntity.tabs[0]?.id || '');
-    setHighlightedRowId(null);
+    clearRowHighlight();
     setSelectedRowIds(new Set());
     showToast(`Организация «${profile.shortName}» добавлена.`, 'success');
   };
@@ -915,6 +944,62 @@ export default function App() {
       `Документ перенесён в «${result.transition.archivedRecord.category}/АРХИВ/${result.transition.archivedRecord.archiveDateFolder}»`,
       'info'
     );
+  };
+
+  const handleRestoreDoc = async (docId: string) => {
+    const result = restoreArchivedDocument(latestDbRef.current.generatedDocs || [], docId);
+    if (!result.restoreTransition) return;
+
+    if (localApiClient.isNative()) {
+      const movedDisplaced: Array<{ fromPath: string; toPath: string }> = [];
+      for (const transition of result.displacedArchiveTransitions) {
+        const moveRes = await localApiClient.moveDocumentInBucket(
+          transition.fromPath,
+          transition.toPath
+        );
+        if (!moveRes.ok) {
+          showToast(
+            moveRes.message || 'Не удалось перенести текущую версию в АРХИВ перед восстановлением',
+            'error'
+          );
+          return;
+        }
+        movedDisplaced.push({ fromPath: transition.fromPath, toPath: transition.toPath });
+      }
+
+      const restoreMoveRes = await localApiClient.moveDocumentInBucket(
+        result.restoreTransition.fromPath,
+        result.restoreTransition.toPath
+      );
+      if (!restoreMoveRes.ok) {
+        for (const moved of movedDisplaced) {
+          await localApiClient.moveDocumentInBucket(moved.toPath, moved.fromPath);
+        }
+        showToast(
+          restoreMoveRes.message || 'Не удалось восстановить файл из папки АРХИВ на диске',
+          'error'
+        );
+        return;
+      }
+    }
+
+    updateDbState((prev) => ({
+      ...prev,
+      generatedDocs: result.nextDocs
+    }));
+
+    const restored = result.restoreTransition.restoredRecord;
+    if (result.displacedArchiveTransitions.length > 0) {
+      showToast(
+        `Документ «${restored.fileName}» восстановлен в «${restored.category}» (предыдущая актуальная версия перенесена в АРХИВ)`,
+        'success'
+      );
+    } else {
+      showToast(
+        `Документ «${restored.fileName}» восстановлен в «${restored.category}»`,
+        'success'
+      );
+    }
   };
 
   const handleDeleteDoc = async (docId: string) => {
@@ -1163,8 +1248,7 @@ export default function App() {
         onSelectTab={(tabId, rowId) => {
           setActiveTabId(tabId);
           if (rowId) {
-            setHighlightedRowId(rowId);
-            setTimeout(() => setHighlightedRowId(null), 3500);
+            highlightRowTemporarily(rowId);
           }
         }}
         onRepairReferences={() => {
@@ -1209,6 +1293,7 @@ export default function App() {
         generatedDocs={dbState.generatedDocs}
         entityProfile={activeEntity.profile}
         onArchiveDoc={handleArchiveDoc}
+        onRestoreDoc={handleRestoreDoc}
         onDeleteDoc={handleDeleteDoc}
         onOpenTemplates={() => {
           setTemplateSelectedRowIds(undefined);
@@ -1296,7 +1381,7 @@ export default function App() {
             latestDbRef.current = res.state;
             setActiveTabId(res.state.tabs[0]?.id || '');
             setSelectedRowIds(new Set());
-            setHighlightedRowId(null);
+            clearRowHighlight();
             setSaveStatus('saved');
             setSaveErrorMessage(null);
             const backupNote = res.backupFileName ? ` (бэкап: ${res.backupFileName})` : '';
@@ -1310,12 +1395,19 @@ export default function App() {
           return res;
         }}
         onResetDatabase={async () => {
-          const { state, saveResult } = await storageService.resetDatabaseAsync();
-          setDbState(state);
-          latestDbRef.current = state;
-          if (state.tabs[0]) setActiveTabId(state.tabs[0].id);
+          const { state, saveResult, backupFileName } = await storageService.resetDatabaseAsync(
+            latestDbRef.current
+          );
           if (saveResult.ok) {
-            showToast('База данных сброшена к исходному состоянию.', 'info');
+            setDbState(state);
+            latestDbRef.current = state;
+            if (state.tabs[0]) setActiveTabId(state.tabs[0].id);
+            setSelectedRowIds(new Set());
+            clearRowHighlight();
+            setSaveStatus('saved');
+            setSaveErrorMessage(null);
+            const backupNote = backupFileName ? ` (бэкап: ${backupFileName})` : '';
+            showToast(`База данных сброшена к исходному состоянию${backupNote}.`, 'info');
           } else {
             showToast(saveResult.message || 'Не удалось сбросить файл базы', 'error');
           }

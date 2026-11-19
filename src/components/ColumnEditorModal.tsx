@@ -4,7 +4,7 @@ import {
   ArrowDown, Link2, Check, AlertTriangle,
   Link as LinkIcon, List, Calendar, Hash, Type, CheckSquare, Edit2, ExternalLink
 } from 'lucide-react';
-import { Column, ColumnType, Tab, Tag } from '../types/database';
+import { Column, ColumnType, getColumnTypeLabel, Tab, Tag } from '../types/database';
 import { createUniqueId, integrityService } from '../services/integrityService';
 import {
   AppButton,
@@ -418,7 +418,7 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
                       >
                         {selectedMasterTab?.columns.map((c) => (
                           <option key={c.id} value={c.id}>
-                            {c.name} ({c.type})
+                            {c.name} ({getColumnTypeLabel(c.type)})
                           </option>
                         ))}
                       </AppSelect>
@@ -555,8 +555,8 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
                             </div>
                           )}
 
-                          <span className="text-[10px] px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono shrink-0">
-                            {col.type}
+                          <span className="text-[10px] px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-medium shrink-0">
+                            {getColumnTypeLabel(col.type)}
                           </span>
 
                           {isRelation && masterTab && (

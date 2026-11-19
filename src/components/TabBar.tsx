@@ -101,10 +101,29 @@ export const TabBar: React.FC<TabBarProps> = ({
         setContextMenu(null);
       }
     };
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && contextMenu) {
+        e.preventDefault();
+        const tabId = contextMenu.tab.id;
+        setContextMenu(null);
+        requestAnimationFrame(() => {
+          tabsScrollRef.current?.querySelector<HTMLElement>(`[data-tab-id="${tabId}"]`)?.focus();
+        });
+      }
+    };
     if (contextMenu) {
       document.addEventListener('mousedown', handleClickOutside);
+      window.addEventListener('keydown', handleEsc);
+      const rafId = requestAnimationFrame(() => {
+        menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+      });
+      return () => {
+        cancelAnimationFrame(rafId);
+        document.removeEventListener('mousedown', handleClickOutside);
+        window.removeEventListener('keydown', handleEsc);
+      };
     }
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    return undefined;
   }, [contextMenu]);
 
   useEffect(() => {
@@ -144,12 +163,82 @@ export const TabBar: React.FC<TabBarProps> = ({
     setEditingTabId(null);
   };
 
-  const handleOpenMenu = (e: React.MouseEvent, tab: Tab) => {
-    e.stopPropagation();
-    const btnRect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  const openMenuForElement = (anchorEl: HTMLElement, tab: Tab) => {
+    const btnRect = anchorEl.getBoundingClientRect();
     const x = Math.min(window.innerWidth - 240, Math.max(8, btnRect.left));
     const y = Math.min(window.innerHeight - 230, btnRect.bottom + 4);
     setContextMenu({ tab, x, y });
+  };
+
+  const handleOpenMenu = (e: React.MouseEvent, tab: Tab) => {
+    e.stopPropagation();
+    openMenuForElement(e.currentTarget as HTMLElement, tab);
+  };
+
+  const focusTabAt = (index: number) => {
+    if (tabs.length === 0) return;
+    const normalized = (index + tabs.length) % tabs.length;
+    const targetTab = tabs[normalized];
+    if (!targetTab) return;
+    onSelectTab(targetTab.id);
+    requestAnimationFrame(() => {
+      tabsScrollRef.current?.querySelector<HTMLElement>(`[data-tab-id="${targetTab.id}"]`)?.focus();
+    });
+  };
+
+  const handleTabKeyDown = (e: React.KeyboardEvent<HTMLDivElement>, tab: Tab, idx: number) => {
+    if (editingTabId === tab.id) return;
+
+    if (e.key === 'ArrowRight' || (!isSingleRow && e.key === 'ArrowDown')) {
+      e.preventDefault();
+      focusTabAt(idx + 1);
+    } else if (e.key === 'ArrowLeft' || (!isSingleRow && e.key === 'ArrowUp')) {
+      e.preventDefault();
+      focusTabAt(idx - 1);
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      focusTabAt(0);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      focusTabAt(tabs.length - 1);
+    } else if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
+      e.preventDefault();
+      onSelectTab(tab.id);
+    } else if (e.key === 'F2') {
+      e.preventDefault();
+      startRename(tab);
+    } else if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+      e.preventDefault();
+      openMenuForElement(e.currentTarget, tab);
+    }
+  };
+
+  const handleContextMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Tab') {
+      setContextMenu(null);
+      return;
+    }
+    const items = Array.from(
+      menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') || []
+    );
+    if (items.length === 0) return;
+
+    const currentIdx = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next = currentIdx === -1 ? 0 : (currentIdx + 1) % items.length;
+      items[next].focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prev = currentIdx <= 0 ? items.length - 1 : currentIdx - 1;
+      items[prev].focus();
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      items[0].focus();
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      items[items.length - 1].focus();
+    }
   };
 
   // Drag handlers for tab reordering
@@ -208,14 +297,18 @@ export const TabBar: React.FC<TabBarProps> = ({
         {/* Tabs Strip: single horizontal row by default, or wrapped multi-row when expanded */}
         <div
           ref={tabsScrollRef}
+          role="tablist"
+          aria-label="Вкладки таблиц"
           className={`flex-1 min-w-0 px-2 py-1 flex items-center gap-1.5 ${
             isSingleRow
               ? 'flex-nowrap overflow-x-auto no-scrollbar'
               : 'flex-wrap overflow-x-hidden overflow-y-auto content-start max-h-full'
           }`}
         >
-          {tabs.map((tab) => {
+          {tabs.map((tab, index) => {
             const isActive = tab.id === activeTabId;
+            const hasActiveMatch = tabs.some((t) => t.id === activeTabId);
+            const isRovingFocusTarget = editingTabId === tab.id ? false : isActive || (!hasActiveMatch && index === 0);
             const isMaster = tab.isMaster;
             const isDragging = draggedTabId === tab.id;
             const isDropTarget = dragOverTabId === tab.id;
@@ -223,6 +316,9 @@ export const TabBar: React.FC<TabBarProps> = ({
             return (
               <div
                 key={tab.id}
+                role="tab"
+                aria-selected={isActive}
+                tabIndex={isRovingFocusTarget ? 0 : -1}
                 data-tab-id={tab.id}
                 draggable={editingTabId !== tab.id}
                 onDragStart={(e) => handleDragStart(e, tab.id)}
@@ -232,7 +328,8 @@ export const TabBar: React.FC<TabBarProps> = ({
                 }}
                 onDrop={(e) => handleDrop(e, tab.id)}
                 onDragEnd={handleDragEnd}
-                className={`group relative flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer border shrink-0 ${
+                onKeyDown={(e) => handleTabKeyDown(e, tab, index)}
+                className={`group relative flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer border shrink-0 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500 ${
                   isActive
                     ? 'bg-white dark:bg-slate-800 text-blue-700 dark:text-blue-400 border-blue-400/70 dark:border-blue-600/80 shadow-xs font-semibold ring-1 ring-blue-500/20'
                     : 'bg-white/60 dark:bg-slate-800/60 text-slate-700 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800 border-slate-300/80 dark:border-slate-700/80 hover:border-slate-400'
@@ -240,9 +337,9 @@ export const TabBar: React.FC<TabBarProps> = ({
                   isDropTarget ? 'ring-2 ring-blue-600 border-blue-600 bg-blue-50 dark:bg-blue-950/60' : ''
                 }`}
                 onClick={() => onSelectTab(tab.id)}
-                title="Перетащите мышкой для изменения порядка вкладок"
+                title="Перетащите мышкой для изменения порядка вкладок (стрелки ←/→ — переключение, F2 — переименовать)"
               >
-                <GripVertical className="w-3 h-3 text-slate-300 dark:text-slate-600 opacity-0 group-hover:opacity-100 -ml-1 shrink-0 cursor-grab" />
+                <GripVertical className="w-3 h-3 text-slate-300 dark:text-slate-600 opacity-0 group-hover:opacity-100 -ml-1 shrink-0 cursor-grab" aria-hidden="true" />
 
               {isMaster && (
                 <span title="Мастер-таблица (источник данных для связей)" className="text-amber-500 shrink-0">
@@ -289,11 +386,15 @@ export const TabBar: React.FC<TabBarProps> = ({
               {/* Tab options trigger button */}
               <button
                 type="button"
+                tabIndex={-1}
+                aria-label={`Опции вкладки ${tab.name}`}
+                aria-haspopup="menu"
+                aria-expanded={contextMenu?.tab.id === tab.id}
                 onClick={(e) => handleOpenMenu(e, tab)}
                 className={`p-0.5 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/80 dark:hover:bg-slate-700 transition-colors ${
                   contextMenu?.tab.id === tab.id ? 'bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-white opacity-100' : 'opacity-60 group-hover:opacity-100'
                 }`}
-                title="Опции вкладки"
+                title="Опции вкладки (Shift+F10)"
               >
                 <MoreVertical className="w-3.5 h-3.5" />
               </button>
@@ -414,6 +515,9 @@ export const TabBar: React.FC<TabBarProps> = ({
       {contextMenu && createPortal(
         <div
           ref={menuRef}
+          role="menu"
+          aria-label={`Действия для вкладки ${contextMenu.tab.name}`}
+          onKeyDown={handleContextMenuKeyDown}
           style={{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }}
           className={`fixed ${Z_INDEX.popover} w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl py-1.5 text-xs text-slate-700 dark:text-slate-200 animate-in fade-in-50 zoom-in-95 duration-100 select-none ring-1 ring-black/5`}
           onClick={(e) => e.stopPropagation()}
@@ -424,8 +528,10 @@ export const TabBar: React.FC<TabBarProps> = ({
 
           <button
             type="button"
+            role="menuitem"
+            tabIndex={-1}
             onClick={() => startRename(contextMenu.tab)}
-            className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 transition-colors text-left"
+            className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 focus:text-blue-600 dark:focus:text-blue-400 focus:outline-hidden transition-colors text-left"
           >
             <Edit2 className="w-3.5 h-3.5 text-blue-500" />
             <span>Переименовать вкладку</span>
@@ -434,12 +540,14 @@ export const TabBar: React.FC<TabBarProps> = ({
           {onOpenColumnEditor && (
             <button
               type="button"
+              role="menuitem"
+              tabIndex={-1}
               onClick={() => {
                 onSelectTab(contextMenu.tab.id);
                 setContextMenu(null);
                 onOpenColumnEditor();
               }}
-              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 transition-colors text-left"
+              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 focus:text-blue-600 dark:focus:text-blue-400 focus:outline-hidden transition-colors text-left"
             >
               <Columns className="w-3.5 h-3.5 text-slate-500" />
               <span>Настройка столбцов...</span>
@@ -449,12 +557,14 @@ export const TabBar: React.FC<TabBarProps> = ({
           {onConfigureMasterDeps && (
             <button
               type="button"
+              role="menuitem"
+              tabIndex={-1}
               onClick={() => {
                 const tid = contextMenu.tab.id;
                 setContextMenu(null);
                 onConfigureMasterDeps(tid);
               }}
-              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-amber-700 dark:text-amber-300 font-medium transition-colors text-left"
+              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-amber-50 dark:hover:bg-amber-950/40 focus:bg-amber-50 dark:focus:bg-amber-950/40 text-amber-700 dark:text-amber-300 font-medium focus:outline-hidden transition-colors text-left"
             >
               <Link2 className="w-3.5 h-3.5 text-amber-500 shrink-0" />
               <span>
@@ -468,27 +578,31 @@ export const TabBar: React.FC<TabBarProps> = ({
           {contextMenu.tab.isMaster && onToggleMaster && (
             <button
               type="button"
+              role="menuitem"
+              tabIndex={-1}
               onClick={() => {
                 onToggleMaster(contextMenu.tab.id);
                 setContextMenu(null);
               }}
-              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 transition-colors text-left"
+              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 focus:bg-slate-100 dark:focus:bg-slate-800 text-slate-600 dark:text-slate-400 focus:outline-hidden transition-colors text-left"
             >
               <Key className="w-3.5 h-3.5 text-slate-400" />
               <span>Снять статус мастер-таблицы</span>
             </button>
           )}
 
-          <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
+          <div role="separator" className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
 
           <button
             type="button"
+            role="menuitem"
+            tabIndex={-1}
             onClick={() => {
               const tabId = contextMenu.tab.id;
               setContextMenu(null);
               onDeleteTab(tabId);
             }}
-            className="w-full flex items-center gap-2.5 px-3 py-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors text-left"
+            className="w-full flex items-center gap-2.5 px-3 py-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 focus:bg-red-50 dark:focus:bg-red-950/40 focus:outline-hidden transition-colors text-left"
           >
             <Trash2 className="w-3.5 h-3.5" />
             <span>Удалить вкладку</span>

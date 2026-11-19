@@ -3,7 +3,8 @@ import {
   archiveExistingDocManually,
   formatDateDdMmYyyy,
   inferDocumentCategory,
-  registerGeneratedDocument
+  registerGeneratedDocument,
+  restoreArchivedDocument
 } from '../generatedDocsService';
 import { sanitizeRelativeSubpath } from '../localApiClient';
 
@@ -115,4 +116,52 @@ describe('generatedDocsService and archive rotation', () => {
       'Приказы/АРХИВ/13.11.2026/Файл_1.docx'
     );
   });
+
+  it('restores an archived document and moves any conflicting active version into АРХИВ', () => {
+    const r1 = registerGeneratedDocument([], {
+      id: 'v1',
+      title: 'Приказ о назначении',
+      fileName: 'Приказ_Сидоров.docx',
+      category: 'Приказы',
+      format: 'docx',
+      createdAt: '2026-10-01T10:00:00.000Z',
+      sizeFormatted: '12.0 КБ'
+    });
+
+    const r2 = registerGeneratedDocument(r1.nextDocs, {
+      id: 'v2',
+      title: 'Приказ о назначении',
+      fileName: 'Приказ_Сидоров.docx',
+      category: 'Приказы',
+      format: 'docx',
+      createdAt: '2026-11-14T10:00:00.000Z',
+      sizeFormatted: '13.0 КБ'
+    });
+
+    // Restore v1 while v2 is active with the same file name
+    const restored = restoreArchivedDocument(r2.nextDocs, 'v1');
+    expect(restored.displacedArchiveTransitions).toHaveLength(1);
+    expect(restored.displacedArchiveTransitions[0].fromPath).toBe('Приказы/Приказ_Сидоров.docx');
+    expect(restored.displacedArchiveTransitions[0].toPath).toBe(
+      'Приказы/АРХИВ/14.11.2026/Приказ_Сидоров.docx'
+    );
+
+    expect(restored.restoreTransition?.fromPath).toBe(
+      'Приказы/АРХИВ/01.10.2026/Приказ_Сидоров.docx'
+    );
+    expect(restored.restoreTransition?.toPath).toBe('Приказы/Приказ_Сидоров.docx');
+    expect(restored.restoreTransition?.restoredRecord.isArchived).toBe(false);
+    expect(restored.restoreTransition?.restoredRecord.archiveDateFolder).toBeUndefined();
+
+    const active = restored.nextDocs.filter((d) => !d.isArchived);
+    const archived = restored.nextDocs.filter((d) => d.isArchived);
+    expect(active.map((d) => d.id)).toEqual(['v1']);
+    expect(archived.map((d) => d.id)).toEqual(['v2']);
+
+    // Restoring an already active or unknown document is a safe no-op
+    const noop = restoreArchivedDocument(restored.nextDocs, 'v1');
+    expect(noop.restoreTransition).toBeUndefined();
+    expect(noop.displacedArchiveTransitions).toHaveLength(0);
+  });
 });
+

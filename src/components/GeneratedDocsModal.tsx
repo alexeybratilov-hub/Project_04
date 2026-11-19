@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import {
   FolderOpen, FolderArchive, FileText, Download, Trash2,
-  Search, ChevronDown, ChevronRight, Archive
+  Search, ChevronDown, ChevronRight, Archive, ArchiveRestore
 } from 'lucide-react';
 import { GeneratedDocRecord, LegalEntityProfile } from '../types/database';
 import { DOCUMENT_CATEGORIES } from '../services/generatedDocsService';
@@ -15,6 +15,7 @@ interface GeneratedDocsModalProps {
   generatedDocs: GeneratedDocRecord[];
   entityProfile?: LegalEntityProfile;
   onArchiveDoc: (docId: string) => Promise<void> | void;
+  onRestoreDoc: (docId: string) => Promise<void> | void;
   onDeleteDoc: (docId: string) => Promise<void> | void;
   onOpenTemplates: () => void;
 }
@@ -32,6 +33,7 @@ export const GeneratedDocsModal: React.FC<GeneratedDocsModalProps> = ({
   generatedDocs,
   entityProfile,
   onArchiveDoc,
+  onRestoreDoc,
   onDeleteDoc,
   onOpenTemplates
 }) => {
@@ -440,6 +442,14 @@ export const GeneratedDocsModal: React.FC<GeneratedDocsModalProps> = ({
                                     </div>
                                   </div>
                                   <div className="flex items-center gap-1 shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={() => void onRestoreDoc(doc.id)}
+                                      className="p-1.5 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 rounded transition-colors cursor-pointer"
+                                      title="Восстановить из архива в актуальные"
+                                    >
+                                      <ArchiveRestore className="w-3.5 h-3.5" />
+                                    </button>
                                     <button
                                       type="button"
                                       onClick={() => handleDownload(doc)}

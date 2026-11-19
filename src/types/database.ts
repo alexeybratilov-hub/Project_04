@@ -1,5 +1,19 @@
 export type ColumnType = 'text' | 'number' | 'date' | 'select' | 'boolean' | 'link' | 'relation';
 
+export const COLUMN_TYPE_LABELS: Record<ColumnType, string> = {
+  text: 'Текст',
+  number: 'Число',
+  date: 'Дата',
+  select: 'Список',
+  boolean: 'Да / Нет',
+  link: 'Ссылка',
+  relation: 'Связь'
+};
+
+export function getColumnTypeLabel(type: ColumnType | string): string {
+  return COLUMN_TYPE_LABELS[type as ColumnType] || String(type);
+}
+
 export interface ColumnRelation {
   masterTabId: string;
   masterColumnId: string;

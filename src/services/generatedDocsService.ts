@@ -248,3 +248,111 @@ export function archiveExistingDocManually(
 
   return { nextDocs, transition };
 }
+
+export interface RestoreTransition {
+  fromPath: string;
+  toPath: string;
+  restoredRecord: GeneratedDocRecord;
+}
+
+/**
+ * Restores an archived document back into its active category folder.
+ * If an active document with the same fileName already exists in that category,
+ * that active document is automatically rotated into "<Category>/АРХИВ/<dd.mm.yyyy>/"
+ * so both versions are preserved safely without path collision.
+ */
+export function restoreArchivedDocument(
+  existingDocs: GeneratedDocRecord[],
+  docId: string
+): {
+  nextDocs: GeneratedDocRecord[];
+  restoreTransition?: RestoreTransition;
+  displacedArchiveTransitions: ArchiveTransition[];
+} {
+  const target = existingDocs.find((d) => d.id === docId);
+  if (!target || !target.isArchived) {
+    return { nextDocs: existingDocs, displacedArchiveTransitions: [] };
+  }
+
+  const nowIso = new Date().toISOString();
+  const safeCategory = sanitizeSafeFilename(target.category || 'Прочие документы');
+  const safeFileName = sanitizeSafeFilename(target.fileName);
+  const restoredActivePath = buildActiveRelativePath(safeCategory, safeFileName);
+
+  const occupiedPaths = new Set<string>(
+    existingDocs.map((d) => d.relativePath.toLowerCase())
+  );
+  occupiedPaths.delete(target.relativePath.toLowerCase());
+
+  const displacedArchiveTransitions: ArchiveTransition[] = [];
+
+  const nextDocs = existingDocs.map((doc) => {
+    if (doc.id === target.id) {
+      const restoredRecord: GeneratedDocRecord = {
+        ...doc,
+        category: safeCategory,
+        fileName: safeFileName,
+        relativePath: restoredActivePath,
+        isArchived: false,
+        archivedAt: undefined,
+        archiveDateFolder: undefined
+      };
+      return restoredRecord;
+    }
+
+    const isSameCategory =
+      doc.category.trim().toLowerCase() === safeCategory.trim().toLowerCase();
+    const isSameName =
+      doc.fileName.trim().toLowerCase() === safeFileName.trim().toLowerCase();
+
+    if (!doc.isArchived && isSameCategory && isSameName) {
+      const archiveFolder = doc.dateFormatted || formatDateDdMmYyyy(doc.createdAt);
+      const uniqueArchiveFileName = makeUniqueArchiveFileName(
+        doc.fileName,
+        safeCategory,
+        archiveFolder,
+        occupiedPaths
+      );
+      const targetArchivePath = buildArchiveRelativePath(
+        safeCategory,
+        archiveFolder,
+        uniqueArchiveFileName
+      );
+
+      occupiedPaths.delete(doc.relativePath.toLowerCase());
+      occupiedPaths.add(targetArchivePath.toLowerCase());
+
+      const archivedRecord: GeneratedDocRecord = {
+        ...doc,
+        isArchived: true,
+        archivedAt: nowIso,
+        archiveDateFolder: archiveFolder,
+        fileName: uniqueArchiveFileName,
+        relativePath: targetArchivePath
+      };
+
+      displacedArchiveTransitions.push({
+        fromPath: doc.relativePath,
+        toPath: targetArchivePath,
+        archivedRecord
+      });
+
+      return archivedRecord;
+    }
+
+    return doc;
+  });
+
+  const restoredRecord = nextDocs.find((d) => d.id === target.id)!;
+
+  return {
+    nextDocs,
+    restoreTransition: {
+      fromPath: target.relativePath,
+      toPath: restoredActivePath,
+      restoredRecord
+    },
+    displacedArchiveTransitions
+  };
+}
+

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useId, useRef, useMemo, useCallback } from 
 import {
   Plus, Key, Link2, Check, Table, Trash2, AlertTriangle
 } from 'lucide-react';
-import { Column, ColumnType, Tab } from '../types/database';
+import { Column, ColumnType, getColumnTypeLabel, Tab } from '../types/database';
 import { createUniqueId } from '../services/integrityService';
 import {
   AppButton,
@@ -436,7 +436,7 @@ export const NewTabModal: React.FC<NewTabModalProps> = ({
                   className="flex items-center gap-1.5 px-2.5 py-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md"
                 >
                   <span className="font-medium text-slate-800 dark:text-slate-200">{col.name}</span>
-                  <span className="text-[10px] text-slate-400 font-mono">({col.type})</span>
+                  <span className="text-[10px] text-slate-500 dark:text-slate-400">({getColumnTypeLabel(col.type)})</span>
                   <button
                     type="button"
                     onClick={() => setExtraCols((prev) => prev.filter((c) => c.id !== col.id))}
