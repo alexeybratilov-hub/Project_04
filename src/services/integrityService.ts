@@ -79,6 +79,34 @@ export interface MasterCascadeResult {
   skippedIncompatibleCount: number;
 }
 
+export type ColumnRenameValidationResult =
+  | { ok: true; trimmed: string; unchanged: boolean }
+  | { ok: false; reason: 'empty' | 'duplicate'; message: string };
+
+export interface ColumnRenameImpact {
+  hasDependencies: boolean;
+  directTagCandidates: string[];
+  boundTags: Array<{ id: string; name: string }>;
+  affectedTemplatesByColumnTag: Array<{
+    id: string;
+    name: string;
+    matchedPlaceholders: string[];
+    isArchived?: boolean;
+  }>;
+  affectedTemplatesByBoundTag: Array<{
+    id: string;
+    name: string;
+    tagNames: string[];
+    isArchived?: boolean;
+  }>;
+  dependentRelationColumns: Array<{
+    tabId: string;
+    tabName: string;
+    columnId: string;
+    columnName: string;
+  }>;
+}
+
 export function normalizeRelationValue(value: unknown): string {
   return String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
@@ -614,6 +642,148 @@ export const integrityService = {
     return {
       isUsed: usedInTemplates.length > 0,
       usedInTemplates
+    };
+  },
+
+  /**
+   * Validate inline or modal column rename (blocks empty and case-insensitive duplicate names)
+   */
+  validateColumnRename(
+    columns: Column[],
+    columnId: string,
+    candidateName: string
+  ): ColumnRenameValidationResult {
+    const trimmed = String(candidateName ?? '').trim();
+    if (!trimmed) {
+      return {
+        ok: false,
+        reason: 'empty',
+        message: 'Название столбца не может быть пустым.'
+      };
+    }
+
+    const currentCol = columns.find((c) => c.id === columnId);
+    if (currentCol && currentCol.name === trimmed) {
+      return { ok: true, trimmed, unchanged: true };
+    }
+
+    const duplicateCol = columns.find(
+      (c) => c.id !== columnId && c.name.trim().toLowerCase() === trimmed.toLowerCase()
+    );
+    if (duplicateCol) {
+      return {
+        ok: false,
+        reason: 'duplicate',
+        message: `Столбец с названием «${duplicateCol.name}» уже существует в этой таблице.`
+      };
+    }
+
+    return { ok: true, trimmed, unchanged: false };
+  },
+
+  /**
+   * Inspect template tags, bound Tag items, and master-relation references tied to a column before renaming
+   */
+  getColumnRenameImpact(
+    tabId: string,
+    columnId: string,
+    allTabs: Tab[],
+    tags: Tag[] = [],
+    templates: DocumentTemplate[] = []
+  ): ColumnRenameImpact {
+    const sourceTab = allTabs.find((t) => t.id === tabId);
+    const sourceCol = sourceTab?.columns.find((c) => c.id === columnId);
+
+    if (!sourceTab || !sourceCol) {
+      return {
+        hasDependencies: false,
+        directTagCandidates: [],
+        boundTags: [],
+        affectedTemplatesByColumnTag: [],
+        affectedTemplatesByBoundTag: [],
+        dependentRelationColumns: []
+      };
+    }
+
+    const cleanName = sourceCol.name.trim();
+    const directTagCandidates = cleanName
+      ? Array.from(new Set([`{${cleanName}}`, `{${cleanName.replace(/\s+/g, '_')}}`]))
+      : [];
+
+    const boundTags = tags
+      .filter((tag) => tag.tabId === tabId && tag.columnId === columnId)
+      .map((tag) => ({ id: tag.id, name: tag.name }));
+    const boundTagNames = new Set(boundTags.map((t) => t.name));
+
+    const affectedTemplatesByColumnTag: ColumnRenameImpact['affectedTemplatesByColumnTag'] = [];
+    const affectedTemplatesByBoundTag: ColumnRenameImpact['affectedTemplatesByBoundTag'] = [];
+
+    templates
+      .filter((tpl) => !tpl.isArchived)
+      .forEach((tpl) => {
+        const haystacks = [tpl.contentTemplate || '', tpl.namingPattern || ''];
+
+        if (tpl.tabId === tabId && directTagCandidates.length > 0) {
+          const matchedPlaceholders = directTagCandidates.filter(
+            (candidate) =>
+              !boundTagNames.has(candidate) && haystacks.some((h) => h.includes(candidate))
+          );
+          if (matchedPlaceholders.length > 0) {
+            affectedTemplatesByColumnTag.push({
+              id: tpl.id,
+              name: tpl.name,
+              matchedPlaceholders,
+              isArchived: tpl.isArchived
+            });
+          }
+        }
+
+        if (boundTags.length > 0) {
+          const matchedBound = boundTags
+            .map((t) => t.name)
+            .filter((tagName) => haystacks.some((h) => h.includes(tagName)));
+          if (matchedBound.length > 0) {
+            affectedTemplatesByBoundTag.push({
+              id: tpl.id,
+              name: tpl.name,
+              tagNames: Array.from(new Set(matchedBound)),
+              isArchived: tpl.isArchived
+            });
+          }
+        }
+      });
+
+    const dependentRelationColumns: ColumnRenameImpact['dependentRelationColumns'] = [];
+    allTabs.forEach((tab) => {
+      if (tab.id === tabId) return;
+      tab.columns.forEach((col) => {
+        if (
+          col.type === 'relation' &&
+          col.relation?.masterTabId === tabId &&
+          col.relation?.masterColumnId === columnId
+        ) {
+          dependentRelationColumns.push({
+            tabId: tab.id,
+            tabName: tab.name,
+            columnId: col.id,
+            columnName: col.name
+          });
+        }
+      });
+    });
+
+    const hasDependencies =
+      boundTags.length > 0 ||
+      affectedTemplatesByColumnTag.length > 0 ||
+      dependentRelationColumns.length > 0;
+
+    return {
+      hasDependencies,
+      directTagCandidates,
+      boundTags,
+      affectedTemplatesByColumnTag,
+      affectedTemplatesByBoundTag,
+      dependentRelationColumns
     };
   }
 };

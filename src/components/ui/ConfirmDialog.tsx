@@ -7,7 +7,7 @@ import { Z_INDEX } from './zIndex';
 interface ConfirmDialogProps {
   isOpen: boolean;
   title: string;
-  description: string;
+  description: React.ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
   danger?: boolean;
@@ -126,9 +126,9 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
           </button>
         </div>
 
-        <p className="text-slate-600 dark:text-slate-300 leading-relaxed whitespace-pre-line">
+        <div className="text-slate-600 dark:text-slate-300 leading-relaxed whitespace-pre-line">
           {description}
-        </p>
+        </div>
 
         <div className="flex items-center justify-end gap-2 pt-2">
           <AppButton ref={cancelBtnRef} variant="secondary" size="sm" onClick={onCancel}>

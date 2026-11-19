@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Database, Download, Upload, HardDrive, ShieldCheck, ArrowRight
 } from 'lucide-react';
@@ -10,7 +10,25 @@ import {
   summarizeDatabaseState
 } from '../services/storageService';
 import { localApiClient } from '../services/localApiClient';
-import { AppButton, AppModal, ConfirmDialog, StatusBanner } from './ui';
+import {
+  AppButton,
+  AppModal,
+  ConfirmDialog,
+  FileValidationRule,
+  StatusBanner,
+  useFileDropZone
+} from './ui';
+
+const BACKUP_FILE_RULE: FileValidationRule = {
+  allowedExtensions: ['.json'],
+  allowedMimeTypes: [
+    'application/json',
+    'text/json',
+    'text/plain',
+    'application/ld+json'
+  ],
+  formatLabel: '.json'
+};
 
 interface BackupModalProps {
   isOpen: boolean;
@@ -86,11 +104,7 @@ export const BackupModal: React.FC<BackupModalProps> = ({
     }
   };
 
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-
+  const processBackupFile = useCallback(async (file: File) => {
     setIsInspecting(true);
     setStatusMessage(null);
     setPendingImport(null);
@@ -105,7 +119,19 @@ export const BackupModal: React.FC<BackupModalProps> = ({
     } finally {
       setIsInspecting(false);
     }
-  };
+  }, []);
+
+  const handleRejectBackupFile = useCallback((message: string) => {
+    setPendingImport(null);
+    setStatusMessage({ text: message, isError: true });
+  }, []);
+
+  const { isDragOver, dropZoneProps, handleInputChange } = useFileDropZone({
+    rule: BACKUP_FILE_RULE,
+    disabled: isInspecting || isRestoring || Boolean(pendingImport) || !isOpen,
+    onFileAccepted: processBackupFile,
+    onReject: handleRejectBackupFile
+  });
 
   const handleConfirmRestore = async () => {
     if (!pendingImport) return;
@@ -353,27 +379,40 @@ export const BackupModal: React.FC<BackupModalProps> = ({
                 )}
               </div>
 
-              <div className="p-4 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4">
-                <div>
+              <label
+                data-testid="backup-dropzone"
+                data-drag-over={isDragOver ? 'true' : 'false'}
+                {...dropZoneProps}
+                className={`p-4 rounded-xl border-2 border-dashed flex items-center justify-between gap-4 transition-all ${
+                  isInspecting
+                    ? 'border-slate-200 dark:border-slate-800 bg-slate-100/70 dark:bg-slate-800/30 cursor-wait opacity-75'
+                    : isDragOver
+                      ? 'border-blue-500 bg-blue-50/85 dark:bg-blue-950/45 ring-2 ring-blue-500/30 cursor-copy'
+                      : 'border-slate-300 dark:border-slate-700 hover:border-blue-500 dark:hover:border-blue-500 bg-slate-50 dark:bg-slate-800/40 hover:bg-blue-50/30 dark:hover:bg-blue-950/20 cursor-pointer'
+                }`}
+              >
+                <div className="min-w-0 pointer-events-none">
                   <h3 className="font-semibold text-slate-800 dark:text-slate-200 text-sm">
-                    Восстановить базу из файла
+                    {isDragOver
+                      ? 'Отпустите .json файл резервной копии'
+                      : 'Восстановить базу из файла (.JSON)'}
                   </h3>
                   <p className="text-[11px] text-slate-500 mt-0.5">
-                    Проверяет формат, версию и целостность, показывает сводку и создаёт бэкап перед заменой.
+                    Перетащите файл .json сюда или нажмите для выбора. Проверяет формат, версию и целостность, показывает сводку и создаёт бэкап перед заменой.
                   </p>
                 </div>
-                <label className="px-4 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 border border-slate-200/80 dark:border-slate-700 font-semibold rounded-lg flex items-center gap-1.5 shrink-0 transition-colors cursor-pointer">
-                  <Upload className="w-3.5 h-3.5" />
+                <span className="px-4 py-2 bg-white hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 border border-slate-200/80 dark:border-slate-700 font-semibold rounded-lg flex items-center gap-1.5 shrink-0 transition-colors pointer-events-none">
+                  <Upload className={`w-3.5 h-3.5 ${isDragOver ? 'text-blue-600' : ''}`} />
                   <span>{isInspecting ? 'Проверка...' : 'Выбрать файл'}</span>
-                  <input
-                    type="file"
-                    accept=".json"
-                    onChange={handleFileSelect}
-                    disabled={isInspecting}
-                    className="hidden"
-                  />
-                </label>
-              </div>
+                </span>
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={handleInputChange}
+                  disabled={isInspecting}
+                  className="hidden"
+                />
+              </label>
 
               <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
                 <span className="text-slate-500 text-[11px]">

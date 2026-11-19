@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { AppSettings, LegalEntity } from '../types/database';
 import { SaveStatusState } from '../services/storageService';
-import { StorageMode } from '../services/localApiClient';
+import { NativeErrorKind, StorageMode } from '../services/localApiClient';
 import { Z_INDEX } from './ui';
 
 interface TitleBarProps {
@@ -15,6 +15,8 @@ interface TitleBarProps {
   onOpenPortableModal: () => void;
   lastSaved: string;
   saveStatus?: SaveStatusState;
+  saveErrorKind?: NativeErrorKind | null;
+  hasUnsavedChanges?: boolean;
   storageMode?: StorageMode;
   onRetrySave?: () => void;
   entities: LegalEntity[];
@@ -32,6 +34,8 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onOpenPortableModal,
   lastSaved,
   saveStatus = 'saved',
+  saveErrorKind = null,
+  hasUnsavedChanges = false,
   storageMode = 'web-preview',
   onRetrySave,
   entities,
@@ -314,7 +318,18 @@ export const TitleBar: React.FC<TitleBarProps> = ({
           <div className="flex items-center gap-2 text-amber-300 whitespace-nowrap">
             <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
             <span className="font-medium">
-              {saveStatus === 'conflict' ? 'Конфликт версии файла' : 'Ошибка сохранения'}
+              {saveStatus === 'conflict'
+                ? 'Конфликт версии файла'
+                : saveErrorKind === 'connection'
+                  ? 'Нет связи с сервером'
+                  : saveErrorKind === 'disk_write'
+                    ? 'Ошибка записи на диск'
+                    : saveErrorKind === 'session_lost'
+                      ? 'Сессия потеряна'
+                      : saveErrorKind === 'validation'
+                        ? 'Ошибка проверки JSON'
+                        : 'Ошибка сохранения'}
+              {hasUnsavedChanges ? ' · не сохранено' : ''}
             </span>
             {onRetrySave && (
               <button

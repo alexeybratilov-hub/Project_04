@@ -1,11 +1,32 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Upload, FileSpreadsheet, Check, ArrowRight, Table as TableIcon, RefreshCw
 } from 'lucide-react';
 import { Column, Tab } from '../types/database';
 import { excelService, ParsedExcelSheet, ValidationDiscrepancy } from '../services/excelService';
 import { createUniqueId } from '../services/integrityService';
-import { AppButton, AppModal, AppSelect, StatusBanner } from './ui';
+import {
+  AppButton,
+  AppModal,
+  AppSelect,
+  FileValidationRule,
+  StatusBanner,
+  useFileDropZone
+} from './ui';
+
+const EXCEL_FILE_RULE: FileValidationRule = {
+  allowedExtensions: ['.xlsx', '.xlsm', '.csv'],
+  allowedMimeTypes: [
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-excel.sheet.macroenabled.12',
+    'application/vnd.ms-excel',
+    'text/csv',
+    'application/csv',
+    'text/plain',
+    'application/zip'
+  ],
+  formatLabel: '.xlsx, .xlsm или .csv'
+};
 
 interface ExcelImportModalProps {
   isOpen: boolean;
@@ -46,42 +67,64 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
     }
   }, [isOpen, currentTab?.id]);
 
-  const handleSelectSheet = (sheetName: string, sheetsMap: Record<string, ParsedExcelSheet> | null = parsedSheets) => {
-    setActiveSheetName(sheetName);
-    setDiscrepancies([]);
-    setErrorMsg(null);
-    const sheet = sheetsMap?.[sheetName];
-    if (sheet) {
-      setColumnMapping(excelService.autoMapColumns(currentTab.columns, sheet.headers));
-    } else {
-      setColumnMapping({});
-    }
-  };
-
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setSelectedFile(file);
-    setIsParsing(true);
-    setErrorMsg(null);
-    setDiscrepancies([]);
-
-    try {
-      const sheets = await excelService.parseFile(file);
-      const sheetNames = Object.keys(sheets);
-      if (sheetNames.length === 0) {
-        throw new Error('В файле не обнаружено таблиц или строк с данными.');
+  const handleSelectSheet = useCallback(
+    (sheetName: string, sheetsMap: Record<string, ParsedExcelSheet> | null = parsedSheets) => {
+      setActiveSheetName(sheetName);
+      setDiscrepancies([]);
+      setErrorMsg(null);
+      const sheet = sheetsMap?.[sheetName];
+      if (sheet) {
+        setColumnMapping(excelService.autoMapColumns(currentTab.columns, sheet.headers));
+      } else {
+        setColumnMapping({});
       }
-      setParsedSheets(sheets);
-      const firstSheet = sheetNames[0];
-      handleSelectSheet(firstSheet, sheets);
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Ошибка парсинга файла Excel');
-    } finally {
-      setIsParsing(false);
-    }
-  };
+    },
+    [currentTab.columns, parsedSheets]
+  );
+
+  const processExcelFile = useCallback(
+    async (file: File) => {
+      setSelectedFile(file);
+      setIsParsing(true);
+      setErrorMsg(null);
+      setDiscrepancies([]);
+
+      try {
+        const sheets = await excelService.parseFile(file);
+        const sheetNames = Object.keys(sheets);
+        if (sheetNames.length === 0) {
+          throw new Error('В файле не обнаружено таблиц или строк с данными.');
+        }
+        setParsedSheets(sheets);
+        const firstSheet = sheetNames[0];
+        handleSelectSheet(firstSheet, sheets);
+      } catch (err: any) {
+        setParsedSheets(null);
+        setActiveSheetName('');
+        setColumnMapping({});
+        setErrorMsg(err.message || 'Ошибка парсинга файла Excel');
+      } finally {
+        setIsParsing(false);
+      }
+    },
+    [handleSelectSheet]
+  );
+
+  const handleRejectFile = useCallback((message: string) => {
+    setSelectedFile(null);
+    setParsedSheets(null);
+    setActiveSheetName('');
+    setColumnMapping({});
+    setDiscrepancies([]);
+    setErrorMsg(message);
+  }, []);
+
+  const { isDragOver, dropZoneProps, handleInputChange } = useFileDropZone({
+    rule: EXCEL_FILE_RULE,
+    disabled: isParsing || !isOpen,
+    onFileAccepted: processExcelFile,
+    onReject: handleRejectFile
+  });
 
   const currentSheetData = parsedSheets && activeSheetName ? parsedSheets[activeSheetName] : null;
 
@@ -253,18 +296,40 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
             Выберите файл таблицы:
           </label>
           <div className="flex items-center justify-center w-full">
-            <label className="flex flex-col items-center justify-center w-full h-28 border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-blue-500 dark:hover:border-blue-500 rounded-xl cursor-pointer bg-slate-50 dark:bg-slate-800/50 hover:bg-blue-50/30 transition-all">
-              <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                <Upload className="w-7 h-7 text-slate-400 mb-2" />
+            <label
+              data-testid="excel-dropzone"
+              data-drag-over={isDragOver ? 'true' : 'false'}
+              {...dropZoneProps}
+              className={`flex flex-col items-center justify-center w-full h-28 border-2 border-dashed rounded-xl transition-all px-4 text-center ${
+                isParsing
+                  ? 'border-slate-200 dark:border-slate-800 bg-slate-100/70 dark:bg-slate-800/30 cursor-wait opacity-75'
+                  : isDragOver
+                    ? 'border-blue-500 bg-blue-50/85 dark:bg-blue-950/45 ring-2 ring-blue-500/30 cursor-copy'
+                    : 'border-slate-300 dark:border-slate-700 hover:border-blue-500 dark:hover:border-blue-500 cursor-pointer bg-slate-50 dark:bg-slate-800/50 hover:bg-blue-50/30'
+              }`}
+            >
+              <div className="flex flex-col items-center justify-center pt-5 pb-6 pointer-events-none">
+                <Upload
+                  className={`w-7 h-7 mb-2 transition-transform ${
+                    isDragOver ? 'text-blue-600 dark:text-blue-400 scale-110' : 'text-slate-400'
+                  }`}
+                />
                 <p className="text-xs text-slate-700 dark:text-slate-300 font-medium">
-                  {selectedFile ? selectedFile.name : 'Нажмите для выбора файла или перетащите его сюда'}
+                  {isDragOver
+                    ? 'Отпустите файл таблицы для загрузки'
+                    : selectedFile
+                      ? selectedFile.name
+                      : 'Нажмите для выбора файла или перетащите его сюда'}
                 </p>
-                <p className="text-[11px] text-slate-400 mt-0.5">XLSX, XLSM или CSV (UTF-8 и Windows-1251)</p>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  XLSX, XLSM или CSV (UTF-8 и Windows-1251)
+                </p>
               </div>
               <input
                 type="file"
                 accept=".xlsx,.xlsm,.csv"
-                onChange={handleFileChange}
+                onChange={handleInputChange}
+                disabled={isParsing}
                 className="hidden"
               />
             </label>

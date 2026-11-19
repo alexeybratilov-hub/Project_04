@@ -26,12 +26,20 @@ import { MasterDependenciesModal } from './components/MasterDependenciesModal';
 import { LegalEntityModal, LegalEntityModalMode } from './components/LegalEntityModal';
 import { GeneratedDocsModal } from './components/GeneratedDocsModal';
 import { RecordGeneratedDocPayload } from './components/LLMStudioModal';
-import { AppButton, AppModal, ConfirmDialog, StatusBanner, useToast } from './components/ui';
+import {
+  AppButton,
+  AppModal,
+  ConfirmDialog,
+  hasFilesInDataTransfer,
+  StatusBanner,
+  useToast
+} from './components/ui';
 
 import { Column, DatabaseState, LegalEntity, LegalEntityProfile, Row, Tab } from './types/database';
 import {
   CloneEntityMode,
   DatabaseTransitionOptions,
+  evaluateRecoveryState,
   NativeBootstrapResult,
   SaveStatusState,
   applyDatabaseTransition,
@@ -40,7 +48,7 @@ import {
   normalizeDatabaseState,
   storageService
 } from './services/storageService';
-import { localApiClient, StorageMode } from './services/localApiClient';
+import { getCurrentRevision, localApiClient, NativeErrorKind, StorageMode } from './services/localApiClient';
 import { createUniqueId, integrityService } from './services/integrityService';
 import { excelService } from './services/excelService';
 import { documentGenerator } from './services/documentGenerator';
@@ -67,7 +75,18 @@ export default function App() {
 
   // Disk persistence tracking & recovery banner state
   const [saveStatus, setSaveStatus] = useState<SaveStatusState>('saved');
+  const saveStatusRef = useRef<SaveStatusState>('saved');
+  saveStatusRef.current = saveStatus;
   const [saveErrorMessage, setSaveErrorMessage] = useState<string | null>(null);
+  const [saveErrorKind, setSaveErrorKind] = useState<NativeErrorKind | null>(null);
+  const saveErrorKindRef = useRef<NativeErrorKind | null>(null);
+  saveErrorKindRef.current = saveErrorKind;
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState<boolean>(false);
+  const hasUnsavedChangesRef = useRef<boolean>(false);
+  const [conflictServerRevision, setConflictServerRevision] = useState<number | null>(null);
+  const [pendingForceOverwriteConfirm, setPendingForceOverwriteConfirm] = useState<boolean>(false);
+  const [initialLoadFailed, setInitialLoadFailed] = useState<boolean>(false);
+  const initialLoadFailedRef = useRef<boolean>(false);
   const [usbDisconnected, setUsbDisconnected] = useState<boolean>(false);
   const [migrationCandidate, setMigrationCandidate] =
     useState<NativeBootstrapResult['migrationCandidate'] | null>(null);
@@ -77,6 +96,8 @@ export default function App() {
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const docRecordQueueRef = useRef<Promise<void>>(Promise.resolve());
   const highlightTimerRef = useRef<number | null>(null);
+  const heartbeatBusyRef = useRef<boolean>(false);
+  const lastErrorToastRef = useRef<{ message: string; at: number } | null>(null);
 
   const clearRowHighlight = useCallback(() => {
     if (highlightTimerRef.current !== null) {
@@ -159,41 +180,179 @@ export default function App() {
     attemptCount: 0
   });
 
+  const showThrottledErrorToast = useCallback(
+    (msg: string) => {
+      const now = Date.now();
+      const prev = lastErrorToastRef.current;
+      if (prev && prev.message === msg && now - prev.at < 8000) {
+        return;
+      }
+      lastErrorToastRef.current = { message: msg, at: now };
+      showToast(msg, 'error');
+    },
+    [showToast]
+  );
+
   // Sequential persistence engine (prevents concurrent PUT races and revision 409 on rapid edits)
   const persistState = useCallback(
-    (targetState: DatabaseState, notifySuccess = false): Promise<void> => {
+    (
+      targetState: DatabaseState,
+      notifySuccess = false,
+      options?: { expectedRevision?: number; isAutoRecovery?: boolean }
+    ): Promise<void> => {
+      hasUnsavedChangesRef.current = true;
+      setHasUnsavedChanges(true);
       setSaveStatus('saving');
       const nextTask = saveQueueRef.current
         .then(async () => {
-          const res = await storageService.saveDatabaseAsync(targetState);
+          if (initialLoadFailedRef.current && options?.expectedRevision === undefined) {
+            const guardMsg =
+              'Начальная загрузка базы с диска не завершилась успешно. Перезагрузите базу с диска или скачайте JSON-копию перед записью.';
+            setSaveStatus('error');
+            setSaveErrorKind(saveErrorKindRef.current || 'connection');
+            setSaveErrorMessage(guardMsg);
+            showThrottledErrorToast(guardMsg);
+            return;
+          }
+
+          const res = await storageService.saveDatabaseAsync(
+            targetState,
+            options?.expectedRevision !== undefined
+              ? { expectedRevision: options.expectedRevision }
+              : undefined
+          );
           if (res.ok) {
             setSaveStatus('saved');
             setSaveErrorMessage(null);
+            setSaveErrorKind(null);
             setUsbDisconnected(false);
-            if (notifySuccess) {
+            setConflictServerRevision(null);
+            initialLoadFailedRef.current = false;
+            setInitialLoadFailed(false);
+            if (latestDbRef.current === targetState) {
+              hasUnsavedChangesRef.current = false;
+              setHasUnsavedChanges(false);
+            }
+            if (options?.isAutoRecovery) {
+              showToast('Связь с сервером восстановлена, несохранённые изменения записаны на диск.', 'success');
+            } else if (notifySuccess) {
               showToast('База данных успешно сохранена.', 'success');
             }
           } else {
-            const nextStatus: SaveStatusState = res.usbDisconnected
+            const isUsb = Boolean(res.usbDisconnected || res.errorKind === 'usb');
+            const isConflict = Boolean(res.isConflict || res.errorKind === 'conflict');
+            const nextStatus: SaveStatusState = isUsb
               ? 'usb_disconnected'
-              : res.isConflict
+              : isConflict
                 ? 'conflict'
                 : 'error';
             setSaveStatus(nextStatus);
-            setUsbDisconnected(Boolean(res.usbDisconnected));
-            setSaveErrorMessage(res.message || 'Ошибка сохранения базы данных');
-            showToast(res.message || 'Не удалось сохранить изменения', 'error');
+            setSaveErrorKind(
+              res.errorKind ||
+                (isUsb ? 'usb' : isConflict ? 'conflict' : 'disk_write')
+            );
+            setUsbDisconnected(isUsb);
+            setConflictServerRevision(
+              isConflict ? (res.serverRevision ?? res.revision ?? null) : null
+            );
+            const msg = res.message || 'Ошибка сохранения базы данных';
+            setSaveErrorMessage(msg);
+            showThrottledErrorToast(msg);
           }
         })
         .catch((err: any) => {
           setSaveStatus('error');
+          setSaveErrorKind('connection');
           setSaveErrorMessage(err?.message || 'Непредвиденная ошибка сохранения');
         });
       saveQueueRef.current = nextTask;
       return nextTask;
     },
-    [showToast]
+    [showThrottledErrorToast, showToast]
   );
+
+  // Explicit reload from disk (used after load error or when resolving revision conflict in favor of disk)
+  const handleReloadFromDisk = useCallback(async () => {
+    setSaveStatus('saving');
+    const res = await storageService.bootstrapDatabase();
+    setStorageMode(res.mode);
+    if (res.loadError || res.sessionLost) {
+      initialLoadFailedRef.current = true;
+      setInitialLoadFailed(true);
+      const isUsb = Boolean(res.health?.usbDisconnected || res.loadErrorKind === 'usb');
+      setSaveStatus(isUsb ? 'usb_disconnected' : 'error');
+      setUsbDisconnected(isUsb);
+      setSaveErrorKind(res.loadErrorKind || (isUsb ? 'usb' : 'connection'));
+      setSaveErrorMessage(res.loadError || 'Не удалось загрузить базу данных с диска');
+      showToast(res.loadError || 'Не удалось загрузить базу данных с диска', 'error');
+      return;
+    }
+
+    setDbState(res.state);
+    latestDbRef.current = res.state;
+    setActiveTabId((prev) =>
+      res.state.tabs.some((t) => t.id === prev) ? prev : res.state.tabs[0]?.id || 'tab_positions'
+    );
+    setSelectedRowIds(new Set());
+    clearRowHighlight();
+    hasUnsavedChangesRef.current = false;
+    setHasUnsavedChanges(false);
+    initialLoadFailedRef.current = false;
+    setInitialLoadFailed(false);
+    setConflictServerRevision(null);
+    setSaveErrorKind(null);
+    setSaveErrorMessage(null);
+    setUsbDisconnected(false);
+    setSaveStatus('saved');
+    showToast('Актуальная база данных загружена с диска.', 'success');
+  }, [clearRowHighlight, showToast]);
+
+  // Smart retry: verifies disk health/revision before saving latest in-memory state
+  const handleRetrySave = useCallback(async () => {
+    if (storageMode !== 'native-fs') {
+      await persistState(latestDbRef.current, true);
+      return;
+    }
+
+    if (localApiClient.isNativeSessionLost()) {
+      setSaveStatus('error');
+      setSaveErrorKind('session_lost');
+      setSaveErrorMessage(
+        'Сессия с сервером OT-Baza.exe потеряна после перезагрузки. Скачайте копию JSON и перезапустите OT-Baza.exe.'
+      );
+      showToast('Сессия с сервером потеряна. Перезапустите OT-Baza.exe.', 'error');
+      return;
+    }
+
+    if (initialLoadFailedRef.current) {
+      await handleReloadFromDisk();
+      return;
+    }
+
+    const health = await localApiClient.checkHealth({ syncRevision: false });
+    if (!health.ok) {
+      const isUsb = Boolean(health.usbDisconnected || health.errorKind === 'usb');
+      setSaveStatus(isUsb ? 'usb_disconnected' : 'error');
+      setUsbDisconnected(isUsb);
+      setSaveErrorKind(health.errorKind || 'connection');
+      setSaveErrorMessage(health.message || 'Нет связи с локальным сервером OT-Baza.exe');
+      showToast(health.message || 'Сервер OT-Baza.exe всё ещё недоступен.', 'error');
+      return;
+    }
+
+    const localRev = getCurrentRevision();
+    if (localRev > 0 && health.revision > 0 && health.revision !== localRev) {
+      setSaveStatus('conflict');
+      setSaveErrorKind('conflict');
+      setConflictServerRevision(health.revision);
+      const conflictMsg = `Обнаружен конфликт версий: на диске ревизия №${health.revision}, а в окне №${localRev}. Загрузите базу с диска или подтвердите перезапись.`;
+      setSaveErrorMessage(conflictMsg);
+      showToast(conflictMsg, 'warning');
+      return;
+    }
+
+    await persistState(latestDbRef.current, true);
+  }, [handleReloadFromDisk, persistState, showToast, storageMode]);
 
   // Bootstrap disk DB + legacy migration check on mount
   useEffect(() => {
@@ -203,11 +362,15 @@ export default function App() {
       if (cancelled) return;
 
       setStorageMode(res.mode);
-      setDbState(res.state);
-      latestDbRef.current = res.state;
-      setActiveTabId((prev) =>
-        res.state.tabs.some((t) => t.id === prev) ? prev : res.state.tabs[0]?.id || 'tab_positions'
-      );
+      if (!res.loadError && !res.sessionLost) {
+        setDbState(res.state);
+        latestDbRef.current = res.state;
+        setActiveTabId((prev) =>
+          res.state.tabs.some((t) => t.id === prev) ? prev : res.state.tabs[0]?.id || 'tab_positions'
+        );
+        initialLoadFailedRef.current = false;
+        setInitialLoadFailed(false);
+      }
 
       if (res.migrationCandidate) {
         setMigrationCandidate(res.migrationCandidate);
@@ -217,8 +380,13 @@ export default function App() {
           'Основной файл ot_database.json был повреждён — данные восстановлены из резервной копии.',
           'warning'
         );
-      } else if (res.health?.corruptedWarning || res.loadError) {
-        setSaveStatus(res.health?.usbDisconnected ? 'usb_disconnected' : 'error');
+      } else if (res.health?.corruptedWarning || res.loadError || res.sessionLost) {
+        initialLoadFailedRef.current = Boolean(res.loadError || res.sessionLost);
+        setInitialLoadFailed(Boolean(res.loadError || res.sessionLost));
+        const isUsb = Boolean(res.health?.usbDisconnected || res.loadErrorKind === 'usb');
+        setSaveStatus(isUsb ? 'usb_disconnected' : 'error');
+        setUsbDisconnected(isUsb);
+        setSaveErrorKind(res.loadErrorKind || (res.sessionLost ? 'session_lost' : 'disk_write'));
         setSaveErrorMessage(
           res.loadError || res.health?.message || 'Ошибка чтения базы данных с диска'
         );
@@ -233,31 +401,95 @@ export default function App() {
     };
   }, [showToast]);
 
-  // Native heartbeat (detects USB disconnect / missing storage folder) + shutdown notification
+  // Native heartbeat (detects server drop, USB disconnect, revision drift, and auto-recovers pending edits) + shutdown/unsaved guard
   useEffect(() => {
     if (storageMode !== 'native-fs') return;
 
-    const timer = window.setInterval(async () => {
-      const hb = await localApiClient.heartbeat();
-      if (hb.usbDisconnected) {
-        setUsbDisconnected(true);
-        setSaveStatus('usb_disconnected');
-        setSaveErrorMessage(hb.error || 'Потерян доступ к папке ./data на носителе');
-      } else if (hb.ok) {
-        setUsbDisconnected(false);
+    const runHeartbeatCheck = async () => {
+      if (heartbeatBusyRef.current) return;
+      heartbeatBusyRef.current = true;
+      try {
+        const hb = await localApiClient.heartbeat();
+        const evalRes = evaluateRecoveryState({
+          heartbeatOk: hb.ok,
+          heartbeatRevision: hb.revision,
+          localRevision: getCurrentRevision(),
+          hasUnsavedChanges: hasUnsavedChangesRef.current,
+          initialLoadFailed: initialLoadFailedRef.current,
+          currentSaveStatus: saveStatusRef.current,
+          usbDisconnected: hb.usbDisconnected,
+          errorKind: hb.errorKind,
+          errorMessage: hb.error
+        });
+
+        if (evalRes.action === 'server_error') {
+          const isUsb = Boolean(evalRes.usbDisconnected);
+          setUsbDisconnected(isUsb);
+          setSaveStatus(isUsb ? 'usb_disconnected' : 'error');
+          setSaveErrorKind(evalRes.errorKind || 'connection');
+          setSaveErrorMessage(evalRes.message || 'Потеряна связь с сервером OT-Baza.exe');
+        } else if (evalRes.action === 'conflict') {
+          setUsbDisconnected(false);
+          setSaveStatus('conflict');
+          setSaveErrorKind('conflict');
+          setConflictServerRevision(evalRes.serverRevision ?? null);
+          setSaveErrorMessage(
+            evalRes.message || 'Конфликт версий: файл на диске был обновлён.'
+          );
+        } else if (evalRes.action === 'retry_unsaved') {
+          setUsbDisconnected(false);
+          await persistState(latestDbRef.current, false, { isAutoRecovery: true });
+        } else if (evalRes.action === 'clear_error') {
+          setUsbDisconnected(false);
+          setSaveStatus('saved');
+          setSaveErrorKind(null);
+          setSaveErrorMessage(null);
+          setConflictServerRevision(null);
+        } else if (hb.ok) {
+          setUsbDisconnected(false);
+        }
+      } finally {
+        heartbeatBusyRef.current = false;
       }
+    };
+
+    const timer = window.setInterval(() => {
+      void runHeartbeatCheck();
     }, 4000);
 
-    const handleBeforeUnload = () => {
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        void runHeartbeatCheck();
+      }
+    };
+    const handleOnline = () => {
+      void runHeartbeatCheck();
+    };
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedChangesRef.current) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    const handlePageHide = () => {
       localApiClient.notifyShutdown();
     };
+
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('online', handleOnline);
     window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handlePageHide);
 
     return () => {
       window.clearInterval(timer);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('online', handleOnline);
       window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handlePageHide);
     };
-  }, [storageMode]);
+  }, [persistState, storageMode]);
 
   const activeEntity =
     dbState.entities.find((e) => e.id === dbState.activeEntityId) || dbState.entities[0];
@@ -319,7 +551,7 @@ export default function App() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
-        persistState(latestDbRef.current, true);
+        void handleRetrySave();
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
         e.preventDefault();
@@ -332,7 +564,31 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleAddRow, persistState]);
+  }, [handleAddRow, handleRetrySave]);
+
+  // Global guard: prevent browser from opening/navigating to files dropped outside modal dropzones
+  useEffect(() => {
+    const handleWindowDrag = (e: DragEvent) => {
+      if (!hasFilesInDataTransfer(e.dataTransfer)) return;
+      e.preventDefault();
+      if (e.dataTransfer) {
+        e.dataTransfer.dropEffect = 'none';
+      }
+    };
+    const handleWindowDrop = (e: DragEvent) => {
+      if (!hasFilesInDataTransfer(e.dataTransfer)) return;
+      e.preventDefault();
+    };
+
+    window.addEventListener('dragenter', handleWindowDrag);
+    window.addEventListener('dragover', handleWindowDrag);
+    window.addEventListener('drop', handleWindowDrop);
+    return () => {
+      window.removeEventListener('dragenter', handleWindowDrag);
+      window.removeEventListener('dragover', handleWindowDrag);
+      window.removeEventListener('drop', handleWindowDrop);
+    };
+  }, []);
 
   // Update single or multiple cells on a row with strict full-tuple Master cascade
   const applyRowUpdateWithCascade = (rowId: string, patch: Record<string, any>) => {
@@ -1033,8 +1289,10 @@ export default function App() {
         onOpenPortableModal={() => setIsWindowsPortableOpen(true)}
         lastSaved={dbState.lastSaved}
         saveStatus={saveStatus}
+        saveErrorKind={saveErrorKind}
+        hasUnsavedChanges={hasUnsavedChanges}
         storageMode={storageMode}
-        onRetrySave={() => persistState(latestDbRef.current, true)}
+        onRetrySave={() => void handleRetrySave()}
         entities={dbState.entities}
         activeEntity={activeEntity}
         onSelectEntity={handleSelectEntity}
@@ -1046,7 +1304,7 @@ export default function App() {
 
       {/* 2. Menu Bar */}
       <MenuBar
-        onSave={() => persistState(latestDbRef.current, true)}
+        onSave={() => void handleRetrySave()}
         onExportExcel={() => excelService.exportTabToXlsx(currentTab, dbState.tabs)}
         onFullBackup={() => setIsBackupOpen(true)}
         onRestore={() => setIsBackupOpen(true)}
@@ -1088,32 +1346,74 @@ export default function App() {
         onOpenHelp={() => setIsHelpOpen(true)}
       />
 
-      {/* Persistent Recovery Banner for USB Disconnect / Write Error / Revision Conflict */}
+      {/* Persistent Recovery Banner for Connection Loss / USB Disconnect / Write Error / Revision Conflict */}
       {(saveStatus === 'usb_disconnected' || saveStatus === 'error' || saveStatus === 'conflict') && (
-        <div className="px-4 py-2 bg-red-600 text-white text-xs flex flex-wrap items-center justify-between gap-2 shrink-0 z-30">
-          <div className="flex items-center gap-2 font-medium">
+        <div
+          role="alert"
+          className={`px-4 py-2 text-white text-xs flex flex-wrap items-center justify-between gap-2 shrink-0 z-30 ${
+            saveStatus === 'conflict'
+              ? 'bg-amber-700'
+              : 'bg-red-600'
+          }`}
+        >
+          <div className="flex items-center gap-2 font-medium min-w-0">
             {saveStatus === 'usb_disconnected' ? (
               <Usb className="w-4 h-4 shrink-0" />
             ) : (
               <AlertTriangle className="w-4 h-4 shrink-0" />
             )}
-            <span>
+            <span className="truncate sm:whitespace-normal">
+              <strong className="mr-1.5">
+                {saveStatus === 'conflict'
+                  ? 'Конфликт ревизий:'
+                  : saveStatus === 'usb_disconnected'
+                    ? 'Носитель отключён:'
+                    : saveErrorKind === 'connection'
+                      ? 'Потеряна связь с сервером:'
+                      : saveErrorKind === 'session_lost'
+                        ? 'Сессия потеряна:'
+                        : saveErrorKind === 'validation'
+                          ? 'Ошибка проверки данных:'
+                          : 'Ошибка записи на диск:'}
+              </strong>
               {saveErrorMessage || 'Ошибка записи на диск. Подключите носитель и повторите сохранение.'}
+              {hasUnsavedChanges && ' (В окне есть несохранённые изменения — их можно выгрузить в JSON.)'}
             </span>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => persistState(latestDbRef.current, true)}
-              className="px-2.5 py-1 bg-white text-red-700 hover:bg-red-50 rounded font-semibold flex items-center gap-1 cursor-pointer"
-            >
-              <RefreshCw className="w-3 h-3" />
-              <span>Повторить запись</span>
-            </button>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {(saveStatus === 'conflict' || initialLoadFailed) && storageMode === 'native-fs' && (
+              <button
+                type="button"
+                onClick={() => void handleReloadFromDisk()}
+                className="px-2.5 py-1 bg-white text-slate-900 hover:bg-slate-100 rounded font-semibold flex items-center gap-1 cursor-pointer"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span>Загрузить с диска</span>
+              </button>
+            )}
+            {saveStatus === 'conflict' && conflictServerRevision !== null && (
+              <button
+                type="button"
+                onClick={() => setPendingForceOverwriteConfirm(true)}
+                className="px-2.5 py-1 bg-amber-950/70 hover:bg-amber-950 text-white rounded font-semibold flex items-center gap-1 cursor-pointer"
+              >
+                <span>Перезаписать диск моими данными</span>
+              </button>
+            )}
+            {saveStatus !== 'conflict' && saveErrorKind !== 'session_lost' && (
+              <button
+                type="button"
+                onClick={() => void handleRetrySave()}
+                className="px-2.5 py-1 bg-white text-red-700 hover:bg-red-50 rounded font-semibold flex items-center gap-1 cursor-pointer"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span>Повторить запись</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => storageService.exportDatabaseToFile(latestDbRef.current)}
-              className="px-2.5 py-1 bg-red-800 hover:bg-red-900 text-white rounded font-medium flex items-center gap-1 cursor-pointer"
+              className="px-2.5 py-1 bg-black/25 hover:bg-black/40 text-white rounded font-medium flex items-center gap-1 cursor-pointer"
             >
               <Download className="w-3 h-3" />
               <span>Скачать копию JSON</span>
@@ -1197,6 +1497,8 @@ export default function App() {
           onAttemptEditRelation={handleAttemptEditRelation}
           onAddColumn={(newCol) => handleAddColumnToTab(currentTab.id, newCol)}
           onUpdateColumn={(colId, patch) => handleUpdateColumn(currentTab.id, colId, patch)}
+          tags={dbState.tags}
+          templates={dbState.templates}
           highlightedRowId={highlightedRowId}
         />
       )}
@@ -1382,6 +1684,13 @@ export default function App() {
             setActiveTabId(res.state.tabs[0]?.id || '');
             setSelectedRowIds(new Set());
             clearRowHighlight();
+            hasUnsavedChangesRef.current = false;
+            setHasUnsavedChanges(false);
+            initialLoadFailedRef.current = false;
+            setInitialLoadFailed(false);
+            setConflictServerRevision(null);
+            setSaveErrorKind(null);
+            setUsbDisconnected(false);
             setSaveStatus('saved');
             setSaveErrorMessage(null);
             const backupNote = res.backupFileName ? ` (бэкап: ${res.backupFileName})` : '';
@@ -1404,6 +1713,13 @@ export default function App() {
             if (state.tabs[0]) setActiveTabId(state.tabs[0].id);
             setSelectedRowIds(new Set());
             clearRowHighlight();
+            hasUnsavedChangesRef.current = false;
+            setHasUnsavedChanges(false);
+            initialLoadFailedRef.current = false;
+            setInitialLoadFailed(false);
+            setConflictServerRevision(null);
+            setSaveErrorKind(null);
+            setUsbDisconnected(false);
             setSaveStatus('saved');
             setSaveErrorMessage(null);
             const backupNote = backupFileName ? ` (бэкап: ${backupFileName})` : '';
@@ -1462,6 +1778,28 @@ export default function App() {
           setPendingMasterRowDelete(null);
         }}
         onCancel={() => setPendingMasterRowDelete(null)}
+      />
+
+      {/* Force Overwrite Confirmation on Revision Conflict */}
+      <ConfirmDialog
+        isOpen={pendingForceOverwriteConfirm}
+        danger
+        title="Перезаписать файл базы на диске?"
+        description={
+          conflictServerRevision !== null
+            ? `Файл ./data/ot_database.json на диске имеет более новую ревизию №${conflictServerRevision} (в текущем окне ревизия №${getCurrentRevision()}). Если продолжить, изменения из этого окна перезапишут дисковую версию, а предыдущая версия будет сохранена в ./data/backups.`
+            : 'Файл на диске изменился. Перезаписать его текущими данными из этого окна?'
+        }
+        confirmLabel="Перезаписать диск"
+        cancelLabel="Отмена"
+        onConfirm={() => {
+          const rev = conflictServerRevision ?? getCurrentRevision();
+          setPendingForceOverwriteConfirm(false);
+          void persistState(latestDbRef.current, true, {
+            expectedRevision: rev > 0 ? rev : undefined
+          });
+        }}
+        onCancel={() => setPendingForceOverwriteConfirm(false)}
       />
 
       {/* Legacy localStorage -> Disk Migration Dialog */}

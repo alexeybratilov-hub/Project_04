@@ -12,3 +12,10 @@ export { ConfirmDialog } from './ConfirmDialog';
 export { ToastProvider, useToast } from './ToastProvider';
 export type { ToastVariant } from './ToastProvider';
 export { Z_INDEX } from './zIndex';
+export {
+  useFileDropZone,
+  hasFilesInDataTransfer,
+  validateAcceptedFile,
+  extractFileExtension
+} from './useFileDropZone';
+export type { FileValidationRule, FileValidationResult } from './useFileDropZone';

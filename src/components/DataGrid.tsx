@@ -7,11 +7,26 @@ import {
   AlertCircle, ChevronDown, ChevronLeft, ChevronRight, Rows3,
   Maximize2, Copy
 } from 'lucide-react';
-import { Column, ColumnType, GridRowDensity, Row, Tab } from '../types/database';
+import { Column, ColumnType, DocumentTemplate, GridRowDensity, Row, Tab, Tag } from '../types/database';
 import { ImportHintCard } from './ImportHintCard';
-import { AppButton, AppModal, ConfirmDialog, Z_INDEX } from './ui';
+import { AppButton, AppModal, ConfirmDialog, StatusBanner, Z_INDEX } from './ui';
 import { excelService, ValidationDiscrepancy } from '../services/excelService';
-import { createUniqueId } from '../services/integrityService';
+import {
+  ColumnRenameImpact,
+  createUniqueId,
+  integrityService
+} from '../services/integrityService';
+
+export const MIN_COLUMN_WIDTH = 88;
+export const MAX_COLUMN_WIDTH = 800;
+export const DEFAULT_COLUMN_WIDTH = 180;
+export const NARROW_HEADER_BREAKPOINT = 120;
+
+export function clampColumnWidth(width?: number): number {
+  const raw =
+    typeof width === 'number' && Number.isFinite(width) ? width : DEFAULT_COLUMN_WIDTH;
+  return Math.max(MIN_COLUMN_WIDTH, Math.min(MAX_COLUMN_WIDTH, Math.round(raw)));
+}
 
 function isLongCellValue(val: unknown): boolean {
   if (val === undefined || val === null) return false;
@@ -66,6 +81,8 @@ interface DataGridProps {
   onAttemptEditRelation: (column: Column, row: Row) => void;
   onAddColumn?: (column: Column) => void;
   onUpdateColumn?: (columnId: string, patch: Partial<Column>) => void;
+  tags?: Tag[];
+  templates?: DocumentTemplate[];
   highlightedRowId?: string | null;
 }
 
@@ -120,6 +137,8 @@ export const DataGrid: React.FC<DataGridProps> = ({
   onAttemptEditRelation,
   onAddColumn,
   onUpdateColumn,
+  tags = [],
+  templates = [],
   highlightedRowId
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -181,6 +200,15 @@ export const DataGrid: React.FC<DataGridProps> = ({
   // Inline Column Header Rename
   const [renamingColId, setRenamingColId] = useState<string | null>(null);
   const [renamingColVal, setRenamingColVal] = useState('');
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [pendingRenameConfirm, setPendingRenameConfirm] = useState<{
+    columnId: string;
+    oldName: string;
+    newName: string;
+    impact: ColumnRenameImpact;
+  } | null>(null);
+  const suppressRenameBlurRef = useRef(false);
+  const renameInputRef = useRef<HTMLInputElement>(null);
 
   // Column Width Resize Drag state (ref-backed to avoid listener churn and stale closures)
   const [resizingColId, setResizingColId] = useState<string | null>(null);
@@ -208,6 +236,10 @@ export const DataGrid: React.FC<DataGridProps> = ({
     setConfirmDeleteBulk(false);
     setConfirmDeleteRowId(null);
     setRenamingColId(null);
+    setRenamingColVal('');
+    setRenameError(null);
+    setPendingRenameConfirm(null);
+    suppressRenameBlurRef.current = false;
     setEditingCell(null);
     setViewingCell(null);
     setCopiedFullCell(false);
@@ -334,7 +366,7 @@ export const DataGrid: React.FC<DataGridProps> = ({
 
     const handleMouseMove = (e: MouseEvent) => {
       const delta = e.clientX - resizeStartRef.current.startX;
-      const nextWidth = Math.max(60, Math.min(800, Math.round(resizeStartRef.current.startWidth + delta)));
+      const nextWidth = clampColumnWidth(resizeStartRef.current.startWidth + delta);
       latestResizeWidthRef.current = nextWidth;
       setPreviewWidths({ [resizingColId]: nextWidth });
     };
@@ -354,7 +386,7 @@ export const DataGrid: React.FC<DataGridProps> = ({
   const startResizeColumn = (e: React.MouseEvent, column: Column) => {
     e.preventDefault();
     e.stopPropagation();
-    const curWidth = column.width || 180;
+    const curWidth = clampColumnWidth(column.width);
     resizeStartRef.current = { startX: e.clientX, startWidth: curWidth };
     latestResizeWidthRef.current = curWidth;
     setResizingColId(column.id);
@@ -387,17 +419,80 @@ export const DataGrid: React.FC<DataGridProps> = ({
   };
 
   const startRenameHeader = (col: Column, e: React.MouseEvent) => {
+    e.preventDefault();
     e.stopPropagation();
+    suppressRenameBlurRef.current = false;
+    setRenameError(null);
+    setPendingRenameConfirm(null);
     setRenamingColId(col.id);
     setRenamingColVal(col.name);
   };
 
-  const finishRenameHeader = (colId: string) => {
-    const trimmed = renamingColVal.trim();
-    if (trimmed && onUpdateColumn) {
-      onUpdateColumn(colId, { name: trimmed });
+  const cancelRenameHeader = () => {
+    suppressRenameBlurRef.current = true;
+    setRenamingColId(null);
+    setRenamingColVal('');
+    setRenameError(null);
+  };
+
+  const attemptCommitRenameHeader = (col: Column, options?: { fromBlur?: boolean }) => {
+    const validation = integrityService.validateColumnRename(
+      currentTab.columns,
+      col.id,
+      renamingColVal
+    );
+
+    if (!validation.ok) {
+      setRenameError(validation.message);
+      if (options?.fromBlur) {
+        setRenamingColId(null);
+        setRenamingColVal('');
+      } else {
+        requestAnimationFrame(() => renameInputRef.current?.focus());
+      }
+      return;
+    }
+
+    if (validation.unchanged) {
+      cancelRenameHeader();
+      return;
+    }
+
+    const impact = integrityService.getColumnRenameImpact(
+      currentTab.id,
+      col.id,
+      allTabs,
+      tags,
+      templates
+    );
+
+    if (impact.hasDependencies) {
+      suppressRenameBlurRef.current = true;
+      setRenameError(null);
+      setPendingRenameConfirm({
+        columnId: col.id,
+        oldName: col.name,
+        newName: validation.trimmed,
+        impact
+      });
+      return;
+    }
+
+    suppressRenameBlurRef.current = true;
+    if (onUpdateColumn) {
+      onUpdateColumn(col.id, { name: validation.trimmed });
     }
     setRenamingColId(null);
+    setRenamingColVal('');
+    setRenameError(null);
+  };
+
+  const handleRenameBlur = (col: Column) => {
+    if (suppressRenameBlurRef.current || pendingRenameConfirm) {
+      suppressRenameBlurRef.current = false;
+      return;
+    }
+    attemptCommitRenameHeader(col, { fromBlur: true });
   };
 
   // Precompute Master tab lookup maps for fast relation dropdowns & orphan detection
@@ -885,6 +980,25 @@ export const DataGrid: React.FC<DataGridProps> = ({
         </div>
       )}
 
+      {/* Inline Column Rename Validation Error Banner */}
+      {renameError && (
+        <div className="px-4 py-2 bg-red-50 dark:bg-red-950/60 border-b border-red-200 dark:border-red-900">
+          <StatusBanner variant="error" role="alert" compact>
+            <div className="flex items-center justify-between gap-3">
+              <span>{renameError}</span>
+              <button
+                type="button"
+                onClick={() => setRenameError(null)}
+                className="p-0.5 text-red-600 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/50 rounded cursor-pointer shrink-0"
+                title="Закрыть предупреждение"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </StatusBanner>
+        </div>
+      )}
+
       {/* Selected Rows Action Banner */}
       {selectedRowIds.size > 0 && (
         <div className="px-4 py-2 bg-blue-50 dark:bg-blue-950/40 border-b border-blue-100 dark:border-blue-900/40 flex flex-wrap items-center justify-between gap-2 text-xs animate-in fade-in-50 duration-100">
@@ -955,7 +1069,7 @@ export const DataGrid: React.FC<DataGridProps> = ({
             34 +
             38 +
             currentTab.columns.reduce(
-              (sum, c) => sum + (previewWidths[c.id] ?? c.width ?? 180),
+              (sum, c) => sum + clampColumnWidth(previewWidths[c.id] ?? c.width),
               0
             ) +
             34 +
@@ -969,7 +1083,7 @@ export const DataGrid: React.FC<DataGridProps> = ({
                 <col style={{ width: 34 }} />
                 <col style={{ width: 38 }} />
                 {currentTab.columns.map((column) => {
-                  const colWidth = previewWidths[column.id] ?? column.width ?? 180;
+                  const colWidth = clampColumnWidth(previewWidths[column.id] ?? column.width);
                   return <col key={column.id} style={{ width: colWidth }} />;
                 })}
                 <col style={{ width: 34 }} />
@@ -1004,18 +1118,25 @@ export const DataGrid: React.FC<DataGridProps> = ({
                   {currentTab.columns.map((column) => {
                     const isSorted = sortColId === column.id;
                     const isRelation = column.type === 'relation';
-                    const colWidth = previewWidths[column.id] ?? column.width ?? 180;
+                    const colWidth = clampColumnWidth(previewWidths[column.id] ?? column.width);
+                    const isNarrowHeader = colWidth < NARROW_HEADER_BREAKPOINT;
                     const isRenaming = renamingColId === column.id;
 
                     return (
                       <th
                         key={column.id}
-                        style={{ width: colWidth }}
-                        className="group/th relative px-2 py-1.5 border-r border-slate-200 dark:border-slate-700/80 cursor-pointer hover:bg-slate-200/70 dark:hover:bg-slate-700/70 transition-colors align-top"
-                        onClick={() => handleSort(column.id)}
+                        data-col-id={column.id}
+                        style={{ width: colWidth, maxWidth: colWidth }}
+                        className="group/th relative overflow-hidden px-1.5 py-1.5 border-r border-slate-200 dark:border-slate-700/80 cursor-pointer hover:bg-slate-200/70 dark:hover:bg-slate-700/70 transition-colors align-top"
+                        onClick={() => {
+                          if (!isRenaming) {
+                            handleSort(column.id);
+                          }
+                        }}
+                        title={column.name}
                       >
-                        <div className="flex items-start justify-between gap-1 pr-1.5">
-                          <div className="flex items-start gap-1 min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-1 w-full min-w-0 max-w-full pr-1.5 overflow-hidden">
+                          <div className="flex items-start gap-1 min-w-0 flex-1 overflow-hidden">
                             {isRelation && (
                               <span
                                 title="Связанный столбец с мастер-таблицей"
@@ -1026,46 +1147,83 @@ export const DataGrid: React.FC<DataGridProps> = ({
                             )}
                             {isRenaming ? (
                               <input
+                                ref={renameInputRef}
                                 type="text"
+                                aria-label="Новое название столбца"
+                                aria-invalid={Boolean(renameError)}
                                 value={renamingColVal}
-                                onChange={(e) => setRenamingColVal(e.target.value)}
-                                onBlur={() => finishRenameHeader(column.id)}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') finishRenameHeader(column.id);
-                                  if (e.key === 'Escape') setRenamingColId(null);
+                                onChange={(e) => {
+                                  setRenamingColVal(e.target.value);
+                                  if (renameError) setRenameError(null);
                                 }}
+                                onBlur={() => handleRenameBlur(column)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    attemptCommitRenameHeader(column);
+                                  } else if (e.key === 'Escape') {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    cancelRenameHeader();
+                                  }
+                                }}
+                                onMouseDown={(e) => e.stopPropagation()}
                                 onClick={(e) => e.stopPropagation()}
                                 autoFocus
-                                className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-900 border border-blue-500 rounded text-xs font-semibold text-slate-900 dark:text-white outline-hidden"
+                                className={`w-full min-w-0 px-1.5 py-0.5 bg-white dark:bg-slate-900 border rounded text-xs font-semibold text-slate-900 dark:text-white outline-hidden ${
+                                  renameError
+                                    ? 'border-red-500 ring-1 ring-red-500/40'
+                                    : 'border-blue-500'
+                                }`}
                               />
                             ) : (
-                              <span
+                              <div
                                 onDoubleClick={(e) => startRenameHeader(column, e)}
-                                className="whitespace-normal break-words [overflow-wrap:anywhere] leading-tight text-[11.5px]"
+                                className="min-w-0 flex-1 overflow-hidden"
                                 title={`${column.name} (двойной клик для переименования)`}
                               >
-                                {column.name}
-                              </span>
+                                <span className="line-clamp-3 whitespace-normal break-words [overflow-wrap:anywhere] leading-[1.25] text-[11.5px]">
+                                  {column.name}
+                                </span>
+                              </div>
                             )}
                           </div>
 
-                          <div className="flex items-center gap-0.5 shrink-0 text-slate-400 mt-0.5">
-                            {!isRenaming && (
+                          {!isRenaming && (
+                            <div
+                              className={`shrink-0 text-slate-400 mt-0.5 ${
+                                isNarrowHeader
+                                  ? 'flex flex-col items-center gap-0.5 w-3.5'
+                                  : 'flex items-center gap-0.5'
+                              }`}
+                            >
                               <button
                                 type="button"
+                                onMouseDown={(e) => e.stopPropagation()}
                                 onClick={(e) => startRenameHeader(column, e)}
-                                className="opacity-0 group-hover/th:opacity-100 p-0.5 hover:text-blue-600 rounded transition-opacity"
+                                className="opacity-0 group-hover/th:opacity-100 group-focus-within/th:opacity-100 focus-visible:opacity-100 p-0.5 hover:text-blue-600 rounded transition-opacity cursor-pointer"
                                 title="Переименовать столбец"
+                                aria-label={`Переименовать столбец ${column.name}`}
                               >
                                 <Edit2 className="w-3 h-3" />
                               </button>
-                            )}
-                            {isSorted ? (
-                              sortDir === 'asc' ? <ArrowUp className="w-3 h-3 text-blue-600" /> : <ArrowDown className="w-3 h-3 text-blue-600" />
-                            ) : (
-                              <ArrowUpDown className="w-3 h-3 opacity-0 group-hover/th:opacity-60" />
-                            )}
-                          </div>
+                              <span
+                                className="inline-flex items-center justify-center shrink-0"
+                                aria-hidden="true"
+                              >
+                                {isSorted ? (
+                                  sortDir === 'asc' ? (
+                                    <ArrowUp className="w-3 h-3 text-blue-600" />
+                                  ) : (
+                                    <ArrowDown className="w-3 h-3 text-blue-600" />
+                                  )
+                                ) : (
+                                  <ArrowUpDown className="w-3 h-3 opacity-0 group-hover/th:opacity-60" />
+                                )}
+                              </span>
+                            </div>
+                          )}
                         </div>
 
                         {/* Drag handle */}
@@ -1336,7 +1494,7 @@ export const DataGrid: React.FC<DataGridProps> = ({
                           const value = row[column.id];
                           const isRelation = column.type === 'relation';
                           const isEditing = editingCell?.rowId === row.id && editingCell?.colId === column.id;
-                          const colWidth = previewWidths[column.id] ?? column.width ?? 180;
+                          const colWidth = clampColumnWidth(previewWidths[column.id] ?? column.width);
                           const relationValid = isRelation ? isRelationValueValid(column, value) : true;
                           const relationOpts = isRelation && isEditing ? getRelationOptions(column, row) : [];
 
@@ -1347,9 +1505,9 @@ export const DataGrid: React.FC<DataGridProps> = ({
                           return (
                             <td
                               key={column.id}
-                              style={{ width: colWidth }}
+                              style={{ width: colWidth, maxWidth: colWidth }}
                               onClick={() => setAnchorForRowCell(row.id, column)}
-                              className={`px-2 ${cellPadClass} border-r border-slate-200/60 dark:border-slate-800/80 text-slate-800 dark:text-slate-200 align-top ${
+                              className={`overflow-hidden px-2 ${cellPadClass} border-r border-slate-200/60 dark:border-slate-800/80 text-slate-800 dark:text-slate-200 align-top ${
                                 isAnchoredCell && !isEditing ? 'ring-1 ring-inset ring-blue-500/70' : ''
                               } ${
                                 isRelation
@@ -1859,6 +2017,81 @@ export const DataGrid: React.FC<DataGridProps> = ({
           setCascadeConflict(null);
         }}
         onCancel={() => setCascadeConflict(null)}
+      />
+
+      {/* COLUMN RENAME DEPENDENCY WARNING DIALOG */}
+      <ConfirmDialog
+        isOpen={Boolean(pendingRenameConfirm)}
+        title={
+          pendingRenameConfirm
+            ? `Переименовать столбец «${pendingRenameConfirm.oldName}» в «${pendingRenameConfirm.newName}»?`
+            : ''
+        }
+        description={
+          pendingRenameConfirm ? (
+            <div className="space-y-2 text-xs leading-relaxed">
+              <p>
+                С этим столбцом связаны элементы конфигурации. Автоматическое переименование связанных тегов и шаблонов не выполняется — проверьте последствия:
+              </p>
+              {pendingRenameConfirm.impact.affectedTemplatesByColumnTag.length > 0 && (
+                <div className="p-2 rounded bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200">
+                  <strong>Авто-теги в шаблонах ({pendingRenameConfirm.impact.directTagCandidates.join(', ')}):</strong>{' '}
+                  используются в{' '}
+                  {pendingRenameConfirm.impact.affectedTemplatesByColumnTag
+                    .map((t) => `«${t.name}»`)
+                    .join(', ')}
+                  . После переименования столбца эти плейсхолдеры не будут подставляться автоматически, пока вы не обновите шаблон или не привяжете тег вручную.
+                </div>
+              )}
+              {pendingRenameConfirm.impact.boundTags.length > 0 && (
+                <div className="p-2 rounded bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                  <strong>Привязанные теги ({pendingRenameConfirm.impact.boundTags.map((t) => t.name).join(', ')}):</strong>{' '}
+                  сохранят привязку по внутреннему ID столбца и продолжат работать со старым именем тега.
+                  {pendingRenameConfirm.impact.affectedTemplatesByBoundTag.length > 0 && (
+                    <span>
+                      {' '}
+                      Используются в шаблонах:{' '}
+                      {pendingRenameConfirm.impact.affectedTemplatesByBoundTag
+                        .map((t) => `«${t.name}»`)
+                        .join(', ')}
+                      .
+                    </span>
+                  )}
+                </div>
+              )}
+              {pendingRenameConfirm.impact.dependentRelationColumns.length > 0 && (
+                <div className="p-2 rounded bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                  <strong>Связанные столбцы других таблиц:</strong>{' '}
+                  {pendingRenameConfirm.impact.dependentRelationColumns
+                    .map((r) => `«${r.tabName}» → «${r.columnName}»`)
+                    .join(', ')}
+                  . Связь сохранится по ID, но отображаемое название в источнике изменится.
+                </div>
+              )}
+            </div>
+          ) : (
+            ''
+          )
+        }
+        confirmLabel="Переименовать столбец"
+        cancelLabel="Отмена"
+        onConfirm={() => {
+          if (pendingRenameConfirm && onUpdateColumn) {
+            onUpdateColumn(pendingRenameConfirm.columnId, {
+              name: pendingRenameConfirm.newName
+            });
+          }
+          setPendingRenameConfirm(null);
+          setRenamingColId(null);
+          setRenamingColVal('');
+          setRenameError(null);
+        }}
+        onCancel={() => {
+          setPendingRenameConfirm(null);
+          setRenamingColId(null);
+          setRenamingColVal('');
+          setRenameError(null);
+        }}
       />
 
       {/* FULL CELL CONTENT VIEWER MODAL */}

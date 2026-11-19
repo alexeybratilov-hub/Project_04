@@ -368,4 +368,84 @@ describe('integrityService', () => {
     expect(unused.isUsed).toBe(false);
     expect(unused.usedInTemplates).toEqual([]);
   });
+
+  it('T-40: validates inline column rename against empty and case-insensitive duplicate names', () => {
+    const { tabs } = makeSampleTabs();
+    const cols = tabs[0].columns;
+
+    const emptyRes = integrityService.validateColumnRename(cols, 'c_pos', '   ');
+    expect(emptyRes.ok).toBe(false);
+    if (!emptyRes.ok) {
+      expect(emptyRes.reason).toBe('empty');
+      expect(emptyRes.message).toContain('пустым');
+    }
+
+    const dupRes = integrityService.validateColumnRename(cols, 'c_pos', ' подразделение ');
+    expect(dupRes.ok).toBe(false);
+    if (!dupRes.ok) {
+      expect(dupRes.reason).toBe('duplicate');
+      expect(dupRes.message).toContain('Подразделение');
+    }
+
+    const unchangedRes = integrityService.validateColumnRename(cols, 'c_pos', ' Должность ');
+    expect(unchangedRes).toEqual({ ok: true, trimmed: 'Должность', unchanged: true });
+
+    const validRes = integrityService.validateColumnRename(cols, 'c_pos', '  Профессия  ');
+    expect(validRes).toEqual({ ok: true, trimmed: 'Профессия', unchanged: false });
+  });
+
+  it('T-40: detects bound tags, direct template auto-tags, and dependent relations before column rename without auto-mutating', () => {
+    const { tabs, tags } = makeSampleTabs();
+    const templates: DocumentTemplate[] = [
+      {
+        id: 'tpl_active_auto',
+        name: 'Карточка подразделения',
+        tabId: 'tab_master',
+        fileName: 'card.docx',
+        namingPattern: 'Карточка_{Подразделение}.docx',
+        contentTemplate: 'Подразделение: {Подразделение}, должность: {Должность}'
+      },
+      {
+        id: 'tpl_archived_auto',
+        name: 'Архивный приказ',
+        tabId: 'tab_master',
+        isArchived: true,
+        fileName: 'old.docx',
+        namingPattern: 'old_{Подразделение}.docx',
+        contentTemplate: '{Подразделение}'
+      }
+    ];
+
+    // c_pos has bound tag {Должность}, template tpl_active_auto using {Должность}, and dependent relation e_pos in tab_emp
+    const posImpact = integrityService.getColumnRenameImpact('tab_master', 'c_pos', tabs, tags, templates);
+    expect(posImpact.hasDependencies).toBe(true);
+    expect(posImpact.boundTags).toEqual([{ id: 't2', name: '{Должность}' }]);
+    // {Должность} is already covered by bound tag t2, so it shouldn't duplicate in affectedTemplatesByColumnTag
+    expect(posImpact.affectedTemplatesByColumnTag).toEqual([]);
+    expect(posImpact.affectedTemplatesByBoundTag).toEqual([
+      { id: 'tpl_active_auto', name: 'Карточка подразделения', tagNames: ['{Должность}'], isArchived: undefined }
+    ]);
+    expect(posImpact.dependentRelationColumns).toEqual([
+      { tabId: 'tab_emp', tabName: 'Работники', columnId: 'e_pos', columnName: 'Должность' }
+    ]);
+
+    // c_dept has NO bound tag, only direct auto-tag in active template tpl_active_auto (archived template ignored)
+    const deptImpact = integrityService.getColumnRenameImpact('tab_master', 'c_dept', tabs, tags, templates);
+    expect(deptImpact.hasDependencies).toBe(true);
+    expect(deptImpact.boundTags).toEqual([]);
+    expect(deptImpact.affectedTemplatesByColumnTag).toEqual([
+      {
+        id: 'tpl_active_auto',
+        name: 'Карточка подразделения',
+        matchedPlaceholders: ['{Подразделение}'],
+        isArchived: undefined
+      }
+    ]);
+    expect(deptImpact.dependentRelationColumns).toEqual([]);
+
+    // e_fio has bound tag t1, even with no active template in this list
+    const fioImpact = integrityService.getColumnRenameImpact('tab_emp', 'e_fio', tabs, tags, templates);
+    expect(fioImpact.hasDependencies).toBe(true);
+    expect(fioImpact.boundTags).toEqual([{ id: 't1', name: '{ФИО}' }]);
+  });
 });

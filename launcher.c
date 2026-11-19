@@ -39,9 +39,9 @@ static wchar_t g_pathRuntime[OT_PATH_CAP];
 
 static char g_token[64];
 static uint16_t g_port = 0;
-static uint64_t g_revision = 1;
-static BOOL g_restoredFromBackup = FALSE;
-static BOOL g_corruptedWarning = FALSE;
+static volatile LONGLONG g_revision = 1;
+static volatile LONG g_restoredFromBackup = 0;
+static volatile LONG g_corruptedWarning = 0;
 
 static SOCKET g_listenSock = INVALID_SOCKET;
 static volatile LONG g_running = 1;
@@ -56,6 +56,14 @@ static ULONGLONG ReadTick64(volatile LONGLONG* pVal) {
 
 static void WriteTick64(volatile LONGLONG* pVal, ULONGLONG v) {
     InterlockedExchange64(pVal, (LONGLONG)v);
+}
+
+static uint64_t ReadRev64(void) {
+    return (uint64_t)InterlockedCompareExchange64(&g_revision, 0, 0);
+}
+
+static void WriteRev64(uint64_t v) {
+    InterlockedExchange64(&g_revision, (LONGLONG)v);
 }
 
 static BOOL FormatW(wchar_t* dst, size_t cap, const wchar_t* fmt, ...) {
@@ -198,10 +206,9 @@ static BOOL GetEmbeddedResource(int resId, const void** ppData, DWORD* pSize) {
     return TRUE;
 }
 
-static BOOL WriteBytesAtomicW(const wchar_t* destPath, const wchar_t* tmpPath, const void* data, DWORD size, DWORD* outErr) {
-    wchar_t wDest[OT_PATH_CAP + 16], wTmp[OT_PATH_CAP + 16];
-    if (!ToWin32PathW(destPath, wDest, OT_PATH_CAP + 16) ||
-        !ToWin32PathW(tmpPath, wTmp, OT_PATH_CAP + 16)) {
+static BOOL StageTempFileW(const wchar_t* tmpPath, const void* data, DWORD size, DWORD* outErr) {
+    wchar_t wTmp[OT_PATH_CAP + 16];
+    if (!ToWin32PathW(tmpPath, wTmp, OT_PATH_CAP + 16)) {
         if (outErr) *outErr = ERROR_FILENAME_EXCED_RANGE;
         return FALSE;
     }
@@ -242,6 +249,22 @@ static BOOL WriteBytesAtomicW(const wchar_t* destPath, const wchar_t* tmpPath, c
         return FALSE;
     }
     CloseHandle(hFile);
+
+    if (outErr) *outErr = 0;
+    return TRUE;
+}
+
+static BOOL WriteBytesAtomicW(const wchar_t* destPath, const wchar_t* tmpPath, const void* data, DWORD size, DWORD* outErr) {
+    wchar_t wDest[OT_PATH_CAP + 16], wTmp[OT_PATH_CAP + 16];
+    if (!ToWin32PathW(destPath, wDest, OT_PATH_CAP + 16) ||
+        !ToWin32PathW(tmpPath, wTmp, OT_PATH_CAP + 16)) {
+        if (outErr) *outErr = ERROR_FILENAME_EXCED_RANGE;
+        return FALSE;
+    }
+
+    if (!StageTempFileW(tmpPath, data, size, outErr)) {
+        return FALSE;
+    }
 
     if (!MoveFileExW(wTmp, wDest, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         if (outErr) *outErr = GetLastError();
@@ -654,14 +677,14 @@ static void LoadOrInitRevision(void) {
     DWORD sz = 0;
     if (ReadFileToBufferW(g_pathRev, &buf, &sz, NULL)) {
         uint64_t v = _strtoui64(buf, NULL, 10);
-        if (v > 0) g_revision = v;
+        if (v > 0) WriteRev64(v);
         free(buf);
     }
 }
 
 static void PersistRevision(void) {
     char buf[32];
-    int len = snprintf(buf, sizeof(buf), "%llu", (unsigned long long)g_revision);
+    int len = snprintf(buf, sizeof(buf), "%llu", (unsigned long long)ReadRev64());
     if (len > 0) {
         wchar_t tmpRev[OT_PATH_CAP];
         if (FormatW(tmpRev, OT_PATH_CAP, L"%s.tmp", g_pathRev)) {
@@ -670,10 +693,10 @@ static void PersistRevision(void) {
     }
 }
 
-static void RotateDbBackups(void) {
-    if (OtGetFileAttributesW(g_pathDb) == INVALID_FILE_ATTRIBUTES) return;
+static void CommitStagedPrevBackup(const wchar_t* prevStagingPath, BOOL hasPrevSnapshot) {
+    OtCreateDirectoryW(g_pathBackups);
 
-    /* Keep rolling ring of 4 historical backups + immediate prev */
+    /* Keep rolling ring of 4 historical backups + immediate prev, rotated ONLY after main DB commit succeeded */
     wchar_t bOld[OT_PATH_CAP], bNew[OT_PATH_CAP];
     for (int i = 3; i >= 1; i--) {
         if (!FormatW(bOld, OT_PATH_CAP, L"%s\\ot_database_bak_%d.json", g_pathBackups, i) ||
@@ -689,7 +712,12 @@ static void RotateDbBackups(void) {
             OtCopyFileW(g_pathDbPrev, bNew, FALSE);
         }
     }
-    OtCopyFileW(g_pathDb, g_pathDbPrev, FALSE);
+    if (hasPrevSnapshot && prevStagingPath && OtGetFileAttributesW(prevStagingPath) != INVALID_FILE_ATTRIBUTES) {
+        if (!OtMoveFileExW(prevStagingPath, g_pathDbPrev, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            OtCopyFileW(prevStagingPath, g_pathDbPrev, FALSE);
+            OtDeleteFileW(prevStagingPath);
+        }
+    }
 }
 
 static BOOL EnsureDatabaseBootstrapped(void) {
@@ -706,7 +734,7 @@ static BOOL EnsureDatabaseBootstrapped(void) {
         /* Try prev backup first in case previous move died mid-flight (normally atomic) */
         if (OtGetFileAttributesW(g_pathDbPrev) != INVALID_FILE_ATTRIBUTES) {
             if (OtCopyFileW(g_pathDbPrev, g_pathDb, FALSE)) {
-                g_restoredFromBackup = TRUE;
+                InterlockedExchange(&g_restoredFromBackup, 1);
                 return TRUE;
             }
         }
@@ -727,7 +755,7 @@ static BOOL EnsureDatabaseBootstrapped(void) {
         BOOL ok = IsValidDatabaseJson(buf, sz);
         free(buf);
         if (!ok) {
-            g_corruptedWarning = TRUE;
+            InterlockedExchange(&g_corruptedWarning, 1);
             wchar_t corruptPath[OT_PATH_CAP];
             if (FormatW(corruptPath, OT_PATH_CAP, L"%s\\ot_database_corrupted_%llu.json", g_pathBackups, (unsigned long long)GetTickCount64())) {
                 OtCopyFileW(g_pathDb, corruptPath, FALSE);
@@ -741,7 +769,7 @@ static BOOL EnsureDatabaseBootstrapped(void) {
                     BOOL bakOk = IsValidDatabaseJson(bakBuf, bakSz);
                     free(bakBuf);
                     if (bakOk && OtCopyFileW(g_pathDbPrev, g_pathDb, FALSE)) {
-                        g_restoredFromBackup = TRUE;
+                        InterlockedExchange(&g_restoredFromBackup, 1);
                         return TRUE;
                     }
                 }
@@ -984,6 +1012,19 @@ static void SendHttpResponse(
     }
 }
 
+static void CloseClientSocket(SOCKET s) {
+    if (s == INVALID_SOCKET) return;
+    shutdown(s, SD_SEND);
+    DWORD shortTimeout = 50;
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&shortTimeout, sizeof(shortTimeout));
+    char discard[1024];
+    for (int i = 0; i < 4; i++) {
+        int r = recv(s, discard, sizeof(discard), 0);
+        if (r <= 0) break;
+    }
+    closesocket(s);
+}
+
 static void JsonAppendRaw(char* dst, size_t dstCap, size_t* ioPos, const char* raw) {
     if (!dst || !ioPos || !raw) return;
     while (*raw && *ioPos + 1 < dstCap) {
@@ -1087,7 +1128,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
 
     if (!headerEnd) {
         free(reqBuf);
-        closesocket(s);
+        CloseClientSocket(s);
         return 0;
     }
 
@@ -1100,7 +1141,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
     if (sscanf(reqBuf, "%15s %4095s", method, rawTarget) != 2) {
         SendJsonError(s, 400, "Bad Request", "BAD_REQUEST", "Invalid HTTP request line", FALSE);
         free(reqBuf);
-        closesocket(s);
+        CloseClientSocket(s);
         return 0;
     }
 
@@ -1119,7 +1160,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
     if (!IsAllowedHost(hostHdr)) {
         SendJsonError(s, 403, "Forbidden", "INVALID_HOST", "Host header rejected", FALSE);
         free(reqBuf);
-        closesocket(s);
+        CloseClientSocket(s);
         return 0;
     }
 
@@ -1144,7 +1185,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
         if (cll > MAX_REQUEST_BODY) {
             SendJsonError(s, 413, "Payload Too Large", "PAYLOAD_TOO_LARGE", "Request body exceeds limit", FALSE);
             free(reqBuf);
-            closesocket(s);
+            CloseClientSocket(s);
             return 0;
         }
         contentLen = (DWORD)cll;
@@ -1156,7 +1197,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
         if (!bodyBuf) {
             SendJsonError(s, 500, "Internal Server Error", "OOM", "Memory allocation failed", FALSE);
             free(reqBuf);
-            closesocket(s);
+            CloseClientSocket(s);
             return 0;
         }
         DWORD alreadyBody = totalRecv - (DWORD)hdrLen;
@@ -1174,7 +1215,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
             SendJsonError(s, 400, "Bad Request", "INCOMPLETE_BODY", "Request body truncated", FALSE);
             free(bodyBuf);
             free(reqBuf);
-            closesocket(s);
+            CloseClientSocket(s);
             return 0;
         }
         bodyBuf[contentLen] = '\0';
@@ -1195,7 +1236,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
             SendHttpResponse(s, 200, "OK", "text/html; charset=utf-8", NULL, htmlData, htmlSize);
         }
         if (bodyBuf) free(bodyBuf);
-        closesocket(s);
+        CloseClientSocket(s);
         return 0;
     }
 
@@ -1221,7 +1262,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
             free(exeBuf);
         }
         if (bodyBuf) free(bodyBuf);
-        closesocket(s);
+        CloseClientSocket(s);
         return 0;
     }
 
@@ -1230,13 +1271,13 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
         if (!IsAllowedOrigin(originHdr)) {
             SendJsonError(s, 403, "Forbidden", "INVALID_ORIGIN", "Origin header rejected", FALSE);
             if (bodyBuf) free(bodyBuf);
-            closesocket(s);
+            CloseClientSocket(s);
             return 0;
         }
         if (fetchSiteHdr[0] && StrCaseEq(fetchSiteHdr, "cross-site")) {
             SendJsonError(s, 403, "Forbidden", "CROSS_SITE_BLOCKED", "Cross-site API call rejected", FALSE);
             if (bodyBuf) free(bodyBuf);
-            closesocket(s);
+            CloseClientSocket(s);
             return 0;
         }
 
@@ -1252,7 +1293,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
         if (!tokenOk) {
             SendJsonError(s, 401, "Unauthorized", "INVALID_TOKEN", "Missing or invalid X-OT-Token", FALSE);
             if (bodyBuf) free(bodyBuf);
-            closesocket(s);
+            CloseClientSocket(s);
             return 0;
         }
 
@@ -1263,15 +1304,13 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
             WriteTick64(&g_lastClientTick, GetTickCount64());
         }
 
-        /* Route: GET /api/health or GET /api/heartbeat */
+        /* Route: GET /api/health or GET /api/heartbeat (strictly lock-free so slow file I/O never blocks heartbeat) */
         if (StrCaseEq(method, "GET") && (strcmp(path, "/api/health") == 0 || strcmp(path, "/api/heartbeat") == 0)) {
-            EnterCriticalSection(&g_fsLock);
             DWORD attr = OtGetFileAttributesW(g_pathData);
             DWORD lastErr = (attr == INVALID_FILE_ATTRIBUTES) ? GetLastError() : 0;
-            uint64_t rev = g_revision;
-            BOOL restored = g_restoredFromBackup;
-            BOOL corrupted = g_corruptedWarning;
-            LeaveCriticalSection(&g_fsLock);
+            uint64_t rev = ReadRev64();
+            BOOL restored = (InterlockedCompareExchange(&g_restoredFromBackup, 0, 0) != 0);
+            BOOL corrupted = (InterlockedCompareExchange(&g_corruptedWarning, 0, 0) != 0);
 
             if (attr == INVALID_FILE_ATTRIBUTES) {
                 int st = 503;
@@ -1292,7 +1331,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
                 SendHttpResponse(s, 200, "OK", "application/json; charset=utf-8", NULL, json, (DWORD)len);
             }
             if (bodyBuf) free(bodyBuf);
-            closesocket(s);
+            CloseClientSocket(s);
             return 0;
         }
 
@@ -1303,7 +1342,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
             const char* resp = "{\"ok\":true,\"status\":\"shutting_down\"}";
             SendHttpResponse(s, 200, "OK", "application/json; charset=utf-8", NULL, resp, (DWORD)strlen(resp));
             if (bodyBuf) free(bodyBuf);
-            closesocket(s);
+            CloseClientSocket(s);
             return 0;
         }
 
@@ -1314,7 +1353,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
             DWORD dbSize = 0;
             DWORD fsErr = 0;
             BOOL readOk = ReadFileToBufferW(g_pathDb, &dbBuf, &dbSize, &fsErr);
-            uint64_t rev = g_revision;
+            uint64_t rev = ReadRev64();
             LeaveCriticalSection(&g_fsLock);
 
             if (!readOk) {
@@ -1333,7 +1372,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
                 free(dbBuf);
             }
             if (bodyBuf) free(bodyBuf);
-            closesocket(s);
+            CloseClientSocket(s);
             return 0;
         }
 
@@ -1342,33 +1381,69 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
             if (!bodyBuf || !IsValidDatabaseJson(bodyBuf, contentLen)) {
                 SendJsonError(s, 400, "Bad Request", "INVALID_JSON", "Database payload failed integrity validation", FALSE);
                 if (bodyBuf) free(bodyBuf);
-                closesocket(s);
+                CloseClientSocket(s);
                 return 0;
             }
 
             uint64_t expRev = expRevHdr[0] ? _strtoui64(expRevHdr, NULL, 10) : 0;
 
             EnterCriticalSection(&g_fsLock);
-            if (expRev > 0 && expRev != g_revision) {
-                uint64_t curRev = g_revision;
+            uint64_t curRev = ReadRev64();
+            if (expRev > 0 && expRev != curRev) {
                 LeaveCriticalSection(&g_fsLock);
-                char json[192];
-                int len = sprintf(json, "{\"ok\":false,\"error\":\"REVISION_CONFLICT\",\"revision\":%llu,\"usbDisconnected\":false}", (unsigned long long)curRev);
+                char json[256];
+                int len = snprintf(
+                    json,
+                    sizeof(json),
+                    "{\"ok\":false,\"error\":\"REVISION_CONFLICT\",\"revision\":%llu,\"expectedRevision\":%llu,\"usbDisconnected\":false,\"message\":\"Database file on disk has newer revision\"}",
+                    (unsigned long long)curRev,
+                    (unsigned long long)expRev
+                );
                 SendHttpResponse(s, 409, "Conflict", "application/json; charset=utf-8", NULL, json, (DWORD)len);
                 free(bodyBuf);
-                closesocket(s);
+                CloseClientSocket(s);
                 return 0;
             }
 
-            /* Backup existing before overwriting */
-            RotateDbBackups();
+            OtCreateDirectoryW(g_pathData);
+            OtCreateDirectoryW(g_pathBackups);
 
             DWORD writeErr = 0;
-            BOOL ok = WriteBytesAtomicW(g_pathDb, g_pathDbTmp, bodyBuf, contentLen, &writeErr);
-            uint64_t newRev = g_revision;
+            /* Step 1: Stage and flush new DB to temporary file first without touching backups */
+            BOOL ok = StageTempFileW(g_pathDbTmp, bodyBuf, contentLen, &writeErr);
+            wchar_t prevStaging[OT_PATH_CAP];
+            prevStaging[0] = L'\0';
+            BOOL hasPrevDb = FALSE;
             if (ok) {
-                g_revision++;
-                newRev = g_revision;
+                hasPrevDb = (OtGetFileAttributesW(g_pathDb) != INVALID_FILE_ATTRIBUTES);
+                if (hasPrevDb) {
+                    if (!FormatW(prevStaging, OT_PATH_CAP, L"%s.staging", g_pathDbPrev) ||
+                        !OtCopyFileW(g_pathDb, prevStaging, FALSE)) {
+                        writeErr = GetLastError();
+                        ok = FALSE;
+                        OtDeleteFileW(g_pathDbTmp);
+                    }
+                }
+            }
+
+            /* Step 2: Atomically commit staged DB over g_pathDb */
+            if (ok) {
+                if (!OtMoveFileExW(g_pathDbTmp, g_pathDb, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+                    writeErr = GetLastError();
+                    ok = FALSE;
+                    OtDeleteFileW(g_pathDbTmp);
+                    if (hasPrevDb) {
+                        OtDeleteFileW(prevStaging);
+                    }
+                }
+            }
+
+            /* Step 3: Rotate historical backups strictly AFTER g_pathDb replacement succeeded */
+            uint64_t newRev = curRev;
+            if (ok) {
+                CommitStagedPrevBackup(prevStaging, hasPrevDb);
+                newRev = curRev + 1;
+                WriteRev64(newRev);
                 PersistRevision();
             }
             LeaveCriticalSection(&g_fsLock);
@@ -1387,7 +1462,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
                 SendHttpResponse(s, 200, "OK", "application/json; charset=utf-8", extra, json, (DWORD)len);
             }
             free(bodyBuf);
-            closesocket(s);
+            CloseClientSocket(s);
             return 0;
         }
 
@@ -1406,6 +1481,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
             FormatW(bakFull, OT_PATH_CAP, L"%s\\%s", g_pathBackups, bakName);
 
             EnterCriticalSection(&g_fsLock);
+            OtCreateDirectoryW(g_pathBackups);
             BOOL copied = OtCopyFileW(g_pathDb, bakFull, FALSE);
             DWORD fsErr = copied ? 0 : GetLastError();
             LeaveCriticalSection(&g_fsLock);
@@ -1428,7 +1504,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
                 SendHttpResponse(s, 200, "OK", "application/json; charset=utf-8", NULL, json, (DWORD)pos);
             }
             if (bodyBuf) free(bodyBuf);
-            closesocket(s);
+            CloseClientSocket(s);
             return 0;
         }
 
@@ -1445,7 +1521,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
                 !IsSafeSubpath(toUtf8, wToRel, 1024)) {
                 SendJsonError(s, 400, "Bad Request", "INVALID_MOVE_PATH", "Unsafe or missing source/target path", FALSE);
                 if (bodyBuf) free(bodyBuf);
-                closesocket(s);
+                CloseClientSocket(s);
                 return 0;
             }
 
@@ -1454,7 +1530,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
                 !FormatW(dstFull, OT_PATH_CAP, L"%s\\%s", g_pathDocs, wToRel)) {
                 SendJsonError(s, 414, "URI Too Long", "PATH_TOO_LONG", "Document path exceeds buffer limit", FALSE);
                 if (bodyBuf) free(bodyBuf);
-                closesocket(s);
+                CloseClientSocket(s);
                 return 0;
             }
 
@@ -1481,7 +1557,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
                 SendHttpResponse(s, 200, "OK", "application/json; charset=utf-8", NULL, resp, (DWORD)strlen(resp));
             }
             if (bodyBuf) free(bodyBuf);
-            closesocket(s);
+            CloseClientSocket(s);
             return 0;
         }
 
@@ -1492,7 +1568,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
             if (!slash || slash == rest || slash[1] == '\0') {
                 SendJsonError(s, 400, "Bad Request", "INVALID_FILE_PATH", "Expected /api/files/<bucket>/<filename>", FALSE);
                 if (bodyBuf) free(bodyBuf);
-                closesocket(s);
+                CloseClientSocket(s);
                 return 0;
             }
 
@@ -1510,7 +1586,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
             if (!bucketDir) {
                 SendJsonError(s, 403, "Forbidden", "INVALID_BUCKET", "Allowed buckets: normatives, documents, templates", FALSE);
                 if (bodyBuf) free(bodyBuf);
-                closesocket(s);
+                CloseClientSocket(s);
                 return 0;
             }
 
@@ -1524,7 +1600,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
             if (!nameOk) {
                 SendJsonError(s, 400, "Bad Request", "UNSAFE_FILENAME", "Filename rejected by path traversal filter", FALSE);
                 if (bodyBuf) free(bodyBuf);
-                closesocket(s);
+                CloseClientSocket(s);
                 return 0;
             }
 
@@ -1533,7 +1609,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
                 !FormatW(tmpFile, OT_PATH_CAP, L"%s\\%s.tmp", bucketDir, safeWName)) {
                 SendJsonError(s, 414, "URI Too Long", "PATH_TOO_LONG", "Target file path exceeds buffer limit", FALSE);
                 if (bodyBuf) free(bodyBuf);
-                closesocket(s);
+                CloseClientSocket(s);
                 return 0;
             }
 
@@ -1541,7 +1617,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
                 if (!bodyBuf || contentLen == 0) {
                     SendJsonError(s, 400, "Bad Request", "EMPTY_FILE", "File body cannot be empty", FALSE);
                     if (bodyBuf) free(bodyBuf);
-                    closesocket(s);
+                    CloseClientSocket(s);
                     return 0;
                 }
                 EnterCriticalSection(&g_fsLock);
@@ -1562,7 +1638,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
                     SendHttpResponse(s, 200, "OK", "application/json; charset=utf-8", NULL, okJson, (DWORD)strlen(okJson));
                 }
                 free(bodyBuf);
-                closesocket(s);
+                CloseClientSocket(s);
                 return 0;
             }
 
@@ -1586,7 +1662,7 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
                     free(fBuf);
                 }
                 if (bodyBuf) free(bodyBuf);
-                closesocket(s);
+                CloseClientSocket(s);
                 return 0;
             }
 
@@ -1607,20 +1683,20 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
                     SendHttpResponse(s, 200, "OK", "application/json; charset=utf-8", NULL, okJson, (DWORD)strlen(okJson));
                 }
                 if (bodyBuf) free(bodyBuf);
-                closesocket(s);
+                CloseClientSocket(s);
                 return 0;
             }
         }
 
         SendJsonError(s, 404, "Not Found", "UNKNOWN_API", "API route not found", FALSE);
         if (bodyBuf) free(bodyBuf);
-        closesocket(s);
+        CloseClientSocket(s);
         return 0;
     }
 
     SendJsonError(s, 404, "Not Found", "NOT_FOUND", "Resource not exposed by local server", FALSE);
     if (bodyBuf) free(bodyBuf);
-    closesocket(s);
+    CloseClientSocket(s);
     return 0;
 }
 
@@ -1819,22 +1895,30 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     /* Watchdog loop for graceful server shutdown when UI closes */
     const ULONGLONG bootTick = GetTickCount64();
+    ULONGLONG prevLoopTick = bootTick;
     while (1) {
         Sleep(500);
         ULONGLONG now = GetTickCount64();
+
+        /* Detect OS sleep / hibernation suspension so waking laptop does not immediately kill server */
+        if (now > prevLoopTick && (now - prevLoopTick) >= 10000ULL) {
+            WriteTick64(&g_lastClientTick, now);
+        }
+        prevLoopTick = now;
+
         ULONGLONG shutTick = ReadTick64(&g_shutdownTick);
 
         if (InterlockedCompareExchange(&g_shutdownPending, 1, 1) == 1) {
-            /* 2-second grace allows F5 reloads before shutting down */
-            if (now >= shutTick && (now - shutTick) >= 2000ULL) {
+            /* 2.5-second grace allows F5 reloads before shutting down */
+            if (now >= shutTick && (now - shutTick) >= 2500ULL) {
                 break;
             }
         }
 
         ULONGLONG lastTick = ReadTick64(&g_lastClientTick);
         if (InterlockedCompareExchange(&g_clientEverConnected, 1, 1) == 1) {
-            if (now >= lastTick && (now - lastTick) >= 60000ULL) {
-                /* No heartbeat for 60s (e.g. browser killed externally) */
+            /* 10-minute tolerance avoids premature shutdown from Edge/Chrome background tab throttling */
+            if (now >= lastTick && (now - lastTick) >= 600000ULL) {
                 break;
             }
         } else {

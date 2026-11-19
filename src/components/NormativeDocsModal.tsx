@@ -1,11 +1,33 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   BookOpen, Upload, Trash2, Eye,
   File, Globe2, Download, CheckCircle2, AlertTriangle
 } from 'lucide-react';
 import { AttachedDoc, Tab } from '../types/database';
 import { localApiClient, sanitizeSafeFilename } from '../services/localApiClient';
-import { AppButton, AppModal, InlineConfirm, useToast } from './ui';
+import {
+  AppButton,
+  AppModal,
+  FileValidationRule,
+  InlineConfirm,
+  StatusBanner,
+  useFileDropZone,
+  useToast
+} from './ui';
+
+const NORMATIVE_FILE_RULE: FileValidationRule = {
+  allowedExtensions: ['.docx', '.pdf', '.txt', '.doc', '.md'],
+  allowedMimeTypes: [
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'text/plain',
+    'text/markdown',
+    'text/x-markdown',
+    'application/zip'
+  ],
+  formatLabel: '.docx, .doc, .pdf, .txt или .md'
+};
 
 interface NormativeDocsModalProps {
   isOpen: boolean;
@@ -48,10 +70,12 @@ export const NormativeDocsModal: React.FC<NormativeDocsModalProps> = ({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [filterMode, setFilterMode] = useState<'all' | 'tab'>('all');
   const [isUploading, setIsUploading] = useState(false);
+  const [dropError, setDropError] = useState<string | null>(null);
 
   useEffect(() => {
     if (isOpen) {
       setConfirmDeleteId(null);
+      setDropError(null);
       if (!selectedDoc || !normativeDocs.some((d) => d.id === selectedDoc.id)) {
         setSelectedDoc(normativeDocs[0] || null);
       }
@@ -69,13 +93,11 @@ export const NormativeDocsModal: React.FC<NormativeDocsModalProps> = ({
         )
       : normativeDocs;
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-
-    setIsUploading(true);
-    try {
+  const processNormativeFile = useCallback(
+    async (file: File) => {
+      setDropError(null);
+      setIsUploading(true);
+      try {
       const ext = file.name.split('.').pop()?.toLowerCase() || 'bin';
       const isText = file.type.includes('text') || ext === 'txt' || ext === 'md';
       const arrayBuffer = await file.arrayBuffer();
@@ -135,12 +157,31 @@ export const NormativeDocsModal: React.FC<NormativeDocsModalProps> = ({
           : `Документ «${file.name}» добавлен в библиотеку`,
         'success'
       );
-    } catch (err: any) {
-      showToast(`Ошибка при загрузке файла: ${err?.message || 'неизвестная ошибка'}`, 'error');
-    } finally {
-      setIsUploading(false);
-    }
-  };
+      } catch (err: any) {
+        const msg = `Ошибка при загрузке файла: ${err?.message || 'неизвестная ошибка'}`;
+        setDropError(msg);
+        showToast(msg, 'error');
+      } finally {
+        setIsUploading(false);
+      }
+    },
+    [currentTab.name, isNative, normativeDocs, onUpdateNormativeDocs, showToast]
+  );
+
+  const handleRejectFile = useCallback(
+    (msg: string) => {
+      setDropError(msg);
+      showToast(msg, 'error');
+    },
+    [showToast]
+  );
+
+  const { isDragOver, dropZoneProps, handleInputChange } = useFileDropZone({
+    rule: NORMATIVE_FILE_RULE,
+    disabled: isUploading || !isOpen,
+    onFileAccepted: processNormativeFile,
+    onReject: handleRejectFile
+  });
 
   const handleDownloadDoc = async (doc: AttachedDoc) => {
     try {
@@ -214,12 +255,31 @@ export const NormativeDocsModal: React.FC<NormativeDocsModalProps> = ({
       <div className="flex-1 overflow-hidden grid grid-cols-1 md:grid-cols-12 divide-y md:divide-y-0 md:divide-x divide-slate-200 dark:divide-slate-800">
         {/* Left: Library */}
         <div className="md:col-span-5 p-5 overflow-y-auto space-y-4 text-xs">
-          <label className="flex flex-col items-center justify-center w-full h-24 border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-purple-500 rounded-xl cursor-pointer bg-slate-50 dark:bg-slate-800/40 hover:bg-purple-50/30 dark:hover:bg-purple-950/20 transition-all px-4 text-center">
-            <Upload className="w-5 h-5 text-purple-600 mb-1" />
-            <span className="font-semibold text-slate-700 dark:text-slate-200 text-xs">
-              {isUploading ? 'Сохранение файла...' : 'Добавить акт в общую базу (.docx, .pdf, .txt)'}
+          <label
+            data-testid="normative-dropzone"
+            data-drag-over={isDragOver ? 'true' : 'false'}
+            {...dropZoneProps}
+            className={`flex flex-col items-center justify-center w-full h-24 border-2 border-dashed rounded-xl transition-all px-4 text-center ${
+              isUploading
+                ? 'border-slate-200 dark:border-slate-800 bg-slate-100/70 dark:bg-slate-800/30 cursor-wait opacity-75'
+                : isDragOver
+                  ? 'border-purple-500 bg-purple-50/85 dark:bg-purple-950/45 ring-2 ring-purple-500/30 cursor-copy'
+                  : 'border-slate-300 dark:border-slate-700 hover:border-purple-500 cursor-pointer bg-slate-50 dark:bg-slate-800/40 hover:bg-purple-50/30 dark:hover:bg-purple-950/20'
+            }`}
+          >
+            <Upload
+              className={`w-5 h-5 mb-1 transition-transform pointer-events-none ${
+                isDragOver ? 'text-purple-700 dark:text-purple-300 scale-110' : 'text-purple-600'
+              }`}
+            />
+            <span className="font-semibold text-slate-700 dark:text-slate-200 text-xs pointer-events-none">
+              {isUploading
+                ? 'Сохранение файла...'
+                : isDragOver
+                  ? 'Отпустите документ для добавления в базу'
+                  : 'Перетащите или выберите акт (.docx, .pdf, .txt, .md)'}
             </span>
-            <span className="text-[11px] text-slate-400 mt-0.5">
+            <span className="text-[11px] text-slate-400 mt-0.5 pointer-events-none">
               {isNative
                 ? 'Содержимое файла физически сохраняется в папку ./normatives/'
                 : 'Встроенная библиотека для всех организаций'}
@@ -227,11 +287,17 @@ export const NormativeDocsModal: React.FC<NormativeDocsModalProps> = ({
             <input
               type="file"
               accept=".docx,.pdf,.txt,.doc,.md"
-              onChange={handleFileUpload}
+              onChange={handleInputChange}
               disabled={isUploading}
               className="hidden"
             />
           </label>
+
+          {dropError && (
+            <StatusBanner variant="error" role="alert" compact>
+              {dropError}
+            </StatusBanner>
+          )}
 
           <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg w-fit">
             <button

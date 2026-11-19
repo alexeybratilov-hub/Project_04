@@ -13,8 +13,11 @@ import {
 import { BUILT_IN_TEMPLATES } from '../data/builtInTemplates';
 import { normalizeLLMConfig } from '../data/llmProviders';
 import {
+  getCurrentRevision,
   localApiClient,
+  NativeErrorKind,
   NativeHealthResponse,
+  SaveDatabaseOptions,
   SaveDatabaseResult,
   StorageMode
 } from './localApiClient';
@@ -45,6 +48,86 @@ export interface NativeBootstrapResult {
     diskRowsCount: number;
   };
   loadError?: string;
+  loadErrorKind?: NativeErrorKind;
+  sessionLost?: boolean;
+}
+
+export interface RecoveryEvaluation {
+  action: 'none' | 'clear_error' | 'retry_unsaved' | 'conflict' | 'server_error';
+  serverRevision?: number;
+  errorKind?: NativeErrorKind;
+  usbDisconnected?: boolean;
+  message?: string;
+}
+
+/**
+ * Pure decision helper for native server heartbeat / reconnect handling:
+ * prevents overwriting newer disk DB during auto-recovery and distinguishes error categories.
+ */
+export function evaluateRecoveryState(params: {
+  heartbeatOk: boolean;
+  heartbeatRevision?: number;
+  localRevision: number;
+  hasUnsavedChanges: boolean;
+  initialLoadFailed: boolean;
+  currentSaveStatus: SaveStatusState;
+  usbDisconnected?: boolean;
+  errorKind?: NativeErrorKind;
+  errorMessage?: string;
+}): RecoveryEvaluation {
+  if (!params.heartbeatOk) {
+    const kind: NativeErrorKind =
+      params.usbDisconnected || params.errorKind === 'usb'
+        ? 'usb'
+        : params.errorKind === 'session_lost'
+          ? 'session_lost'
+          : 'connection';
+    return {
+      action: 'server_error',
+      errorKind: kind,
+      usbDisconnected: Boolean(params.usbDisconnected || kind === 'usb'),
+      message:
+        params.errorMessage ||
+        (kind === 'usb'
+          ? 'Носитель или папка ./data недоступны (отключён USB-накопитель).'
+          : 'Нет связи с локальным сервером OT-Baza.exe.')
+    };
+  }
+
+  const serverRev = params.heartbeatRevision;
+  if (
+    typeof serverRev === 'number' &&
+    serverRev > 0 &&
+    params.localRevision > 0 &&
+    serverRev !== params.localRevision
+  ) {
+    return {
+      action: 'conflict',
+      serverRevision: serverRev,
+      errorKind: 'conflict',
+      message: `База на диске была изменена (ревизия на диске №${serverRev}, в окне №${params.localRevision}). Выберите загрузку с диска или перезапись.`
+    };
+  }
+
+  if (params.hasUnsavedChanges && !params.initialLoadFailed) {
+    return {
+      action: 'retry_unsaved',
+      serverRevision: serverRev
+    };
+  }
+
+  if (
+    params.currentSaveStatus === 'error' ||
+    params.currentSaveStatus === 'usb_disconnected' ||
+    params.currentSaveStatus === 'conflict'
+  ) {
+    return {
+      action: 'clear_error',
+      serverRevision: serverRev
+    };
+  }
+
+  return { action: 'none', serverRevision: serverRev };
 }
 
 export interface DatabaseSummary {
@@ -540,13 +623,15 @@ export function cloneLegalEntity(
 
 export const storageService = {
   getMode(): StorageMode {
-    return localApiClient.isNative() ? 'native-fs' : 'web-preview';
+    return localApiClient.isNative() || localApiClient.isNativeSessionLost()
+      ? 'native-fs'
+      : 'web-preview';
   },
 
   loadDatabase(): DatabaseState {
     // In native mode, disk database loads asynchronously via bootstrapDatabase(),
     // so only use localStorage initial seed for immediate web-preview fallback.
-    if (localApiClient.isNative()) {
+    if (localApiClient.isNative() || localApiClient.isNativeSessionLost()) {
       return INITIAL_DATABASE_STATE;
     }
     try {
@@ -562,6 +647,17 @@ export const storageService = {
   },
 
   async bootstrapDatabase(): Promise<NativeBootstrapResult> {
+    if (localApiClient.isNativeSessionLost()) {
+      return {
+        mode: 'native-fs',
+        state: INITIAL_DATABASE_STATE,
+        sessionLost: true,
+        loadErrorKind: 'session_lost',
+        loadError:
+          'Потерян токен сессии с сервером OT-Baza.exe после обновления страницы. Автопереключение в кэш браузера (localStorage) заблокировано для защиты дисковой базы — перезапустите OT-Baza.exe.'
+      };
+    }
+
     if (!localApiClient.isNative()) {
       return {
         mode: 'web-preview',
@@ -569,7 +665,7 @@ export const storageService = {
       };
     }
 
-    const health = await localApiClient.checkHealth();
+    const health = await localApiClient.checkHealth({ syncRevision: false });
     try {
       const { data } = await localApiClient.fetchDatabase();
       const diskState = normalizeDatabaseState(data);
@@ -630,6 +726,7 @@ export const storageService = {
         mode: 'native-fs',
         state: INITIAL_DATABASE_STATE,
         health,
+        loadErrorKind: err?.errorKind || (err?.usbDisconnected ? 'usb' : 'connection'),
         loadError: err?.message || 'Не удалось прочитать ./data/ot_database.json'
       };
     }
@@ -644,15 +741,32 @@ export const storageService = {
     }
   },
 
-  async saveDatabaseAsync(state: DatabaseState): Promise<SaveDatabaseResult> {
+  async saveDatabaseAsync(
+    state: DatabaseState,
+    options?: { expectedRevision?: number; saveOptions?: SaveDatabaseOptions }
+  ): Promise<SaveDatabaseResult> {
     return enqueuePersistenceTask(async () => {
       const toSave: DatabaseState = {
         ...state,
         lastSaved: state.lastSaved || new Date().toISOString()
       };
 
+      if (localApiClient.isNativeSessionLost()) {
+        return {
+          ok: false,
+          errorCode: 'SESSION_LOST',
+          errorKind: 'session_lost',
+          message:
+            'Сессия с сервером OT-Baza.exe потеряна. Сохранение в кэш браузера (localStorage) заблокировано для защиты дисковой базы.'
+        };
+      }
+
       if (localApiClient.isNative()) {
-        return await localApiClient.saveDatabase(toSave);
+        return await localApiClient.saveDatabase(
+          toSave,
+          options?.expectedRevision ?? (getCurrentRevision() > 0 ? getCurrentRevision() : undefined),
+          options?.saveOptions
+        );
       }
 
       try {
@@ -666,6 +780,7 @@ export const storageService = {
         return {
           ok: false,
           errorCode: isQuota ? 'QUOTA_EXCEEDED' : 'LOCALSTORAGE_ERROR',
+          errorKind: 'disk_write',
           message: isQuota
             ? 'Превышен лимит памяти браузера (QuotaExceeded). Запустите ОТ-База.exe или удалите крупные вложения.'
             : (e?.message || 'Ошибка сохранения в локальное хранилище браузера')
