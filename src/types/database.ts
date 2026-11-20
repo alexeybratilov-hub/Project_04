@@ -65,6 +65,8 @@ export interface Tag {
   description?: string;
 }
 
+export type DocumentTemplateType = 'text' | 'docx';
+
 export interface DocumentTemplate {
   id: string;
   name: string;
@@ -78,6 +80,15 @@ export interface DocumentTemplate {
   isArchived?: boolean;
   archivedAt?: string;
   archivedFromTabName?: string;
+  // T-44: Native DOCX template fields (optional for 100% backward compatibility)
+  templateType?: DocumentTemplateType;
+  sourceFileName?: string;
+  storageFileName?: string;
+  dataBase64?: string;
+  fileSizeFormatted?: string;
+  uploadedAt?: string;
+  detectedTags?: string[];
+  unsupportedWarnings?: string[];
 }
 
 export type LLMProviderKind = 'local' | 'api';

@@ -3,6 +3,12 @@ import jsPDF from 'jspdf';
 import { DocumentTemplate, LegalEntityProfile, Row, Tab, Tag } from '../types/database';
 import { DEJAVU_SANS_BOLD_B64, DEJAVU_SANS_REGULAR_B64 } from '../data/cyrillicFont';
 import { localApiClient } from './localApiClient';
+import { BUILT_IN_ENTITY_AND_SYSTEM_TAGS } from './integrityService';
+import {
+  docxTemplateService,
+  DocxRenderDiagnostic,
+  DocxTagResolveOutcome
+} from './docxTemplateService';
 
 export interface GeneratedDocumentResult {
   fileName: string;
@@ -19,7 +25,7 @@ function registerCyrillicFonts(doc: jsPDF): void {
 }
 
 export interface TemplateResolutionIssue {
-  type: 'ambiguous' | 'not_found' | 'no_relations';
+  type: 'ambiguous' | 'not_found' | 'no_relations' | 'broken_tag';
   tagName: string;
   masterTabId: string;
   masterTabName: string;
@@ -32,6 +38,37 @@ export interface TemplateResolutionResult {
   issues: TemplateResolutionIssue[];
 }
 
+export interface DetailedTemplateResolutionResult extends TemplateResolutionResult {
+  unknownTags: string[];
+  emptyRowTags: string[];
+  emptyProfileTags: string[];
+}
+
+export interface BatchGenerationItemResult {
+  status: 'success' | 'error';
+  rowId: string;
+  rowNumber: number;
+  rowIdentifier: string;
+  fileName?: string;
+  tagNames: string[];
+  reason?: string;
+  warnings: string[];
+}
+
+export interface BatchGenerationReport {
+  templateId: string;
+  templateName: string;
+  templateType: 'text' | 'docx';
+  format: 'docx' | 'pdf';
+  createdAt: string;
+  totalCount: number;
+  successCount: number;
+  errorCount: number;
+  items: BatchGenerationItemResult[];
+  errors: BatchGenerationItemResult[];
+  successes: BatchGenerationItemResult[];
+}
+
 export type MasterRowMatchResult =
   | { status: 'no_relations' }
   | { status: 'no_filled_values' }
@@ -39,8 +76,34 @@ export type MasterRowMatchResult =
   | { status: 'ambiguous'; matches: Row[]; matchedColumns: string[] }
   | { status: 'not_found'; matchedColumns: string[] };
 
+const PLACEHOLDER_REGEX = /\{([^{}\r\n]+)\}/g;
+
 function normalizeLookupValue(value: unknown): string {
   return String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+export function getRowDisplayIdentifier(row: Row, tabRef: Tab, fallbackRowNumber?: number): string {
+  const semanticCol = tabRef.columns.find((c) =>
+    /^(фио|ф\.и\.о|работник|сотрудник|пострадавш|должност|наименован)/i.test(c.name.trim())
+  );
+  const semanticVal = semanticCol ? row[semanticCol.id] : '';
+  const firstColVal = tabRef.columns[0] ? row[tabRef.columns[0].id] : '';
+  const secondColVal = tabRef.columns[1] ? row[tabRef.columns[1].id] : '';
+  const candidate =
+    row.emp_fio ||
+    row.pos_title ||
+    row.fac_name ||
+    row.med_worker ||
+    row.siz_item ||
+    row.inst_worker ||
+    row.inc_victim ||
+    semanticVal ||
+    firstColVal ||
+    secondColVal ||
+    '';
+  const trimmed = String(candidate).trim();
+  if (trimmed) return trimmed;
+  return fallbackRowNumber ? `Строка #${fallbackRowNumber} (${row.id})` : String(row.id || 'Без ID');
 }
 
 /**
@@ -85,10 +148,270 @@ export function resolveMasterRowMatch(
   return { status: 'not_found', matchedColumns };
 }
 
+function getEntityProfileTagValue(tagName: string, entityProfile?: LegalEntityProfile): string | null {
+  switch (tagName) {
+    case '{Организация}':
+      return entityProfile?.shortName || entityProfile?.fullName || '';
+    case '{Организация_полное}':
+      return entityProfile?.fullName || entityProfile?.shortName || '';
+    case '{ИНН}':
+      return entityProfile?.inn || '';
+    case '{КПП}':
+      return entityProfile?.kpp || '';
+    case '{ОГРН}':
+      return entityProfile?.ogrn || '';
+    case '{ОКПО}':
+      return entityProfile?.okpo || '';
+    case '{ОКВЭД}':
+      return entityProfile?.okved || '';
+    case '{Реквизиты_банка}':
+      return entityProfile?.bankDetails || '';
+    case '{Банк_в}':
+      return entityProfile?.bankIn || '';
+    case '{Юридический_адрес}':
+      return entityProfile?.legalAddress || '';
+    case '{Email_организации}':
+      return entityProfile?.email || '';
+    case '{Телефон_организации}':
+      return entityProfile?.phone || '';
+    case '{Генеральный_директор}':
+      return entityProfile?.directorFio || '';
+    default:
+      return null;
+  }
+}
+
+export interface RowTagContextResolver {
+  resolveTag: (tagName: string) => DocxTagResolveOutcome & { isProfileEmpty?: boolean };
+  getDiagnostics: () => {
+    issues: TemplateResolutionIssue[];
+    unknownTags: string[];
+    emptyRowTags: string[];
+    emptyProfileTags: string[];
+  };
+}
+
+/**
+ * Unified tag resolver shared between plain-text templates and native OOXML DOCX templates.
+ */
+export function createRowTagResolver(
+  row: Row,
+  currentTab: Tab,
+  allTabs: Tab[],
+  tags: Tag[],
+  entityProfile?: LegalEntityProfile
+): RowTagContextResolver {
+  const lookupCache = new Map<string, MasterRowMatchResult>();
+  const issues: TemplateResolutionIssue[] = [];
+  const issueKeys = new Set<string>();
+  const unknownTags = new Set<string>();
+  const emptyRowTags = new Set<string>();
+  const emptyProfileTags = new Set<string>();
+
+  const tagMap = new Map<string, Tag>();
+  tags.forEach((t) => {
+    if (!tagMap.has(t.name)) tagMap.set(t.name, t);
+  });
+
+  const colTagMap = new Map<string, string>();
+  currentTab.columns.forEach((col) => {
+    colTagMap.set(`{${col.name}}`, col.id);
+    colTagMap.set(`{${col.name.replace(/\s+/g, '_')}}`, col.id);
+  });
+
+  const pushIssueOnce = (issue: TemplateResolutionIssue) => {
+    const key = `${issue.type}::${issue.tagName}`;
+    if (issueKeys.has(key)) return;
+    issueKeys.add(key);
+    issues.push(issue);
+  };
+
+  const resolveTag = (
+    tagName: string
+  ): DocxTagResolveOutcome & { isProfileEmpty?: boolean } => {
+    // 1. User-bound Tag pool
+    const boundTag = tagMap.get(tagName);
+    if (boundTag) {
+      let value = '';
+      if (boundTag.tabId === currentTab.id) {
+        const colExists = currentTab.columns.some((c) => c.id === boundTag.columnId);
+        if (!colExists) {
+          pushIssueOnce({
+            type: 'broken_tag',
+            tagName: boundTag.name,
+            masterTabId: currentTab.id,
+            masterTabName: currentTab.name,
+            matchCount: 0,
+            reason: `Тег ${boundTag.name} ссылается на удалённый столбец таблицы «${currentTab.name}».`
+          });
+          return { known: true, value: '' };
+        }
+        value = row[boundTag.columnId] !== undefined && row[boundTag.columnId] !== null
+          ? String(row[boundTag.columnId])
+          : '';
+        if (value.trim() === '') {
+          emptyRowTags.add(tagName);
+          return { known: true, value: '', isEmptyRowValue: true };
+        }
+        return { known: true, value };
+      }
+
+      const otherTab = allTabs.find((t) => t.id === boundTag.tabId);
+      if (!otherTab) {
+        pushIssueOnce({
+          type: 'broken_tag',
+          tagName: boundTag.name,
+          masterTabId: boundTag.tabId,
+          masterTabName: boundTag.tabId,
+          matchCount: 0,
+          reason: `Тег ${boundTag.name} ссылается на удалённую таблицу (${boundTag.tabId}).`
+        });
+        return { known: true, value: '' };
+      }
+
+      const otherColExists = otherTab.columns.some((c) => c.id === boundTag.columnId);
+      if (!otherColExists) {
+        pushIssueOnce({
+          type: 'broken_tag',
+          tagName: boundTag.name,
+          masterTabId: otherTab.id,
+          masterTabName: otherTab.name,
+          matchCount: 0,
+          reason: `Тег ${boundTag.name} ссылается на удалённый столбец таблицы «${otherTab.name}».`
+        });
+        return { known: true, value: '' };
+      }
+
+      let matchResult = lookupCache.get(otherTab.id);
+      if (!matchResult) {
+        matchResult = resolveMasterRowMatch(row, currentTab, otherTab);
+        lookupCache.set(otherTab.id, matchResult);
+      }
+
+      if (matchResult.status === 'matched') {
+        value =
+          matchResult.row[boundTag.columnId] !== undefined &&
+          matchResult.row[boundTag.columnId] !== null
+            ? String(matchResult.row[boundTag.columnId])
+            : '';
+        if (value.trim() === '') {
+          emptyRowTags.add(tagName);
+          return { known: true, value: '', isEmptyRowValue: true };
+        }
+        return { known: true, value };
+      }
+
+      if (matchResult.status === 'no_filled_values') {
+        emptyRowTags.add(tagName);
+        return { known: true, value: '', isEmptyRowValue: true };
+      }
+
+      if (matchResult.status === 'ambiguous') {
+        pushIssueOnce({
+          type: 'ambiguous',
+          tagName: boundTag.name,
+          masterTabId: otherTab.id,
+          masterTabName: otherTab.name,
+          matchCount: matchResult.matches.length,
+          reason: `Для тега ${boundTag.name} найдено ${matchResult.matches.length} совпадений в таблице «${otherTab.name}» по полям (${matchResult.matchedColumns.join(', ')}). Произвольный выбор запрещён.`
+        });
+      } else if (matchResult.status === 'not_found') {
+        pushIssueOnce({
+          type: 'not_found',
+          tagName: boundTag.name,
+          masterTabId: otherTab.id,
+          masterTabName: otherTab.name,
+          matchCount: 0,
+          reason: `Для тега ${boundTag.name} не найдена строка в «${otherTab.name}» с полным совпадением полей (${matchResult.matchedColumns.join(', ')}).`
+        });
+      } else if (matchResult.status === 'no_relations') {
+        pushIssueOnce({
+          type: 'no_relations',
+          tagName: boundTag.name,
+          masterTabId: otherTab.id,
+          masterTabName: otherTab.name,
+          matchCount: 0,
+          reason: `Тег ${boundTag.name} ссылается на «${otherTab.name}», но текущая таблица «${currentTab.name}» не имеет с ней связующих столбцов.`
+        });
+      }
+
+      return { known: true, value: '' };
+    }
+
+    // 2. Direct current tab column name tags: {Должность}, {ФИО_работника}
+    const directColId = colTagMap.get(tagName);
+    if (directColId) {
+      const val =
+        row[directColId] !== undefined && row[directColId] !== null
+          ? String(row[directColId])
+          : '';
+      if (val.trim() === '') {
+        emptyRowTags.add(tagName);
+        return { known: true, value: '', isEmptyRowValue: true };
+      }
+      return { known: true, value: val };
+    }
+
+    // 3. Built-in entity profile requisites
+    if (BUILT_IN_ENTITY_AND_SYSTEM_TAGS.has(tagName)) {
+      if (tagName === '{id}') {
+        return { known: true, value: row.id || '1' };
+      }
+      const profileVal = getEntityProfileTagValue(tagName, entityProfile) ?? '';
+      if (profileVal.trim() === '') {
+        emptyProfileTags.add(tagName);
+        return { known: true, value: '', isProfileEmpty: true };
+      }
+      return { known: true, value: profileVal };
+    }
+
+    // 4. Unknown placeholder
+    unknownTags.add(tagName);
+    return { known: false, value: tagName };
+  };
+
+  return {
+    resolveTag,
+    getDiagnostics: () => ({
+      issues,
+      unknownTags: Array.from(unknownTags),
+      emptyRowTags: Array.from(emptyRowTags),
+      emptyProfileTags: Array.from(emptyProfileTags)
+    })
+  };
+}
+
 export const documentGenerator = {
   /**
-   * Resolve tags in a template string for a specific row and return both rendered text
-   * and any ambiguity / broken-relation issues encountered during Master lookup.
+   * Resolve tags in a template string with full diagnostics:
+   * relation errors, broken tags, unknown tags, and empty cell/profile tags.
+   */
+  resolveTemplateTagsDetailed(
+    templateContent: string,
+    row: Row,
+    currentTab: Tab,
+    allTabs: Tab[],
+    tags: Tag[],
+    entityProfile?: LegalEntityProfile
+  ): DetailedTemplateResolutionResult {
+    const resolver = createRowTagResolver(row, currentTab, allTabs, tags, entityProfile);
+    const resolved = templateContent.replace(PLACEHOLDER_REGEX, (fullMatch, inner) => {
+      if (!String(inner).trim()) return fullMatch;
+      const outcome = resolver.resolveTag(fullMatch);
+      return outcome.known ? outcome.value : fullMatch;
+    });
+    const diag = resolver.getDiagnostics();
+    return {
+      text: resolved,
+      issues: diag.issues,
+      unknownTags: diag.unknownTags,
+      emptyRowTags: diag.emptyRowTags,
+      emptyProfileTags: diag.emptyProfileTags
+    };
+  },
+
+  /**
+   * Resolve tags in a template string for a specific row and return rendered text + relation issues.
    */
   resolveTemplateTagsWithReport(
     templateContent: string,
@@ -98,94 +421,15 @@ export const documentGenerator = {
     tags: Tag[],
     entityProfile?: LegalEntityProfile
   ): TemplateResolutionResult {
-    let resolved = templateContent;
-    const issues: TemplateResolutionIssue[] = [];
-    const lookupCache = new Map<string, MasterRowMatchResult>();
-
-    // 1. Resolve tags configured in the entity tag pool (only tags actually present in templateContent)
-    tags.forEach((tag) => {
-      if (!resolved.includes(tag.name)) return;
-
-      let value = '';
-      if (tag.tabId === currentTab.id) {
-        value = row[tag.columnId] !== undefined ? String(row[tag.columnId]) : '';
-      } else {
-        const otherTab = allTabs.find((t) => t.id === tag.tabId);
-        if (otherTab) {
-          let matchResult = lookupCache.get(otherTab.id);
-          if (!matchResult) {
-            matchResult = resolveMasterRowMatch(row, currentTab, otherTab);
-            lookupCache.set(otherTab.id, matchResult);
-          }
-
-          if (matchResult.status === 'matched') {
-            if (matchResult.row[tag.columnId] !== undefined) {
-              value = String(matchResult.row[tag.columnId]);
-            }
-          } else if (matchResult.status === 'ambiguous') {
-            issues.push({
-              type: 'ambiguous',
-              tagName: tag.name,
-              masterTabId: otherTab.id,
-              masterTabName: otherTab.name,
-              matchCount: matchResult.matches.length,
-              reason: `Для тега ${tag.name} найдено ${matchResult.matches.length} совпадений в таблице «${otherTab.name}» по полям (${matchResult.matchedColumns.join(', ')}). Произвольный выбор запрещён.`
-            });
-          } else if (matchResult.status === 'not_found') {
-            issues.push({
-              type: 'not_found',
-              tagName: tag.name,
-              masterTabId: otherTab.id,
-              masterTabName: otherTab.name,
-              matchCount: 0,
-              reason: `Для тега ${tag.name} не найдена строка в «${otherTab.name}» с полным совпадением полей (${matchResult.matchedColumns.join(', ')}).`
-            });
-          } else if (matchResult.status === 'no_relations') {
-            issues.push({
-              type: 'no_relations',
-              tagName: tag.name,
-              masterTabId: otherTab.id,
-              masterTabName: otherTab.name,
-              matchCount: 0,
-              reason: `Тег ${tag.name} ссылается на «${otherTab.name}», но текущая таблица «${currentTab.name}» не имеет с ней связующих столбцов.`
-            });
-          }
-        }
-      }
-
-      resolved = resolved.replaceAll(tag.name, value);
-    });
-
-    // 2. Resolve directly by current tab column names: e.g. {Должность}, {ФИО работника}
-    currentTab.columns.forEach((col) => {
-      const val = row[col.id] !== undefined ? String(row[col.id]) : '';
-      const colTag1 = `{${col.name}}`;
-      const colTag2 = `{${col.name.replace(/\s+/g, '_')}}`;
-      resolved = resolved.replaceAll(colTag1, val).replaceAll(colTag2, val);
-    });
-
-    // 3. Resolve Legal Entity requisites if provided
-    if (entityProfile) {
-      resolved = resolved
-        .replaceAll('{Организация}', entityProfile.shortName || entityProfile.fullName || '')
-        .replaceAll('{Организация_полное}', entityProfile.fullName || entityProfile.shortName || '')
-        .replaceAll('{ИНН}', entityProfile.inn || '')
-        .replaceAll('{КПП}', entityProfile.kpp || '')
-        .replaceAll('{ОГРН}', entityProfile.ogrn || '')
-        .replaceAll('{ОКПО}', entityProfile.okpo || '')
-        .replaceAll('{ОКВЭД}', entityProfile.okved || '')
-        .replaceAll('{Реквизиты_банка}', entityProfile.bankDetails || '')
-        .replaceAll('{Банк_в}', entityProfile.bankIn || '')
-        .replaceAll('{Юридический_адрес}', entityProfile.legalAddress || '')
-        .replaceAll('{Email_организации}', entityProfile.email || '')
-        .replaceAll('{Телефон_организации}', entityProfile.phone || '')
-        .replaceAll('{Генеральный_директор}', entityProfile.directorFio || '');
-    }
-
-    // 4. Built-in id tag
-    resolved = resolved.replaceAll('{id}', row.id || '1');
-
-    return { text: resolved, issues };
+    const detailed = documentGenerator.resolveTemplateTagsDetailed(
+      templateContent,
+      row,
+      currentTab,
+      allTabs,
+      tags,
+      entityProfile
+    );
+    return { text: detailed.text, issues: detailed.issues };
   },
 
   /**
@@ -228,6 +472,294 @@ export const documentGenerator = {
       base = base.replace(/\.(docx|pdf)$/i, '') + '.' + extension;
     }
     return base;
+  },
+
+  /**
+   * Render a native .docx template buffer for a single row, preserving formatting and collecting diagnostics.
+   */
+  renderDocxFromBuffer(
+    template: DocumentTemplate,
+    docxBuffer: ArrayBuffer,
+    row: Row,
+    currentTab: Tab,
+    allTabs: Tab[],
+    tags: Tag[],
+    entityProfile?: LegalEntityProfile
+  ): {
+    blob: Blob;
+    previewText: string;
+    fileName: string;
+    issues: TemplateResolutionIssue[];
+    unknownTags: string[];
+    emptyRowTags: string[];
+    emptyProfileTags: string[];
+    docxDiagnostics: DocxRenderDiagnostic;
+  } {
+    const resolver = createRowTagResolver(row, currentTab, allTabs, tags, entityProfile);
+    const docxRes = docxTemplateService.renderDocxTemplate(docxBuffer, (tagName) =>
+      resolver.resolveTag(tagName)
+    );
+
+    // Also resolve namingPattern through the SAME resolver so namingPattern issues are captured cleanly
+    const rawFileName = (template.namingPattern || 'Документ_{id}.docx').replace(
+      PLACEHOLDER_REGEX,
+      (fullMatch, inner) => {
+        if (!String(inner).trim()) return fullMatch;
+        const outcome = resolver.resolveTag(fullMatch);
+        return outcome.known ? outcome.value : fullMatch;
+      }
+    );
+    let safeFileName = rawFileName.replace(/[/\\?%*:|"<>]/g, '_').trim();
+    if (!safeFileName.toLowerCase().endsWith('.docx')) {
+      safeFileName = safeFileName.replace(/\.(docx|pdf)$/i, '') + '.docx';
+    }
+
+    const diag = resolver.getDiagnostics();
+    return {
+      blob: docxRes.blob,
+      previewText: docxRes.previewText,
+      fileName: safeFileName,
+      issues: diag.issues,
+      unknownTags: diag.unknownTags,
+      emptyRowTags: diag.emptyRowTags,
+      emptyProfileTags: diag.emptyProfileTags,
+      docxDiagnostics: docxRes.diagnostics
+    };
+  },
+
+  /**
+   * Fault-isolated batch generator for both plain-text and native DOCX templates (T-36 + T-44).
+   * Failure on any row never aborts the batch or loses successfully generated rows.
+   */
+  async executeBatchGeneration(options: {
+    template: DocumentTemplate;
+    format: 'docx' | 'pdf';
+    rowsToProcess: Row[];
+    boundTab: Tab;
+    allTabs: Tab[];
+    tags: Tag[];
+    entityProfile?: LegalEntityProfile;
+    docxSourceBuffer?: ArrayBuffer | null;
+    failOnEmptyRowTags?: boolean;
+    onSaveDocument: (payload: {
+      row: Row;
+      fileName: string;
+      blob: Blob;
+    }) => Promise<void> | void;
+    delayBetweenRowsMs?: number;
+  }): Promise<BatchGenerationReport> {
+    const {
+      template,
+      format,
+      rowsToProcess,
+      boundTab,
+      allTabs,
+      tags,
+      entityProfile,
+      docxSourceBuffer,
+      failOnEmptyRowTags = true,
+      onSaveDocument,
+      delayBetweenRowsMs = 0
+    } = options;
+
+    const templateType: 'text' | 'docx' =
+      template.templateType === 'docx' ? 'docx' : 'text';
+
+    if (templateType === 'docx' && format === 'pdf') {
+      throw new Error(
+        'Формат PDF не поддерживается для готовых DOCX-шаблонов без локального Microsoft Word / LibreOffice. Используйте генерацию .DOCX.'
+      );
+    }
+
+    if (templateType === 'docx' && (!docxSourceBuffer || docxSourceBuffer.byteLength === 0)) {
+      throw new Error(
+        `Не найден исходный DOCX-файл шаблона «${template.name}». Загрузите .docx повторно.`
+      );
+    }
+
+    const rowIndexMap = new Map<string, number>();
+    boundTab.rows.forEach((r, idx) => rowIndexMap.set(r.id, idx + 1));
+
+    const items: BatchGenerationItemResult[] = [];
+
+    for (let i = 0; i < rowsToProcess.length; i++) {
+      const row = rowsToProcess[i];
+      const rowNumber = rowIndexMap.get(row.id) ?? i + 1;
+      const rowIdentifier = getRowDisplayIdentifier(row, boundTab, rowNumber);
+
+      try {
+        if (templateType === 'docx') {
+          const res = documentGenerator.renderDocxFromBuffer(
+            template,
+            docxSourceBuffer!,
+            row,
+            boundTab,
+            allTabs,
+            tags,
+            entityProfile
+          );
+
+          const blockingReasons: string[] = [];
+          const problematicTags = new Set<string>();
+
+          if (res.issues.length > 0) {
+            res.issues.forEach((iss) => {
+              problematicTags.add(iss.tagName);
+              blockingReasons.push(iss.reason);
+            });
+          }
+          if (res.unknownTags.length > 0) {
+            res.unknownTags.forEach((t) => problematicTags.add(t));
+            blockingReasons.push(
+              `Неизвестные теги в шаблоне (${res.unknownTags.join(', ')}): не привязаны к столбцу и не являются реквизитами организации.`
+            );
+          }
+          if (failOnEmptyRowTags && res.emptyRowTags.length > 0) {
+            res.emptyRowTags.forEach((t) => problematicTags.add(t));
+            blockingReasons.push(
+              `Отсутствует значение в записи для тега(ов): ${res.emptyRowTags.join(', ')}.`
+            );
+          }
+
+          if (blockingReasons.length > 0) {
+            items.push({
+              status: 'error',
+              rowId: row.id,
+              rowNumber,
+              rowIdentifier,
+              tagNames: Array.from(problematicTags),
+              reason: blockingReasons.join(' '),
+              warnings: res.docxDiagnostics.unsupportedWarnings
+            });
+            continue;
+          }
+
+          await onSaveDocument({ row, fileName: res.fileName, blob: res.blob });
+          items.push({
+            status: 'success',
+            rowId: row.id,
+            rowNumber,
+            rowIdentifier,
+            fileName: res.fileName,
+            tagNames: [],
+            warnings: [
+              ...res.docxDiagnostics.unsupportedWarnings,
+              ...(res.emptyProfileTags.length > 0
+                ? [`Пустые реквизиты организации: ${res.emptyProfileTags.join(', ')}`]
+                : [])
+            ]
+          });
+        } else {
+          const resolver = createRowTagResolver(row, boundTab, allTabs, tags, entityProfile);
+          const resolvedBody = template.contentTemplate.replace(
+            PLACEHOLDER_REGEX,
+            (fullMatch, inner) => {
+              if (!String(inner).trim()) return fullMatch;
+              const outcome = resolver.resolveTag(fullMatch);
+              return outcome.known ? outcome.value : fullMatch;
+            }
+          );
+          const rawFileName = (template.namingPattern || 'Документ_{id}.docx').replace(
+            PLACEHOLDER_REGEX,
+            (fullMatch, inner) => {
+              if (!String(inner).trim()) return fullMatch;
+              const outcome = resolver.resolveTag(fullMatch);
+              return outcome.known ? outcome.value : fullMatch;
+            }
+          );
+          let safeFileName = rawFileName.replace(/[/\\?%*:|"<>]/g, '_').trim();
+          if (!safeFileName.toLowerCase().endsWith('.' + format)) {
+            safeFileName = safeFileName.replace(/\.(docx|pdf)$/i, '') + '.' + format;
+          }
+
+          const diag = resolver.getDiagnostics();
+          const blockingReasons: string[] = [];
+          const problematicTags = new Set<string>();
+
+          if (diag.issues.length > 0) {
+            diag.issues.forEach((iss) => {
+              problematicTags.add(iss.tagName);
+              blockingReasons.push(iss.reason);
+            });
+          }
+          if (diag.unknownTags.length > 0) {
+            diag.unknownTags.forEach((t) => problematicTags.add(t));
+            blockingReasons.push(
+              `Неизвестные теги в шаблоне (${diag.unknownTags.join(', ')}): не привязаны к столбцу и не являются реквизитами организации.`
+            );
+          }
+          if (failOnEmptyRowTags && diag.emptyRowTags.length > 0) {
+            diag.emptyRowTags.forEach((t) => problematicTags.add(t));
+            blockingReasons.push(
+              `Отсутствует значение в записи для тега(ов): ${diag.emptyRowTags.join(', ')}.`
+            );
+          }
+
+          if (blockingReasons.length > 0) {
+            items.push({
+              status: 'error',
+              rowId: row.id,
+              rowNumber,
+              rowIdentifier,
+              tagNames: Array.from(problematicTags),
+              reason: blockingReasons.join(' '),
+              warnings: []
+            });
+            continue;
+          }
+
+          const blob =
+            format === 'docx'
+              ? await documentGenerator.generateDocx(template.name, resolvedBody)
+              : await documentGenerator.generatePdf(template.name, resolvedBody);
+
+          await onSaveDocument({ row, fileName: safeFileName, blob });
+          items.push({
+            status: 'success',
+            rowId: row.id,
+            rowNumber,
+            rowIdentifier,
+            fileName: safeFileName,
+            tagNames: [],
+            warnings:
+              diag.emptyProfileTags.length > 0
+                ? [`Пустые реквизиты организации: ${diag.emptyProfileTags.join(', ')}`]
+                : []
+          });
+        }
+      } catch (err: any) {
+        items.push({
+          status: 'error',
+          rowId: row.id,
+          rowNumber,
+          rowIdentifier,
+          tagNames: [],
+          reason: err?.message || 'Ошибка формирования или сохранения документа',
+          warnings: []
+        });
+      }
+
+      if (delayBetweenRowsMs > 0 && i < rowsToProcess.length - 1) {
+        await new Promise((res) => setTimeout(res, delayBetweenRowsMs));
+      }
+    }
+
+    const errors = items.filter((it) => it.status === 'error');
+    const successes = items.filter((it) => it.status === 'success');
+
+    return {
+      templateId: template.id,
+      templateName: template.name,
+      templateType,
+      format,
+      createdAt: new Date().toISOString(),
+      totalCount: rowsToProcess.length,
+      successCount: successes.length,
+      errorCount: errors.length,
+      items,
+      errors,
+      successes
+    };
   },
 
   /**

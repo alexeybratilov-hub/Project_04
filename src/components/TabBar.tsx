@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { 
   Plus, Key, MoreVertical, Edit2, Trash2, 
@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { Tab, TabBarMode } from '../types/database';
 import { Z_INDEX } from './ui';
+import { calculateTargetIndexFromInsertSlot } from '../utils/reorderUtils';
 
 interface TabBarProps {
   tabs: Tab[];
@@ -46,9 +47,11 @@ export const TabBar: React.FC<TabBarProps> = ({
   const [editingName, setEditingName] = useState('');
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
 
-  // Drag & Drop reordering state
+  // Drag & Drop reordering state (ref-backed for immediate sync across rapid dragover/child events)
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
-  const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
+  const [tabInsertSlot, setTabInsertSlot] = useState<number | null>(null);
+  const draggedTabIdRef = useRef<string | null>(null);
+  const tabInsertSlotRef = useRef<number | null>(null);
 
   // Fallback state if controlled mode callback is not passed
   const [internalMode, setInternalMode] = useState<TabBarMode>(tabBarMode);
@@ -241,42 +244,137 @@ export const TabBar: React.FC<TabBarProps> = ({
     }
   };
 
+  const clearTabDragState = useCallback(() => {
+    draggedTabIdRef.current = null;
+    tabInsertSlotRef.current = null;
+    setDraggedTabId(null);
+    setTabInsertSlot(null);
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener('dragend', clearTabDragState);
+    window.addEventListener('blur', clearTabDragState);
+    return () => {
+      window.removeEventListener('dragend', clearTabDragState);
+      window.removeEventListener('blur', clearTabDragState);
+    };
+  }, [clearTabDragState]);
+
+  useEffect(() => {
+    if (editingTabId) {
+      clearTabDragState();
+    }
+  }, [editingTabId, clearTabDragState]);
+
+  const isTabDragEvent = (e: React.DragEvent): boolean => {
+    const types = Array.from(e.dataTransfer?.types || []);
+    if (types.includes('Files')) return false;
+    return Boolean(
+      draggedTabIdRef.current ||
+        types.includes('application/x-otbaza-tab')
+    );
+  };
+
+  const computeTabInsertSlot = (clientX: number, clientY: number): number | null => {
+    const stripEl = tabsScrollRef.current;
+    if (!stripEl || tabs.length === 0) return null;
+    const tabEls = Array.from(stripEl.querySelectorAll<HTMLElement>('[data-tab-id]'));
+    if (tabEls.length === 0) return null;
+
+    const rects = tabEls.map((el, index) => ({
+      index,
+      rect: el.getBoundingClientRect()
+    }));
+
+    if (isSingleRow) {
+      for (const item of rects) {
+        const midX = item.rect.left + item.rect.width / 2;
+        if (clientX < midX) return item.index;
+      }
+      return rects.length;
+    }
+
+    // Multi-row wrapped mode: identify vertical row band matching pointer Y
+    const sameRow = rects.filter(
+      ({ rect }) => clientY >= rect.top - 8 && clientY <= rect.bottom + 8
+    );
+
+    if (sameRow.length > 0) {
+      for (const item of sameRow) {
+        const midX = item.rect.left + item.rect.width / 2;
+        if (clientX < midX) return item.index;
+      }
+      const lastInRow = sameRow[sameRow.length - 1];
+      return lastInRow.index + 1;
+    }
+
+    if (clientY < rects[0].rect.top) return 0;
+    return rects.length;
+  };
+
   // Drag handlers for tab reordering
   const handleDragStart = (e: React.DragEvent, tabId: string) => {
-    if (editingTabId === tabId) {
+    const targetEl = e.target as HTMLElement | null;
+    if (editingTabId === tabId || targetEl?.closest('button, input')) {
       e.preventDefault();
       return;
     }
-    setDraggedTabId(tabId);
+    draggedTabIdRef.current = tabId;
+    tabInsertSlotRef.current = null;
     e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('application/x-otbaza-tab', tabId);
     e.dataTransfer.setData('text/plain', tabId);
+    // Defer visual dimming until browser captures drag image
+    requestAnimationFrame(() => {
+      if (draggedTabIdRef.current === tabId) {
+        setDraggedTabId(tabId);
+      }
+    });
   };
 
-  const handleDragOver = (e: React.DragEvent, targetTabId: string) => {
+  const handleTabListDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!isTabDragEvent(e)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    if (draggedTabId && draggedTabId !== targetTabId) {
-      setDragOverTabId(targetTabId);
+    const nextSlot = computeTabInsertSlot(e.clientX, e.clientY);
+    if (nextSlot !== tabInsertSlotRef.current) {
+      tabInsertSlotRef.current = nextSlot;
+      setTabInsertSlot(nextSlot);
     }
   };
 
-  const handleDrop = (e: React.DragEvent, targetTabId: string) => {
+  const handleTabListDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    // Do NOT clear drag state when pointer moves across child spans, icons, or gaps inside tablist
+    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+    tabInsertSlotRef.current = null;
+    setTabInsertSlot(null);
+  };
+
+  const handleTabListDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!isTabDragEvent(e)) return;
     e.preventDefault();
-    const sourceId = draggedTabId || e.dataTransfer.getData('text/plain');
-    if (sourceId && sourceId !== targetTabId && onReorderTabs) {
+    e.stopPropagation();
+
+    const sourceId =
+      draggedTabIdRef.current ||
+      e.dataTransfer.getData('application/x-otbaza-tab') ||
+      e.dataTransfer.getData('text/plain');
+
+    const slot =
+      computeTabInsertSlot(e.clientX, e.clientY) ?? tabInsertSlotRef.current;
+
+    if (sourceId && slot !== null && onReorderTabs) {
       const fromIdx = tabs.findIndex((t) => t.id === sourceId);
-      const toIdx = tabs.findIndex((t) => t.id === targetTabId);
-      if (fromIdx !== -1 && toIdx !== -1) {
+      const toIdx = calculateTargetIndexFromInsertSlot(fromIdx, slot, tabs.length);
+      if (fromIdx !== -1 && toIdx !== null) {
         onReorderTabs(fromIdx, toIdx);
       }
     }
-    setDraggedTabId(null);
-    setDragOverTabId(null);
+    clearTabDragState();
   };
 
   const handleDragEnd = () => {
-    setDraggedTabId(null);
-    setDragOverTabId(null);
+    clearTabDragState();
   };
 
   return (
@@ -299,6 +397,9 @@ export const TabBar: React.FC<TabBarProps> = ({
           ref={tabsScrollRef}
           role="tablist"
           aria-label="Вкладки таблиц"
+          onDragOver={handleTabListDragOver}
+          onDragLeave={handleTabListDragLeave}
+          onDrop={handleTabListDrop}
           className={`flex-1 min-w-0 px-2 py-1 flex items-center gap-1.5 ${
             isSingleRow
               ? 'flex-nowrap overflow-x-auto no-scrollbar'
@@ -310,8 +411,16 @@ export const TabBar: React.FC<TabBarProps> = ({
             const hasActiveMatch = tabs.some((t) => t.id === activeTabId);
             const isRovingFocusTarget = editingTabId === tab.id ? false : isActive || (!hasActiveMatch && index === 0);
             const isMaster = tab.isMaster;
+            const activeDragId = draggedTabId || draggedTabIdRef.current;
+            const draggedIdx = activeDragId ? tabs.findIndex((t) => t.id === activeDragId) : -1;
+            const effectiveTarget =
+              tabInsertSlot !== null && draggedIdx !== -1
+                ? calculateTargetIndexFromInsertSlot(draggedIdx, tabInsertSlot, tabs.length)
+                : null;
+            const showInsertBefore = effectiveTarget !== null && tabInsertSlot === index;
+            const showInsertAfterLast =
+              effectiveTarget !== null && index === tabs.length - 1 && tabInsertSlot === tabs.length;
             const isDragging = draggedTabId === tab.id;
-            const isDropTarget = dragOverTabId === tab.id;
 
             return (
               <div
@@ -322,24 +431,31 @@ export const TabBar: React.FC<TabBarProps> = ({
                 data-tab-id={tab.id}
                 draggable={editingTabId !== tab.id}
                 onDragStart={(e) => handleDragStart(e, tab.id)}
-                onDragOver={(e) => handleDragOver(e, tab.id)}
-                onDragLeave={() => {
-                  if (dragOverTabId === tab.id) setDragOverTabId(null);
-                }}
-                onDrop={(e) => handleDrop(e, tab.id)}
                 onDragEnd={handleDragEnd}
                 onKeyDown={(e) => handleTabKeyDown(e, tab, index)}
                 className={`group relative flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer border shrink-0 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500 ${
                   isActive
                     ? 'bg-white dark:bg-slate-800 text-blue-700 dark:text-blue-400 border-blue-400/70 dark:border-blue-600/80 shadow-xs font-semibold ring-1 ring-blue-500/20'
                     : 'bg-white/60 dark:bg-slate-800/60 text-slate-700 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800 border-slate-300/80 dark:border-slate-700/80 hover:border-slate-400'
-                } ${isDragging ? 'opacity-40 scale-95' : ''} ${
-                  isDropTarget ? 'ring-2 ring-blue-600 border-blue-600 bg-blue-50 dark:bg-blue-950/60' : ''
-                }`}
+                } ${isDragging ? 'opacity-45 border-dashed border-blue-400 dark:border-blue-500' : ''}`}
                 onClick={() => onSelectTab(tab.id)}
                 title="Перетащите мышкой для изменения порядка вкладок (стрелки ←/→ — переключение, F2 — переименовать)"
               >
-                <GripVertical className="w-3 h-3 text-slate-300 dark:text-slate-600 opacity-0 group-hover:opacity-100 -ml-1 shrink-0 cursor-grab" aria-hidden="true" />
+                {showInsertBefore && (
+                  <span
+                    data-testid="tab-drop-indicator"
+                    aria-hidden="true"
+                    className="pointer-events-none absolute -left-[5px] top-0 bottom-0 w-[3px] rounded-full bg-blue-600 dark:bg-blue-400 shadow-[0_0_0_2px_rgba(37,99,235,0.22)] z-20"
+                  />
+                )}
+                {showInsertAfterLast && (
+                  <span
+                    data-testid="tab-drop-indicator"
+                    aria-hidden="true"
+                    className="pointer-events-none absolute -right-[5px] top-0 bottom-0 w-[3px] rounded-full bg-blue-600 dark:bg-blue-400 shadow-[0_0_0_2px_rgba(37,99,235,0.22)] z-20"
+                  />
+                )}
+                <GripVertical className="w-3 h-3 text-slate-400 dark:text-slate-500 opacity-45 group-hover:opacity-100 -ml-1 shrink-0 cursor-grab" aria-hidden="true" />
 
               {isMaster && (
                 <span title="Мастер-таблица (источник данных для связей)" className="text-amber-500 shrink-0">

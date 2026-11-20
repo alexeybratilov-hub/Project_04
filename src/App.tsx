@@ -58,6 +58,7 @@ import {
   registerGeneratedDocument,
   restoreArchivedDocument
 } from './services/generatedDocsService';
+import { reorderArray, reorderTabColumns } from './utils/reorderUtils';
 
 export default function App() {
   const { showToast } = useToast();
@@ -738,11 +739,33 @@ export default function App() {
   const handleReorderTabs = (fromIndex: number, toIndex: number) => {
     if (fromIndex === toIndex) return;
     updateDbState((prev) => {
-      const nextTabs = [...prev.tabs];
-      const [moved] = nextTabs.splice(fromIndex, 1);
-      if (!moved) return prev;
-      nextTabs.splice(toIndex, 0, moved);
-      return { ...prev, tabs: nextTabs };
+      if (
+        fromIndex < 0 ||
+        toIndex < 0 ||
+        fromIndex >= prev.tabs.length ||
+        toIndex >= prev.tabs.length
+      ) {
+        return prev;
+      }
+      return { ...prev, tabs: reorderArray(prev.tabs, fromIndex, toIndex) };
+    });
+  };
+
+  // Reorder columns inside a tab via drag & drop
+  const handleReorderColumns = (tabId: string, fromIndex: number, toIndex: number) => {
+    if (fromIndex === toIndex) return;
+    updateDbState((prev) => {
+      const targetTab = prev.tabs.find((t) => t.id === tabId);
+      if (!targetTab) return prev;
+      const nextColumns = reorderTabColumns(targetTab.columns, fromIndex, toIndex);
+      const changed =
+        nextColumns.length === targetTab.columns.length &&
+        nextColumns.some((col, idx) => col !== targetTab.columns[idx]);
+      if (!changed) return prev;
+      return {
+        ...prev,
+        tabs: prev.tabs.map((t) => (t.id === tabId ? { ...t, columns: nextColumns } : t))
+      };
     });
   };
 
@@ -793,6 +816,19 @@ export default function App() {
         for (const doc of matchingDocs) {
           if (localApiClient.isNative()) {
             await localApiClient.deleteFileFromBucket('documents', doc.relativePath);
+          }
+        }
+        const doomedTemplates = (snapshot.templates || []).filter(
+          (tpl) => tpl.tabId === tabId && tpl.storageFileName
+        );
+        const remainingTemplates = (snapshot.templates || []).filter((tpl) => tpl.tabId !== tabId);
+        for (const tpl of doomedTemplates) {
+          if (
+            localApiClient.isNative() &&
+            tpl.storageFileName &&
+            !remainingTemplates.some((rt) => rt.storageFileName === tpl.storageFileName)
+          ) {
+            await localApiClient.deleteFileFromBucket('templates', tpl.storageFileName);
           }
         }
         nextGeneratedDocs = nextGeneratedDocs.filter((d) => d.sourceTabName !== tabToDel.name);
@@ -1497,6 +1533,9 @@ export default function App() {
           onAttemptEditRelation={handleAttemptEditRelation}
           onAddColumn={(newCol) => handleAddColumnToTab(currentTab.id, newCol)}
           onUpdateColumn={(colId, patch) => handleUpdateColumn(currentTab.id, colId, patch)}
+          onReorderColumns={(fromIndex, toIndex) =>
+            handleReorderColumns(currentTab.id, fromIndex, toIndex)
+          }
           tags={dbState.tags}
           templates={dbState.templates}
           highlightedRowId={highlightedRowId}

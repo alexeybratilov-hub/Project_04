@@ -5,7 +5,7 @@ import {
   ArrowDown, Check, BookOpen, FileText, Cpu,
   Columns, CheckSquare, Square, X, Edit2,
   AlertCircle, ChevronDown, ChevronLeft, ChevronRight, Rows3,
-  Maximize2, Copy
+  Maximize2, Copy, GripVertical
 } from 'lucide-react';
 import { Column, ColumnType, DocumentTemplate, GridRowDensity, Row, Tab, Tag } from '../types/database';
 import { ImportHintCard } from './ImportHintCard';
@@ -16,6 +16,19 @@ import {
   createUniqueId,
   integrityService
 } from '../services/integrityService';
+import {
+  buildTsvFromSelection,
+  getCellPerimeterFlags,
+  getSelectionBounds,
+  GridSelection,
+  isColumnSelected,
+  isCopyShortcutEvent
+} from './dataGridSelection';
+import {
+  calculateTargetIndexFromInsertSlot,
+  isSystemColumnId,
+  remapGridSelectionAfterColumnMove
+} from '../utils/reorderUtils';
 
 export const MIN_COLUMN_WIDTH = 88;
 export const MAX_COLUMN_WIDTH = 800;
@@ -81,6 +94,7 @@ interface DataGridProps {
   onAttemptEditRelation: (column: Column, row: Row) => void;
   onAddColumn?: (column: Column) => void;
   onUpdateColumn?: (columnId: string, patch: Partial<Column>) => void;
+  onReorderColumns?: (fromIndex: number, toIndex: number) => void;
   tags?: Tag[];
   templates?: DocumentTemplate[];
   highlightedRowId?: string | null;
@@ -137,6 +151,7 @@ export const DataGrid: React.FC<DataGridProps> = ({
   onAttemptEditRelation,
   onAddColumn,
   onUpdateColumn,
+  onReorderColumns,
   tags = [],
   templates = [],
   highlightedRowId
@@ -218,6 +233,23 @@ export const DataGrid: React.FC<DataGridProps> = ({
   const onUpdateColumnRef = useRef(onUpdateColumn);
   onUpdateColumnRef.current = onUpdateColumn;
 
+  // T-42: Column Drag-and-Drop Reorder state (mouse-backed on dedicated header grip)
+  const [draggingColId, setDraggingColId] = useState<string | null>(null);
+  const [colInsertSlot, setColInsertSlot] = useState<number | null>(null);
+  const [isDraggingColumnArm, setIsDraggingColumnArm] = useState(false);
+  const dragColMetaRef = useRef<{
+    colId: string;
+    fromIndex: number;
+    startX: number;
+    hasActivated: boolean;
+  } | null>(null);
+  const colInsertSlotRef = useRef<number | null>(null);
+  const suppressNextSortClickRef = useRef(false);
+  const columnsRef = useRef(currentTab.columns);
+  columnsRef.current = currentTab.columns;
+  const onReorderColumnsRef = useRef(onReorderColumns);
+  onReorderColumnsRef.current = onReorderColumns;
+
   // Non-blocking row delete & cascade conflict confirmations
   const [confirmDeleteBulk, setConfirmDeleteBulk] = useState(false);
   const [confirmDeleteRowId, setConfirmDeleteRowId] = useState<string | null>(null);
@@ -229,6 +261,18 @@ export const DataGrid: React.FC<DataGridProps> = ({
     error: string;
     discrepancies: ValidationDiscrepancy[];
   } | null>(null);
+
+  // T-41: Excel-like cell / range / column selection & clipboard state
+  const [gridSelection, setGridSelection] = useState<GridSelection | null>(null);
+  const [copiedFeedback, setCopiedFeedback] = useState<{
+    cellCount: number;
+    rowCount: number;
+    colCount: number;
+  } | null>(null);
+  const gridContainerRef = useRef<HTMLDivElement>(null);
+  const isDraggingSelectionRef = useRef(false);
+  const lastCopyEventTsRef = useRef(0);
+  const copyFeedbackTimerRef = useRef<number | null>(null);
 
   // Reset transient UI state when switching tabs
   useEffect(() => {
@@ -247,6 +291,15 @@ export const DataGrid: React.FC<DataGridProps> = ({
     setCascadeConflict(null);
     setActiveCellAnchor(null);
     setInlinePasteAlert(null);
+    setGridSelection(null);
+    setCopiedFeedback(null);
+    isDraggingSelectionRef.current = false;
+    dragColMetaRef.current = null;
+    colInsertSlotRef.current = null;
+    suppressNextSortClickRef.current = false;
+    setIsDraggingColumnArm(false);
+    setDraggingColId(null);
+    setColInsertSlot(null);
     setCurrentPage(1);
     setSortColId(null);
     setSearchQuery('');
@@ -256,6 +309,32 @@ export const DataGrid: React.FC<DataGridProps> = ({
   useEffect(() => {
     setCurrentPage(1);
   }, [searchQuery]);
+
+  // Clear cell range/column selection when filtering or sorting changes row positions
+  useEffect(() => {
+    setGridSelection(null);
+    setCopiedFeedback(null);
+  }, [searchQuery, sortColId, sortDir]);
+
+  // End mouse range-selection drag reliably on window mouseup/blur
+  useEffect(() => {
+    const endSelectionDrag = () => {
+      if (isDraggingSelectionRef.current) {
+        isDraggingSelectionRef.current = false;
+        document.body.style.userSelect = '';
+      }
+    };
+    window.addEventListener('mouseup', endSelectionDrag);
+    window.addEventListener('blur', endSelectionDrag);
+    return () => {
+      window.removeEventListener('mouseup', endSelectionDrag);
+      window.removeEventListener('blur', endSelectionDrag);
+      document.body.style.userSelect = '';
+      if (copyFeedbackTimerRef.current !== null) {
+        window.clearTimeout(copyFeedbackTimerRef.current);
+      }
+    };
+  }, []);
 
   // External Ctrl+F focus trigger
   useEffect(() => {
@@ -391,6 +470,113 @@ export const DataGrid: React.FC<DataGridProps> = ({
     latestResizeWidthRef.current = curWidth;
     setResizingColId(column.id);
     setPreviewWidths({ [column.id]: curWidth });
+  };
+
+  // T-42: Mousemove / Mouseup handlers for Column Drag-and-Drop Reordering
+  useEffect(() => {
+    if (!isDraggingColumnArm) return;
+
+    const prevCursor = document.body.style.cursor;
+    const prevUserSelect = document.body.style.userSelect;
+    document.body.style.userSelect = 'none';
+
+    const computeColInsertSlot = (clientX: number): number | null => {
+      const container = gridContainerRef.current;
+      if (!container) return null;
+      const ths = Array.from(container.querySelectorAll<HTMLElement>('thead th[data-col-id]'));
+      if (ths.length === 0) return null;
+      for (let i = 0; i < ths.length; i++) {
+        const rect = ths[i].getBoundingClientRect();
+        if (clientX < rect.left + rect.width / 2) {
+          return i;
+        }
+      }
+      return ths.length;
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const meta = dragColMetaRef.current;
+      if (!meta) return;
+
+      if (!meta.hasActivated) {
+        if (Math.abs(e.clientX - meta.startX) < 4) return;
+        meta.hasActivated = true;
+        document.body.style.cursor = 'grabbing';
+        setDraggingColId(meta.colId);
+      }
+
+      const nextSlot = computeColInsertSlot(e.clientX);
+      if (nextSlot !== colInsertSlotRef.current) {
+        colInsertSlotRef.current = nextSlot;
+        setColInsertSlot(nextSlot);
+      }
+    };
+
+    const finishColDrag = () => {
+      const meta = dragColMetaRef.current;
+      const slot = colInsertSlotRef.current;
+      const totalCols = columnsRef.current.length;
+
+      if (meta?.hasActivated) {
+        suppressNextSortClickRef.current = true;
+        window.setTimeout(() => {
+          suppressNextSortClickRef.current = false;
+        }, 0);
+
+        if (slot !== null) {
+          const targetIdx = calculateTargetIndexFromInsertSlot(
+            meta.fromIndex,
+            slot,
+            totalCols
+          );
+          const targetCol = targetIdx !== null ? columnsRef.current[targetIdx] : undefined;
+          if (
+            targetIdx !== null &&
+            targetCol &&
+            !isSystemColumnId(meta.colId) &&
+            !isSystemColumnId(targetCol.id)
+          ) {
+            onReorderColumnsRef.current?.(meta.fromIndex, targetIdx);
+            setGridSelection((prev) =>
+              remapGridSelectionAfterColumnMove(prev, meta.fromIndex, targetIdx, totalCols)
+            );
+          }
+        }
+      }
+
+      dragColMetaRef.current = null;
+      colInsertSlotRef.current = null;
+      setIsDraggingColumnArm(false);
+      setDraggingColId(null);
+      setColInsertSlot(null);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', finishColDrag);
+    window.addEventListener('blur', finishColDrag);
+    return () => {
+      document.body.style.cursor = prevCursor;
+      document.body.style.userSelect = prevUserSelect;
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', finishColDrag);
+      window.removeEventListener('blur', finishColDrag);
+    };
+  }, [isDraggingColumnArm]);
+
+  const startDragReorderColumn = (e: React.MouseEvent, column: Column, colIndex: number) => {
+    if (e.button !== 0) return;
+    if (isSystemColumnId(column.id) || renamingColId === column.id) return;
+    if (currentTab.columns.length <= 1) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragColMetaRef.current = {
+      colId: column.id,
+      fromIndex: colIndex,
+      startX: e.clientX,
+      hasActivated: false
+    };
+    colInsertSlotRef.current = null;
+    setIsDraggingColumnArm(true);
   };
 
   const handleQuickAddColumn = () => {
@@ -637,6 +823,12 @@ export const DataGrid: React.FC<DataGridProps> = ({
     updateSelectedRowIds(next);
   };
 
+  const focusGridContainer = () => {
+    requestAnimationFrame(() => {
+      gridContainerRef.current?.focus({ preventScroll: true });
+    });
+  };
+
   // Start inline edit with clean Esc rollback snapshot
   const beginInlineEdit = (row: Row, column: Column) => {
     escapeCancelRef.current = false;
@@ -644,10 +836,16 @@ export const DataGrid: React.FC<DataGridProps> = ({
     setDraftValue(row[column.id] ?? '');
   };
 
-  const commitInlineEdit = (rowId: string, col: Column, rawVal?: any) => {
+  const commitInlineEdit = (
+    rowId: string,
+    col: Column,
+    rawVal?: any,
+    options?: { restoreFocus?: boolean }
+  ) => {
     if (escapeCancelRef.current) {
       escapeCancelRef.current = false;
       setEditingCell(null);
+      if (options?.restoreFocus) focusGridContainer();
       return;
     }
     const nextVal = rawVal !== undefined ? rawVal : draftValue;
@@ -658,11 +856,359 @@ export const DataGrid: React.FC<DataGridProps> = ({
       onUpdateCell(rowId, col.id, nextVal);
     }
     setEditingCell(null);
+    if (options?.restoreFocus) focusGridContainer();
   };
 
-  const cancelInlineEdit = () => {
+  const cancelInlineEdit = (options?: { restoreFocus?: boolean }) => {
     escapeCancelRef.current = true;
     setEditingCell(null);
+    if (options?.restoreFocus) focusGridContainer();
+  };
+
+  const selectionBounds = useMemo(
+    () => getSelectionBounds(gridSelection, filteredRows.length, currentTab.columns.length),
+    [gridSelection, filteredRows.length, currentTab.columns.length]
+  );
+
+  const showCopyFeedback = (cellCount: number, rowCount: number, colCount: number) => {
+    setCopiedFeedback({ cellCount, rowCount, colCount });
+    if (copyFeedbackTimerRef.current !== null) {
+      window.clearTimeout(copyFeedbackTimerRef.current);
+    }
+    copyFeedbackTimerRef.current = window.setTimeout(() => {
+      setCopiedFeedback(null);
+      copyFeedbackTimerRef.current = null;
+    }, 2600);
+  };
+
+  const writeTsvWithFallback = (tsv: string): Promise<boolean> => {
+    const execFallback = () => {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = tsv;
+        ta.setAttribute('readonly', 'true');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        ta.style.top = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+      } catch {
+        return false;
+      }
+    };
+
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      return navigator.clipboard
+        .writeText(tsv)
+        .then(() => true)
+        .catch(() => execFallback());
+    }
+    return Promise.resolve(execFallback());
+  };
+
+  const copySelectionToClipboard = async () => {
+    const built = buildTsvFromSelection(gridSelection, filteredRows, currentTab.columns);
+    if (!built) return false;
+    const ok = await writeTsvWithFallback(built.tsv);
+    if (ok) {
+      showCopyFeedback(built.cellCount, built.rowCount, built.colCount);
+    }
+    focusGridContainer();
+    return ok;
+  };
+
+  const activateCellEditByCoord = (rowIndex: number, colIndex: number) => {
+    const row = filteredRows[rowIndex];
+    const col = currentTab.columns[colIndex];
+    if (!row || !col) return;
+    setAnchorForRowCell(row.id, col);
+    if (col.type === 'boolean') {
+      onUpdateCell(row.id, col.id, !Boolean(row[col.id]));
+    } else if (col.type === 'relation') {
+      setEditingCell({ rowId: row.id, colId: col.id });
+    } else {
+      beginInlineEdit(row, col);
+    }
+  };
+
+  const handleCellMouseDown = (
+    e: React.MouseEvent,
+    rowIndex: number,
+    row: Row,
+    column: Column,
+    colIndex: number
+  ) => {
+    if (e.button !== 0) return;
+    if (editingCell?.rowId === row.id && editingCell?.colId === column.id) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest('a, [data-cell-action="true"]')) return;
+
+    setAnchorForRowCell(row.id, column);
+    setCopiedFeedback(null);
+
+    if (e.shiftKey && gridSelection) {
+      e.preventDefault();
+      const anchor =
+        gridSelection.mode === 'column'
+          ? { rowIndex: 0, colIndex: gridSelection.anchorColIndex }
+          : gridSelection.anchor;
+      setGridSelection({
+        mode: anchor.rowIndex === rowIndex && anchor.colIndex === colIndex ? 'cell' : 'range',
+        anchor,
+        focus: { rowIndex, colIndex }
+      });
+    } else {
+      isDraggingSelectionRef.current = true;
+      document.body.style.userSelect = 'none';
+      setGridSelection({
+        mode: 'cell',
+        anchor: { rowIndex, colIndex },
+        focus: { rowIndex, colIndex }
+      });
+    }
+
+    gridContainerRef.current?.focus({ preventScroll: true });
+  };
+
+  const handleCellMouseEnter = (rowIndex: number, colIndex: number) => {
+    if (!isDraggingSelectionRef.current) return;
+    setGridSelection((prev) => {
+      if (!prev || prev.mode === 'column') return prev;
+      if (prev.focus.rowIndex === rowIndex && prev.focus.colIndex === colIndex) return prev;
+      return {
+        mode:
+          prev.anchor.rowIndex === rowIndex && prev.anchor.colIndex === colIndex
+            ? 'cell'
+            : 'range',
+        anchor: prev.anchor,
+        focus: { rowIndex, colIndex }
+      };
+    });
+  };
+
+  const handleCellDoubleClick = (e: React.MouseEvent, row: Row, column: Column) => {
+    const target = e.target as HTMLElement | null;
+    if (target?.closest('a, [data-cell-action="true"]')) return;
+    setAnchorForRowCell(row.id, column);
+    if (column.type === 'boolean') {
+      onUpdateCell(row.id, column.id, !Boolean(row[column.id]));
+    } else if (column.type === 'relation') {
+      setEditingCell({ rowId: row.id, colId: column.id });
+    } else {
+      beginInlineEdit(row, column);
+    }
+  };
+
+  const handleSelectColumn = (colIndex: number, shiftKey: boolean) => {
+    const col = currentTab.columns[colIndex];
+    if (!col) return;
+    setCopiedFeedback(null);
+    setGridSelection((prev) => {
+      if (shiftKey && prev && prev.mode === 'column') {
+        return {
+          mode: 'column',
+          anchorColIndex: prev.anchorColIndex,
+          focusColIndex: colIndex
+        };
+      }
+      return {
+        mode: 'column',
+        anchorColIndex: colIndex,
+        focusColIndex: colIndex
+      };
+    });
+    if (filteredRows[0]) {
+      setAnchorForRowCell(filteredRows[0].id, col);
+    }
+    focusGridContainer();
+  };
+
+  // Global copy / Ctrl+C listener (runs cleanly when grid selection is active and no editor/modal is open)
+  const copyBridgeRef = useRef<{
+    gridSelection: GridSelection | null;
+    filteredRows: Row[];
+    columns: Column[];
+    editingCell: { rowId: string; colId: string } | null;
+    renamingColId: string | null;
+    viewingCell: ViewingCellState | null;
+    showCopyFeedback: (cellCount: number, rowCount: number, colCount: number) => void;
+    writeTsvWithFallback: (tsv: string) => Promise<boolean>;
+  }>({
+    gridSelection,
+    filteredRows,
+    columns: currentTab.columns,
+    editingCell,
+    renamingColId,
+    viewingCell,
+    showCopyFeedback,
+    writeTsvWithFallback
+  });
+  copyBridgeRef.current = {
+    gridSelection,
+    filteredRows,
+    columns: currentTab.columns,
+    editingCell,
+    renamingColId,
+    viewingCell,
+    showCopyFeedback,
+    writeTsvWithFallback
+  };
+
+  useEffect(() => {
+    const canCopyFromGrid = (target: EventTarget | null) => {
+      const state = copyBridgeRef.current;
+      if (!state.gridSelection || state.editingCell || state.renamingColId || state.viewingCell) {
+        return false;
+      }
+      if (document.querySelector('[role="dialog"]')) return false;
+      const el = target as HTMLElement | null;
+      const tag = el?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || el?.isContentEditable) {
+        return false;
+      }
+      const nativeSel = window.getSelection()?.toString();
+      if (nativeSel && nativeSel.length > 0) return false;
+      return true;
+    };
+
+    const handleNativeCopy = (e: ClipboardEvent) => {
+      if (!canCopyFromGrid(e.target)) return;
+      const state = copyBridgeRef.current;
+      const built = buildTsvFromSelection(state.gridSelection, state.filteredRows, state.columns);
+      if (!built) return;
+      e.preventDefault();
+      e.clipboardData?.setData('text/plain', built.tsv);
+      lastCopyEventTsRef.current = performance.now();
+      state.showCopyFeedback(built.cellCount, built.rowCount, built.colCount);
+    };
+
+    const handleWindowCopyKey = (e: KeyboardEvent) => {
+      if (!isCopyShortcutEvent(e)) return;
+      if (!canCopyFromGrid(e.target)) return;
+      const state = copyBridgeRef.current;
+      const built = buildTsvFromSelection(state.gridSelection, state.filteredRows, state.columns);
+      if (!built) return;
+      const triggerTs = performance.now();
+      window.setTimeout(() => {
+        if (lastCopyEventTsRef.current >= triggerTs - 5) return;
+        state.writeTsvWithFallback(built.tsv).then((ok) => {
+          if (ok) {
+            state.showCopyFeedback(built.cellCount, built.rowCount, built.colCount);
+          }
+        });
+      }, 0);
+    };
+
+    window.addEventListener('copy', handleNativeCopy);
+    window.addEventListener('keydown', handleWindowCopyKey);
+    return () => {
+      window.removeEventListener('copy', handleNativeCopy);
+      window.removeEventListener('keydown', handleWindowCopyKey);
+    };
+  }, []);
+
+  const handleGridContainerKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (editingCell || renamingColId || viewingCell) return;
+    if (document.querySelector('[role="dialog"]')) return;
+
+    const target = e.target as HTMLElement | null;
+    const tag = target?.tagName?.toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || target?.isContentEditable) {
+      return;
+    }
+
+    if (e.key === 'Escape' && gridSelection) {
+      e.preventDefault();
+      setGridSelection(null);
+      setCopiedFeedback(null);
+      return;
+    }
+
+    if (!gridSelection || filteredRows.length === 0 || currentTab.columns.length === 0) return;
+
+    if (e.key === 'F2') {
+      e.preventDefault();
+      const targetCoord =
+        gridSelection.mode === 'column'
+          ? { rowIndex: Math.min(pageStartIdx, filteredRows.length - 1), colIndex: gridSelection.anchorColIndex }
+          : gridSelection.anchor;
+      activateCellEditByCoord(targetCoord.rowIndex, targetCoord.colIndex);
+      return;
+    }
+
+    if (e.key === 'Enter') {
+      if (tag === 'button' || tag === 'a') return;
+      e.preventDefault();
+      const targetCoord =
+        gridSelection.mode === 'column'
+          ? { rowIndex: Math.min(pageStartIdx, filteredRows.length - 1), colIndex: gridSelection.anchorColIndex }
+          : gridSelection.anchor;
+      activateCellEditByCoord(targetCoord.rowIndex, targetCoord.colIndex);
+      return;
+    }
+
+    if (e.key === ' ' && gridSelection.mode === 'cell') {
+      if (tag === 'button' || tag === 'a') return;
+      const col = currentTab.columns[gridSelection.anchor.colIndex];
+      const row = filteredRows[gridSelection.anchor.rowIndex];
+      if (col?.type === 'boolean' && row) {
+        e.preventDefault();
+        onUpdateCell(row.id, col.id, !Boolean(row[col.id]));
+      }
+      return;
+    }
+
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+      if (tag === 'button' || tag === 'a') return;
+      e.preventDefault();
+      const maxRow = filteredRows.length - 1;
+      const maxCol = currentTab.columns.length - 1;
+      const baseAnchor =
+        gridSelection.mode === 'column'
+          ? { rowIndex: 0, colIndex: gridSelection.anchorColIndex }
+          : gridSelection.anchor;
+      const baseFocus =
+        gridSelection.mode === 'column'
+          ? { rowIndex: 0, colIndex: gridSelection.focusColIndex }
+          : gridSelection.focus;
+
+      const cur = e.shiftKey ? baseFocus : baseAnchor;
+      let nextRow = cur.rowIndex;
+      let nextCol = cur.colIndex;
+      if (e.key === 'ArrowUp') nextRow = Math.max(0, cur.rowIndex - 1);
+      if (e.key === 'ArrowDown') nextRow = Math.min(maxRow, cur.rowIndex + 1);
+      if (e.key === 'ArrowLeft') nextCol = Math.max(0, cur.colIndex - 1);
+      if (e.key === 'ArrowRight') nextCol = Math.min(maxCol, cur.colIndex + 1);
+
+      const targetPage = Math.floor(nextRow / pageSize) + 1;
+      if (targetPage !== safePage) {
+        setCurrentPage(targetPage);
+      }
+
+      if (e.shiftKey) {
+        setGridSelection({
+          mode:
+            baseAnchor.rowIndex === nextRow && baseAnchor.colIndex === nextCol ? 'cell' : 'range',
+          anchor: baseAnchor,
+          focus: { rowIndex: nextRow, colIndex: nextCol }
+        });
+      } else {
+        setGridSelection({
+          mode: 'cell',
+          anchor: { rowIndex: nextRow, colIndex: nextCol },
+          focus: { rowIndex: nextRow, colIndex: nextCol }
+        });
+        const nextRowObj = filteredRows[nextRow];
+        const nextColObj = currentTab.columns[nextCol];
+        if (nextRowObj && nextColObj) {
+          setAnchorForRowCell(nextRowObj.id, nextColObj);
+        }
+      }
+    }
   };
 
   // Fast memoized lookup for Master values (with cascading filter across sibling relation columns)
@@ -1062,8 +1608,74 @@ export const DataGrid: React.FC<DataGridProps> = ({
         </div>
       )}
 
+      {/* Cell / Range / Column Selection Status Bar */}
+      {(selectionBounds || copiedFeedback) && (
+        <div
+          data-testid="grid-selection-bar"
+          className="px-4 py-1.5 bg-slate-50 dark:bg-slate-800/70 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 text-[11px] shrink-0"
+        >
+          <div className="flex flex-wrap items-center gap-2 text-slate-700 dark:text-slate-300">
+            {selectionBounds && (
+              <>
+                <span className="font-medium text-blue-700 dark:text-blue-300">
+                  {gridSelection?.mode === 'column'
+                    ? selectionBounds.colCount === 1
+                      ? `Выделен столбец «${currentTab.columns[selectionBounds.minCol]?.name}» (${selectionBounds.rowCount} яч.)`
+                      : `Выделены столбцы: ${selectionBounds.colCount} (${selectionBounds.cellCount} яч.)`
+                    : selectionBounds.cellCount === 1
+                      ? `Выделена ячейка: «${currentTab.columns[selectionBounds.minCol]?.name}», строка #${selectionBounds.minRow + 1}`
+                      : `Выделен диапазон: ${selectionBounds.rowCount} × ${selectionBounds.colCount} (${selectionBounds.cellCount} яч.)`}
+                </span>
+                <span className="text-slate-400 hidden sm:inline">
+                  · Двойной клик / F2 / Enter — редактировать · Ctrl+C — копировать (TSV)
+                </span>
+              </>
+            )}
+            {copiedFeedback && (
+              <span
+                role="status"
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-300 font-medium border border-emerald-200 dark:border-emerald-800"
+              >
+                <Check className="w-3 h-3" />
+                Скопировано в буфер (TSV): {copiedFeedback.cellCount} яч.
+              </span>
+            )}
+          </div>
+          {selectionBounds && (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  copySelectionToClipboard();
+                }}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 hover:bg-blue-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 font-medium cursor-pointer transition-colors"
+                title="Скопировать выделение в буфер обмена в формате TSV для Excel (Ctrl+C)"
+              >
+                <Copy className="w-3 h-3 text-blue-600 dark:text-blue-400" />
+                <span>Копировать TSV</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setGridSelection(null);
+                  setCopiedFeedback(null);
+                }}
+                className="text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+              >
+                Сбросить
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Table Canvas */}
-      <div className="flex-1 overflow-auto bg-white dark:bg-slate-900">
+      <div
+        ref={gridContainerRef}
+        tabIndex={0}
+        onKeyDown={handleGridContainerKeyDown}
+        className="flex-1 overflow-auto bg-white dark:bg-slate-900 focus:outline-hidden"
+      >
         {(() => {
           const totalColsWidth =
             34 +
@@ -1115,28 +1727,122 @@ export const DataGrid: React.FC<DataGridProps> = ({
                   </th>
 
                   {/* Dynamic Columns */}
-                  {currentTab.columns.map((column) => {
+                  {currentTab.columns.map((column, colIndex) => {
                     const isSorted = sortColId === column.id;
                     const isRelation = column.type === 'relation';
                     const colWidth = clampColumnWidth(previewWidths[column.id] ?? column.width);
                     const isNarrowHeader = colWidth < NARROW_HEADER_BREAKPOINT;
                     const isRenaming = renamingColId === column.id;
+                    const isDraggingCol = draggingColId === column.id;
+                    const draggedColIdx = draggingColId
+                      ? currentTab.columns.findIndex((c) => c.id === draggingColId)
+                      : -1;
+                    const effectiveColTarget =
+                      colInsertSlot !== null && draggedColIdx !== -1
+                        ? calculateTargetIndexFromInsertSlot(
+                            draggedColIdx,
+                            colInsertSlot,
+                            currentTab.columns.length
+                          )
+                        : null;
+                    const showInsertBefore =
+                      effectiveColTarget !== null && colInsertSlot === colIndex;
+                    const showInsertAfterLast =
+                      effectiveColTarget !== null &&
+                      colIndex === currentTab.columns.length - 1 &&
+                      colInsertSlot === currentTab.columns.length;
+                    const colSelected = isColumnSelected(
+                      gridSelection,
+                      colIndex,
+                      currentTab.columns.length
+                    );
 
                     return (
                       <th
                         key={column.id}
                         data-col-id={column.id}
+                        data-col-selected={colSelected ? 'true' : undefined}
                         style={{ width: colWidth, maxWidth: colWidth }}
-                        className="group/th relative overflow-hidden px-1.5 py-1.5 border-r border-slate-200 dark:border-slate-700/80 cursor-pointer hover:bg-slate-200/70 dark:hover:bg-slate-700/70 transition-colors align-top"
+                        className={`group/th relative overflow-hidden pt-3 pb-1.5 px-1.5 border-r border-slate-200 dark:border-slate-700/80 cursor-pointer transition-colors align-top ${
+                          isDraggingCol
+                            ? 'opacity-60 bg-blue-50/80 dark:bg-blue-950/50'
+                            : colSelected
+                              ? 'bg-blue-100/90 dark:bg-blue-900/50 text-blue-900 dark:text-blue-100 shadow-[inset_0_-2px_0_0_#2563eb]'
+                              : 'hover:bg-slate-200/70 dark:hover:bg-slate-700/70'
+                        }`}
                         onClick={() => {
-                          if (!isRenaming) {
+                          if (!isRenaming && !suppressNextSortClickRef.current) {
                             handleSort(column.id);
                           }
                         }}
                         title={column.name}
                       >
-                        <div className="flex items-start justify-between gap-1 w-full min-w-0 max-w-full pr-1.5 overflow-hidden">
-                          <div className="flex items-start gap-1 min-w-0 flex-1 overflow-hidden">
+                        {showInsertBefore && (
+                          <span
+                            data-testid="col-drop-indicator"
+                            aria-hidden="true"
+                            className="pointer-events-none absolute left-0 top-0 bottom-0 w-[3px] bg-blue-600 dark:bg-blue-400 shadow-[0_0_6px_rgba(37,99,235,0.45)] z-30"
+                          />
+                        )}
+                        {showInsertAfterLast && (
+                          <span
+                            data-testid="col-drop-indicator"
+                            aria-hidden="true"
+                            className="pointer-events-none absolute right-0 top-0 bottom-0 w-[3px] bg-blue-600 dark:bg-blue-400 shadow-[0_0_6px_rgba(37,99,235,0.45)] z-30"
+                          />
+                        )}
+
+                        {/* Dedicated Excel-style whole-column selector bar (does not trigger sort or rename) */}
+                        <button
+                          type="button"
+                          data-testid={`select-column-${column.id}`}
+                          aria-label={`Выделить столбец ${column.name}`}
+                          title={`Выделить весь столбец «${column.name}» (Shift+клик — диапазон столбцов)`}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onDoubleClick={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleSelectColumn(colIndex, e.shiftKey);
+                          }}
+                          className={`absolute top-0 left-0 right-1.5 h-2.5 flex items-center justify-center transition-colors cursor-pointer z-10 focus:outline-hidden focus-visible:ring-1 focus-visible:ring-blue-600 ${
+                            colSelected
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-slate-200/60 dark:bg-slate-700/50 hover:bg-blue-500/80 text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          <span className="w-5 h-0.5 rounded-full bg-current opacity-80" />
+                        </button>
+
+                        <div
+                          className={`flex items-start justify-between ${
+                            isNarrowHeader ? 'gap-0.5 pr-1' : 'gap-1 pr-1.5'
+                          } w-full min-w-0 max-w-full overflow-hidden`}
+                        >
+                          <div
+                            className={`flex items-start ${
+                              isNarrowHeader ? 'gap-0.5' : 'gap-1'
+                            } min-w-0 flex-1 overflow-hidden`}
+                          >
+                            {!isRenaming &&
+                              !isSystemColumnId(column.id) &&
+                              currentTab.columns.length > 1 && (
+                                <button
+                                  type="button"
+                                  data-testid={`drag-column-${column.id}`}
+                                  aria-label={`Переместить столбец ${column.name}`}
+                                  title={`Перетащите за ручку, чтобы изменить порядок столбца «${column.name}»`}
+                                  onMouseDown={(e) => startDragReorderColumn(e, column, colIndex)}
+                                  onClick={(e) => e.stopPropagation()}
+                                  onDoubleClick={(e) => e.stopPropagation()}
+                                  className={`shrink-0 mt-0.5 p-0.5 -ml-0.5 rounded cursor-grab active:cursor-grabbing transition-colors focus:outline-hidden focus-visible:ring-1 focus-visible:ring-blue-600 ${
+                                    isDraggingCol
+                                      ? 'text-blue-600 dark:text-blue-400 bg-blue-100 dark:bg-blue-900/50'
+                                      : 'text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-200/80 dark:hover:bg-slate-700/80 opacity-65 group-hover/th:opacity-100'
+                                  }`}
+                                >
+                                  <GripVertical className="w-3 h-3" />
+                                </button>
+                              )}
                             {isRelation && (
                               <span
                                 title="Связанный столбец с мастер-таблицей"
@@ -1490,7 +2196,7 @@ export const DataGrid: React.FC<DataGridProps> = ({
                         </td>
 
                         {/* Dynamic Cells */}
-                        {currentTab.columns.map((column) => {
+                        {currentTab.columns.map((column, colIndex) => {
                           const value = row[column.id];
                           const isRelation = column.type === 'relation';
                           const isEditing = editingCell?.rowId === row.id && editingCell?.colId === column.id;
@@ -1498,36 +2204,67 @@ export const DataGrid: React.FC<DataGridProps> = ({
                           const relationValid = isRelation ? isRelationValueValid(column, value) : true;
                           const relationOpts = isRelation && isEditing ? getRelationOptions(column, row) : [];
 
+                          const cellFlags = getCellPerimeterFlags(selectionBounds, rowIndex, colIndex);
                           const isAnchoredCell =
+                            !selectionBounds &&
                             activeCellAnchor?.rowId === row.id &&
                             activeCellAnchor?.colId === column.id;
+
+                          const edgeShadows: string[] = [];
+                          if (cellFlags.selected && !isEditing) {
+                            if (cellFlags.top) edgeShadows.push('inset 0 2px 0 0 #2563eb');
+                            if (cellFlags.bottom) edgeShadows.push('inset 0 -2px 0 0 #2563eb');
+                            if (cellFlags.left) edgeShadows.push('inset 2px 0 0 0 #2563eb');
+                            if (cellFlags.right) edgeShadows.push('inset -2px 0 0 0 #2563eb');
+                          }
+
+                          const cellSelectionBg =
+                            cellFlags.selected && !isEditing
+                              ? cellFlags.isAnchor && (selectionBounds?.cellCount ?? 0) > 1
+                                ? 'bg-blue-50/75 dark:bg-blue-950/35'
+                                : 'bg-blue-100/75 dark:bg-blue-900/45'
+                              : isRelation
+                                ? !relationValid
+                                  ? 'bg-amber-50/70 dark:bg-amber-950/30'
+                                  : 'bg-slate-50/40 dark:bg-slate-800/20'
+                                : '';
 
                           return (
                             <td
                               key={column.id}
-                              style={{ width: colWidth, maxWidth: colWidth }}
-                              onClick={() => setAnchorForRowCell(row.id, column)}
-                              className={`overflow-hidden px-2 ${cellPadClass} border-r border-slate-200/60 dark:border-slate-800/80 text-slate-800 dark:text-slate-200 align-top ${
+                              data-row-index={rowIndex}
+                              data-col-index={colIndex}
+                              data-col-id={column.id}
+                              data-cell-selected={cellFlags.selected ? 'true' : undefined}
+                              data-cell-active={cellFlags.isAnchor ? 'true' : undefined}
+                              style={{
+                                width: colWidth,
+                                maxWidth: colWidth,
+                                boxShadow: edgeShadows.length > 0 ? edgeShadows.join(', ') : undefined
+                              }}
+                              onMouseDown={(e) => handleCellMouseDown(e, rowIndex, row, column, colIndex)}
+                              onMouseEnter={() => handleCellMouseEnter(rowIndex, colIndex)}
+                              onDoubleClick={(e) => handleCellDoubleClick(e, row, column)}
+                              className={`overflow-hidden px-2 ${cellPadClass} border-r border-slate-200/60 dark:border-slate-800/80 text-slate-800 dark:text-slate-200 align-top select-none ${
                                 isAnchoredCell && !isEditing ? 'ring-1 ring-inset ring-blue-500/70' : ''
-                              } ${
-                                isRelation
-                                  ? !relationValid
-                                    ? 'bg-amber-50/70 dark:bg-amber-950/30'
-                                    : 'bg-slate-50/40 dark:bg-slate-800/20'
-                                  : ''
-                              }`}
+                              } ${cellSelectionBg}`}
                             >
                               {isRelation ? (
                                 isEditing ? (
                                   <select
                                     autoFocus
                                     value={value ?? ''}
-                                    onChange={(e) => handleRelationCellChange(row, column, e.target.value)}
+                                    onChange={(e) => {
+                                      handleRelationCellChange(row, column, e.target.value);
+                                      focusGridContainer();
+                                    }}
                                     onBlur={() => setEditingCell(null)}
                                     onKeyDown={(e) => {
                                       if (e.key === 'Escape') {
                                         e.preventDefault();
+                                        e.stopPropagation();
                                         setEditingCell(null);
+                                        focusGridContainer();
                                       }
                                     }}
                                     className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-[12px] text-slate-900 dark:text-white focus:outline-hidden"
@@ -1545,38 +2282,300 @@ export const DataGrid: React.FC<DataGridProps> = ({
                                     )}
                                   </select>
                                 ) : (
-                                    <div className="flex items-start gap-1 w-full min-h-[20px]">
+                                  <div className="flex items-start gap-1 w-full min-h-[20px]">
+                                    <div
+                                      className="flex-1 min-w-0 text-left py-0.5 pr-1 flex items-start justify-between gap-1 rounded cursor-cell"
+                                      title={
+                                        !relationValid
+                                          ? `Значение «${String(value)}» не найдено в мастере. Двойной клик / F2 / Enter — выбрать актуальное.`
+                                          : 'Клик — выделить ячейку; двойной клик / F2 / Enter — выбрать значение из мастера'
+                                      }
+                                    >
+                                      <span
+                                        className={`line-clamp-4 whitespace-normal break-words [overflow-wrap:anywhere] leading-[1.35] text-[12px] ${
+                                          !relationValid
+                                            ? 'font-medium text-amber-700 dark:text-amber-300'
+                                            : value
+                                              ? 'font-medium text-slate-800 dark:text-slate-200'
+                                              : 'text-slate-400 italic'
+                                        }`}
+                                      >
+                                        {value ? String(value) : '(выбрать)'}
+                                      </span>
+                                      <ChevronDown className="w-3 h-3 text-slate-400 shrink-0 mt-0.5" />
+                                    </div>
+
+                                    {isLongCellValue(value) && (
                                       <button
                                         type="button"
-                                        onClick={() => {
+                                        data-cell-action="true"
+                                        title="Открыть содержимое ячейки целиком"
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                        onDoubleClick={(e) => e.stopPropagation()}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
                                           setAnchorForRowCell(row.id, column);
-                                          setEditingCell({ rowId: row.id, colId: column.id });
+                                          setCopiedFullCell(false);
+                                          setViewingCell({
+                                            rowId: row.id,
+                                            colId: column.id,
+                                            colName: column.name,
+                                            colType: column.type,
+                                            rowIndex,
+                                            value: String(value ?? '')
+                                          });
                                         }}
-                                        className="flex-1 min-w-0 text-left py-0.5 pr-1 flex items-start justify-between gap-1 rounded hover:bg-blue-50/70 dark:hover:bg-slate-800/70 focus:outline-hidden focus:ring-1 focus:ring-blue-500 transition-colors cursor-pointer"
-                                        title={
-                                          !relationValid
-                                            ? `Значение «${String(value)}» не найдено в мастере. Нажмите для выбора актуального.`
-                                            : 'Нажмите для выбора значения или Ctrl+V для вставки из Excel'
-                                        }
+                                        className="p-0.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded transition-colors shrink-0 mt-0.5 cursor-pointer opacity-70 hover:opacity-100"
                                       >
-                                        <span
-                                          className={`line-clamp-4 whitespace-normal break-words [overflow-wrap:anywhere] leading-[1.35] text-[12px] ${
-                                            !relationValid
-                                              ? 'font-medium text-amber-700 dark:text-amber-300'
-                                              : value
-                                                ? 'font-medium text-slate-800 dark:text-slate-200'
-                                                : 'text-slate-400 italic'
-                                          }`}
-                                        >
-                                          {value ? String(value) : '(выбрать)'}
-                                        </span>
-                                        <ChevronDown className="w-3 h-3 text-slate-400 shrink-0 mt-0.5" />
+                                        <Maximize2 className="w-3 h-3" />
                                       </button>
+                                    )}
 
+                                    <button
+                                      type="button"
+                                      data-cell-action="true"
+                                      title="Перейти к записи в мастер-таблице"
+                                      onMouseDown={(e) => e.stopPropagation()}
+                                      onDoubleClick={(e) => e.stopPropagation()}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onAttemptEditRelation(column, row);
+                                      }}
+                                      className="p-0.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded transition-colors shrink-0 mt-0.5 cursor-pointer opacity-70 hover:opacity-100"
+                                    >
+                                      <ExternalLink className="w-3 h-3" />
+                                    </button>
+                                  </div>
+                                )
+                              ) : isEditing ? (
+                                column.type === 'select' ? (
+                                  <select
+                                    autoFocus
+                                    value={value ?? ''}
+                                    onChange={(e) => {
+                                      onUpdateCell(row.id, column.id, e.target.value);
+                                      setEditingCell(null);
+                                      focusGridContainer();
+                                    }}
+                                    onBlur={() => setEditingCell(null)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Escape') {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        setEditingCell(null);
+                                        focusGridContainer();
+                                      }
+                                    }}
+                                    className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-xs focus:outline-hidden"
+                                  >
+                                    <option value="">(Пусто)</option>
+                                    {(column.options || []).map((opt) => (
+                                      <option key={opt} value={opt}>{opt}</option>
+                                    ))}
+                                  </select>
+                                ) : column.type === 'date' ? (
+                                  <input
+                                    type="date"
+                                    autoFocus
+                                    value={draftValue ?? ''}
+                                    onChange={(e) => setDraftValue(e.target.value)}
+                                    onPaste={(e) => handleCellTextareaPaste(e, row, column)}
+                                    onBlur={() => commitInlineEdit(row.id, column)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        commitInlineEdit(row.id, column, undefined, { restoreFocus: true });
+                                      } else if (e.key === 'Escape') {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        cancelInlineEdit({ restoreFocus: true });
+                                      }
+                                    }}
+                                    className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-xs font-mono tabular-nums focus:outline-hidden"
+                                  />
+                                ) : column.type === 'number' ? (
+                                  <input
+                                    type="number"
+                                    autoFocus
+                                    value={draftValue ?? ''}
+                                    onChange={(e) => setDraftValue(e.target.value)}
+                                    onPaste={(e) => handleCellTextareaPaste(e, row, column)}
+                                    onBlur={() => commitInlineEdit(row.id, column)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        commitInlineEdit(row.id, column, undefined, { restoreFocus: true });
+                                      } else if (e.key === 'Escape') {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        cancelInlineEdit({ restoreFocus: true });
+                                      }
+                                    }}
+                                    className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-xs font-mono tabular-nums focus:outline-hidden"
+                                  />
+                                ) : column.type === 'link' ? (
+                                  <input
+                                    type="text"
+                                    autoFocus
+                                    placeholder="https://..."
+                                    value={draftValue ?? ''}
+                                    onChange={(e) => setDraftValue(e.target.value)}
+                                    onPaste={(e) => handleCellTextareaPaste(e, row, column)}
+                                    onBlur={() => commitInlineEdit(row.id, column)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        commitInlineEdit(row.id, column, undefined, { restoreFocus: true });
+                                      } else if (e.key === 'Escape') {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        cancelInlineEdit({ restoreFocus: true });
+                                      }
+                                    }}
+                                    className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-[12px] text-blue-700 dark:text-blue-300 focus:outline-hidden"
+                                  />
+                                ) : (
+                                  <textarea
+                                    autoFocus
+                                    rows={Math.min(6, Math.max(2, String(draftValue ?? '').split('\n').length))}
+                                    value={draftValue ?? ''}
+                                    onChange={(e) => setDraftValue(e.target.value)}
+                                    onPaste={(e) => handleCellTextareaPaste(e, row, column)}
+                                    onBlur={() => commitInlineEdit(row.id, column)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter' && !e.shiftKey) {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        commitInlineEdit(row.id, column, undefined, { restoreFocus: true });
+                                      } else if (e.key === 'Escape') {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        cancelInlineEdit({ restoreFocus: true });
+                                      }
+                                    }}
+                                    className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-[12px] leading-[1.35] resize-y focus:outline-hidden"
+                                  />
+                                )
+                              ) : column.type === 'boolean' ? (
+                                /* SAFE BOOLEAN CELL: single click selects cell only; double click / F2 / Enter / Space toggles value */
+                                <div
+                                  className="min-h-[20px] py-0.5 flex items-center cursor-cell"
+                                  title="Клик — выделить ячейку; двойной клик / F2 / Enter / Пробел — переключить «Да / Нет»"
+                                >
+                                  <div
+                                    role="switch"
+                                    aria-checked={Boolean(value)}
+                                    className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded border text-[11px] font-semibold transition-colors ${
+                                      value
+                                        ? 'bg-emerald-100/80 border-emerald-300/80 text-emerald-800 dark:bg-emerald-950/60 dark:border-emerald-800 dark:text-emerald-300'
+                                        : 'bg-slate-100 border-slate-200 text-slate-600 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300'
+                                    }`}
+                                  >
+                                    {value ? (
+                                      <CheckSquare className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                    ) : (
+                                      <Square className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                    )}
+                                    <span>{value ? 'Да' : 'Нет'}</span>
+                                  </div>
+                                </div>
+                              ) : column.type === 'link' ? (
+                                /* LINK CELL: single click selects cell; clicking URL opens it; double click / F2 / Enter / pencil edits */
+                                (() => {
+                                  const safeHref = formatSafeHref(value);
+                                  const strVal = value !== undefined && value !== null ? String(value).trim() : '';
+                                  if (!strVal) {
+                                    return (
+                                      <div
+                                        className="min-h-[20px] py-0.5 cursor-cell text-[12px] text-slate-400"
+                                        title="Клик — выделить ячейку; двойной клик / F2 / Enter — ввести ссылку (URL)"
+                                      >
+                                        —
+                                      </div>
+                                    );
+                                  }
+                                  return (
+                                    <div
+                                      className="group/cell flex items-start justify-between gap-1 min-h-[20px] py-0.5 text-[12px] leading-[1.35] cursor-cell"
+                                      title="Клик — выделить ячейку; клик по URL открывает адрес; двойной клик / F2 / Enter или карандаш — редактировать"
+                                    >
+                                      {safeHref ? (
+                                        <a
+                                          href={safeHref}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          onMouseDown={(e) => e.stopPropagation()}
+                                          onDoubleClick={(e) => e.stopPropagation()}
+                                          onClick={(e) => e.stopPropagation()}
+                                          className="inline-flex items-start gap-1 text-blue-600 dark:text-blue-400 hover:underline break-all min-w-0"
+                                          title={`Открыть ссылку: ${safeHref}`}
+                                        >
+                                          <span className="line-clamp-3 break-all">{strVal}</span>
+                                          <ExternalLink className="w-3 h-3 shrink-0 mt-0.5" />
+                                        </a>
+                                      ) : (
+                                        <span className="line-clamp-3 whitespace-normal break-words [overflow-wrap:anywhere] text-slate-700 dark:text-slate-300">
+                                          {strVal}
+                                        </span>
+                                      )}
+                                      <button
+                                        type="button"
+                                        data-cell-action="true"
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                        onDoubleClick={(e) => e.stopPropagation()}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setAnchorForRowCell(row.id, column);
+                                          setGridSelection({
+                                            mode: 'cell',
+                                            anchor: { rowIndex, colIndex },
+                                            focus: { rowIndex, colIndex }
+                                          });
+                                          beginInlineEdit(row, column);
+                                        }}
+                                        className="opacity-0 group-hover/cell:opacity-100 focus:opacity-100 p-0.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded shrink-0 cursor-pointer transition-opacity"
+                                        title="Редактировать ссылку"
+                                        aria-label="Редактировать ссылку"
+                                      >
+                                        <Edit2 className="w-3 h-3" />
+                                      </button>
+                                    </div>
+                                  );
+                                })()
+                              ) : (
+                                /* DISPLAY VALUE (text, number, date, select) */
+                                <div
+                                  className="group/cell relative min-h-[20px] py-0.5 cursor-cell whitespace-normal break-words [overflow-wrap:anywhere] leading-[1.35] text-[12px] flex items-start justify-between gap-1"
+                                  title={
+                                    value
+                                      ? `${String(value)} (клик — выделить, двойной клик / F2 / Enter — изменить, Ctrl+C — копировать)`
+                                      : 'Клик — выделить, двойной клик / F2 / Enter — редактировать, Ctrl+V — вставить из Excel'
+                                  }
+                                >
+                                  {column.type === 'number' ? (
+                                    <span className="font-mono tabular-nums">
+                                      {value !== undefined && value !== null && value !== ''
+                                        ? Number(value).toLocaleString('ru-RU')
+                                        : '—'}
+                                    </span>
+                                  ) : column.type === 'date' ? (
+                                    <span className="font-mono tabular-nums text-slate-700 dark:text-slate-300">
+                                      {value || '—'}
+                                    </span>
+                                  ) : (
+                                    <>
+                                      <span className="line-clamp-4 whitespace-normal break-words [overflow-wrap:anywhere] flex-1 min-w-0">
+                                        {value !== undefined && value !== null && value !== '' ? String(value) : '—'}
+                                      </span>
                                       {isLongCellValue(value) && (
                                         <button
                                           type="button"
-                                          title="Открыть содержимое ячейки целиком"
+                                          data-cell-action="true"
+                                          onMouseDown={(e) => e.stopPropagation()}
+                                          onDoubleClick={(e) => e.stopPropagation()}
                                           onClick={(e) => {
                                             e.stopPropagation();
                                             setAnchorForRowCell(row.id, column);
@@ -1590,258 +2589,19 @@ export const DataGrid: React.FC<DataGridProps> = ({
                                               value: String(value ?? '')
                                             });
                                           }}
-                                          className="p-0.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded transition-colors shrink-0 mt-0.5 cursor-pointer opacity-70 hover:opacity-100"
+                                          className="opacity-60 group-hover/cell:opacity-100 focus:opacity-100 p-0.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 bg-white/80 dark:bg-slate-800/80 rounded shrink-0 cursor-pointer transition-opacity"
+                                          title="Просмотреть содержимое ячейки целиком"
                                         >
                                           <Maximize2 className="w-3 h-3" />
                                         </button>
                                       )}
-
-                                      <button
-                                        type="button"
-                                        title="Перейти к записи в мастер-таблице"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          onAttemptEditRelation(column, row);
-                                        }}
-                                        className="p-0.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded transition-colors shrink-0 mt-0.5 cursor-pointer opacity-70 hover:opacity-100"
-                                      >
-                                        <ExternalLink className="w-3 h-3" />
-                                      </button>
-                                    </div>
-                                  )
-                                ) : isEditing ? (
-                                  column.type === 'select' ? (
-                                    <select
-                                      autoFocus
-                                      value={value ?? ''}
-                                      onChange={(e) => {
-                                        onUpdateCell(row.id, column.id, e.target.value);
-                                        setEditingCell(null);
-                                      }}
-                                      onBlur={() => setEditingCell(null)}
-                                      onKeyDown={(e) => {
-                                        if (e.key === 'Escape') setEditingCell(null);
-                                      }}
-                                      className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-xs focus:outline-hidden"
-                                    >
-                                      <option value="">(Пусто)</option>
-                                      {(column.options || []).map((opt) => (
-                                        <option key={opt} value={opt}>{opt}</option>
-                                      ))}
-                                    </select>
-                                  ) : column.type === 'date' ? (
-                                    <input
-                                      type="date"
-                                      autoFocus
-                                      value={draftValue ?? ''}
-                                      onChange={(e) => setDraftValue(e.target.value)}
-                                      onPaste={(e) => handleCellTextareaPaste(e, row, column)}
-                                      onBlur={() => commitInlineEdit(row.id, column)}
-                                      onKeyDown={(e) => {
-                                        if (e.key === 'Enter') commitInlineEdit(row.id, column);
-                                        if (e.key === 'Escape') cancelInlineEdit();
-                                      }}
-                                      className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-xs font-mono tabular-nums focus:outline-hidden"
-                                    />
-                                  ) : column.type === 'number' ? (
-                                    <input
-                                      type="number"
-                                      autoFocus
-                                      value={draftValue ?? ''}
-                                      onChange={(e) => setDraftValue(e.target.value)}
-                                      onPaste={(e) => handleCellTextareaPaste(e, row, column)}
-                                      onBlur={() => commitInlineEdit(row.id, column)}
-                                      onKeyDown={(e) => {
-                                        if (e.key === 'Enter') commitInlineEdit(row.id, column);
-                                        if (e.key === 'Escape') cancelInlineEdit();
-                                      }}
-                                      className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-xs font-mono tabular-nums focus:outline-hidden"
-                                    />
-                                  ) : column.type === 'link' ? (
-                                    <input
-                                      type="text"
-                                      autoFocus
-                                      placeholder="https://..."
-                                      value={draftValue ?? ''}
-                                      onChange={(e) => setDraftValue(e.target.value)}
-                                      onPaste={(e) => handleCellTextareaPaste(e, row, column)}
-                                      onBlur={() => commitInlineEdit(row.id, column)}
-                                      onKeyDown={(e) => {
-                                        if (e.key === 'Enter') {
-                                          e.preventDefault();
-                                          commitInlineEdit(row.id, column);
-                                        } else if (e.key === 'Escape') {
-                                          e.preventDefault();
-                                          cancelInlineEdit();
-                                        }
-                                      }}
-                                      className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-[12px] text-blue-700 dark:text-blue-300 focus:outline-hidden"
-                                    />
-                                  ) : (
-                                    <textarea
-                                      autoFocus
-                                      rows={Math.min(6, Math.max(2, String(draftValue ?? '').split('\n').length))}
-                                      value={draftValue ?? ''}
-                                      onChange={(e) => setDraftValue(e.target.value)}
-                                      onPaste={(e) => handleCellTextareaPaste(e, row, column)}
-                                      onBlur={() => commitInlineEdit(row.id, column)}
-                                      onKeyDown={(e) => {
-                                        if (e.key === 'Enter' && !e.shiftKey) {
-                                          e.preventDefault();
-                                          commitInlineEdit(row.id, column);
-                                        } else if (e.key === 'Escape') {
-                                          e.preventDefault();
-                                          cancelInlineEdit();
-                                        }
-                                      }}
-                                      className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-[12px] leading-[1.35] resize-y focus:outline-hidden"
-                                    />
-                                  )
-                                ) : column.type === 'boolean' ? (
-                                  /* SAFE BOOLEAN CELL: clicking empty cell only anchors Ctrl+V; only clicking the toggle button switches value */
-                                  <div className="min-h-[20px] py-0.5 flex items-center">
-                                    <button
-                                      type="button"
-                                      role="switch"
-                                      aria-checked={Boolean(value)}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setAnchorForRowCell(row.id, column);
-                                        onUpdateCell(row.id, column.id, !Boolean(value));
-                                      }}
-                                      title="Нажмите на переключатель, чтобы изменить «Да / Нет»"
-                                      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded border text-[11px] font-semibold transition-colors cursor-pointer focus:outline-hidden focus:ring-2 focus:ring-blue-500/40 ${
-                                        value
-                                          ? 'bg-emerald-100/80 border-emerald-300/80 text-emerald-800 hover:bg-emerald-200/70 dark:bg-emerald-950/60 dark:border-emerald-800 dark:text-emerald-300'
-                                          : 'bg-slate-100 border-slate-200 text-slate-600 hover:bg-slate-200/80 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300'
-                                      }`}
-                                    >
-                                      {value ? (
-                                        <CheckSquare className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                                      ) : (
-                                        <Square className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                                      )}
-                                      <span>{value ? 'Да' : 'Нет'}</span>
-                                    </button>
-                                  </div>
-                                ) : column.type === 'link' ? (
-                                  /* LINK CELL: clickable safe URL + explicit edit button */
-                                  (() => {
-                                    const safeHref = formatSafeHref(value);
-                                    const strVal = value !== undefined && value !== null ? String(value).trim() : '';
-                                    if (!strVal) {
-                                      return (
-                                        <div
-                                          onClick={() => {
-                                            setAnchorForRowCell(row.id, column);
-                                            beginInlineEdit(row, column);
-                                          }}
-                                          className="min-h-[20px] py-0.5 cursor-text text-[12px] text-slate-400"
-                                          title="Клик — ввести ссылку (URL)"
-                                        >
-                                          —
-                                        </div>
-                                      );
-                                    }
-                                    return (
-                                      <div
-                                        onClick={() => {
-                                          setAnchorForRowCell(row.id, column);
-                                          beginInlineEdit(row, column);
-                                        }}
-                                        className="group/cell flex items-start justify-between gap-1 min-h-[20px] py-0.5 text-[12px] leading-[1.35] cursor-text"
-                                        title="Клик по ссылке открывает адрес, клик по карандашу или полю — редактировать"
-                                      >
-                                        {safeHref ? (
-                                          <a
-                                            href={safeHref}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            onClick={(e) => e.stopPropagation()}
-                                            className="inline-flex items-start gap-1 text-blue-600 dark:text-blue-400 hover:underline break-all min-w-0"
-                                            title={`Открыть ссылку: ${safeHref}`}
-                                          >
-                                            <span className="line-clamp-3 break-all">{strVal}</span>
-                                            <ExternalLink className="w-3 h-3 shrink-0 mt-0.5" />
-                                          </a>
-                                        ) : (
-                                          <span className="line-clamp-3 whitespace-normal break-words [overflow-wrap:anywhere] text-slate-700 dark:text-slate-300">
-                                            {strVal}
-                                          </span>
-                                        )}
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            setAnchorForRowCell(row.id, column);
-                                            beginInlineEdit(row, column);
-                                          }}
-                                          className="opacity-0 group-hover/cell:opacity-100 focus:opacity-100 p-0.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded shrink-0 cursor-pointer transition-opacity"
-                                          title="Редактировать ссылку"
-                                        >
-                                          <Edit2 className="w-3 h-3" />
-                                        </button>
-                                      </div>
-                                    );
-                                  })()
-                                ) : (
-                                  /* DISPLAY VALUE (text, number, date, select) */
-                                  <div
-                                    onClick={() => {
-                                      setAnchorForRowCell(row.id, column);
-                                      beginInlineEdit(row, column);
-                                    }}
-                                    className="group/cell relative min-h-[20px] py-0.5 cursor-text whitespace-normal break-words [overflow-wrap:anywhere] leading-[1.35] text-[12px] flex items-start justify-between gap-1"
-                                    title={
-                                      value
-                                        ? `${String(value)} (клик — редактировать, Ctrl+V — вставить строки из Excel ниже)`
-                                        : 'Клик — редактировать или Ctrl+V для вставки из Excel'
-                                    }
-                                  >
-                                    {column.type === 'number' ? (
-                                      <span className="font-mono tabular-nums">
-                                        {value !== undefined && value !== null && value !== ''
-                                          ? Number(value).toLocaleString('ru-RU')
-                                          : '—'}
-                                      </span>
-                                    ) : column.type === 'date' ? (
-                                      <span className="font-mono tabular-nums text-slate-700 dark:text-slate-300">
-                                        {value || '—'}
-                                      </span>
-                                    ) : (
-                                      <>
-                                        <span className="line-clamp-4 whitespace-normal break-words [overflow-wrap:anywhere] flex-1 min-w-0">
-                                          {value !== undefined && value !== null && value !== '' ? String(value) : '—'}
-                                        </span>
-                                        {isLongCellValue(value) && (
-                                          <button
-                                            type="button"
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              setAnchorForRowCell(row.id, column);
-                                              setCopiedFullCell(false);
-                                              setViewingCell({
-                                                rowId: row.id,
-                                                colId: column.id,
-                                                colName: column.name,
-                                                colType: column.type,
-                                                rowIndex,
-                                                value: String(value ?? '')
-                                              });
-                                            }}
-                                            className="opacity-60 group-hover/cell:opacity-100 focus:opacity-100 p-0.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 bg-white/80 dark:bg-slate-800/80 rounded shrink-0 cursor-pointer transition-opacity"
-                                            title="Просмотреть содержимое ячейки целиком"
-                                          >
-                                            <Maximize2 className="w-3 h-3" />
-                                          </button>
-                                        )}
-                                      </>
-                                    )}
-                                  </div>
-                                )}
-                              </td>
-                            );
-                          })}
+                                    </>
+                                  )}
+                                </div>
+                              )}
+                            </td>
+                          );
+                        })}
 
                           {/* Quick Add Column spacer */}
                           <td className="w-[34px] border-r border-slate-200/60 dark:border-slate-800/80"></td>

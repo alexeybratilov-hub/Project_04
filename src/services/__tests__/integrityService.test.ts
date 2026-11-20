@@ -448,4 +448,37 @@ describe('integrityService', () => {
     expect(fioImpact.hasDependencies).toBe(true);
     expect(fioImpact.boundTags).toEqual([{ id: 't1', name: '{ФИО}' }]);
   });
+
+  it('T-44: checks detectedTags on DOCX templates in getTagDeleteImpact, getColumnRenameImpact, and getOrphanedTemplateTags', () => {
+    const { tabs, tags } = makeSampleTabs();
+    const docxTemplates: DocumentTemplate[] = [
+      {
+        id: 'tpl_docx',
+        name: 'Готовый DOCX шаблон',
+        tabId: 'tab_master',
+        templateType: 'docx',
+        fileName: 'ready.docx',
+        namingPattern: 'ready.docx',
+        contentTemplate: 'preview text without braces',
+        detectedTags: ['{Должность}', '{Подразделение}', '{Неизвестный_в_DOCX}']
+      }
+    ];
+
+    const deleteImpact = integrityService.getTagDeleteImpact('{Должность}', docxTemplates);
+    expect(deleteImpact.isUsed).toBe(true);
+    expect(deleteImpact.usedInTemplates[0].id).toBe('tpl_docx');
+
+    const renameImpact = integrityService.getColumnRenameImpact(
+      'tab_master',
+      'c_dept',
+      tabs,
+      tags,
+      docxTemplates
+    );
+    expect(renameImpact.affectedTemplatesByColumnTag).toHaveLength(1);
+    expect(renameImpact.affectedTemplatesByColumnTag[0].matchedPlaceholders).toEqual(['{Подразделение}']);
+
+    const orphaned = integrityService.getOrphanedTemplateTags(docxTemplates, tags);
+    expect(orphaned).toContain('{Неизвестный_в_DOCX}');
+  });
 });

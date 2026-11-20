@@ -599,8 +599,11 @@ export const integrityService = {
   getOrphanedTemplateTags(templates: DocumentTemplate[], boundTags: Tag[]): string[] {
     const templateTags = new Set<string>();
     templates.forEach((tpl) => {
-      const matches = tpl.contentTemplate.match(/\{[A-Za-zА-Яа-яЁё0-9_]+\}/g) || [];
+      const matches = (tpl.contentTemplate || '').match(/\{[A-Za-zА-Яа-яЁё0-9_]+\}/g) || [];
       matches.forEach((m) => templateTags.add(m));
+      if (Array.isArray(tpl.detectedTags)) {
+        tpl.detectedTags.forEach((t) => templateTags.add(t));
+      }
     });
 
     const boundNames = new Set(boundTags.map((t) => t.name));
@@ -631,7 +634,8 @@ export const integrityService = {
       .filter(
         (tpl) =>
           (tpl.contentTemplate && tpl.contentTemplate.includes(clean)) ||
-          (tpl.namingPattern && tpl.namingPattern.includes(clean))
+          (tpl.namingPattern && tpl.namingPattern.includes(clean)) ||
+          (Array.isArray(tpl.detectedTags) && tpl.detectedTags.includes(clean))
       )
       .map((tpl) => ({
         id: tpl.id,
@@ -721,7 +725,11 @@ export const integrityService = {
     templates
       .filter((tpl) => !tpl.isArchived)
       .forEach((tpl) => {
-        const haystacks = [tpl.contentTemplate || '', tpl.namingPattern || ''];
+        const haystacks = [
+          tpl.contentTemplate || '',
+          tpl.namingPattern || '',
+          ...(Array.isArray(tpl.detectedTags) ? tpl.detectedTags : [])
+        ];
 
         if (tpl.tabId === tabId && directTagCandidates.length > 0) {
           const matchedPlaceholders = directTagCandidates.filter(
