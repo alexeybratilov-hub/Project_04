@@ -481,4 +481,110 @@ describe('storageService', () => {
       expect(saveSpy).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('T-45: deadline_control backward compatibility and backup normalization', () => {
+    it('loads legacy databases without deadline_control or deadlineSettings identically without mutating existing tabs/rows', () => {
+      const legacySnapshot = JSON.parse(JSON.stringify(INITIAL_DATABASE_STATE));
+      delete legacySnapshot.settings.deadlineSettings;
+
+      const normalized = normalizeDatabaseState(legacySnapshot);
+      expect(normalized.entities).toEqual(legacySnapshot.entities);
+      expect(normalized.tabs).toEqual(legacySnapshot.tabs);
+      expect(normalized.settings.deadlineSettings).toEqual({
+        holidays: [],
+        snoozedNotificationKeys: {},
+        notificationsEnabled: true
+      });
+
+      const backupPreview = inspectDatabaseBackupText(JSON.stringify(legacySnapshot), 'legacy_v130.json');
+      expect(backupPreview.incomingSummary.rowsCount).toBe(
+        summarizeDatabaseState(INITIAL_DATABASE_STATE).rowsCount
+      );
+      expect(backupPreview.warnings).toHaveLength(0);
+    });
+
+    it('normalizes deadline_control columns, cell values, holidays, and snooze entries in backups safely', () => {
+      const futureDate = '2099-01-15';
+      const pastDate = '2020-01-01';
+      const backupWithDeadlines = {
+        version: '1.3.0',
+        entities: [
+          {
+            ...INITIAL_DATABASE_STATE.entities[0],
+            tabs: [
+              {
+                id: 'tab_dl',
+                name: 'Сроки ОТ',
+                columns: [
+                  { id: 'fio', name: 'ФИО', type: 'text' },
+                  {
+                    id: 'dl_col',
+                    name: 'Медосмотр',
+                    type: 'deadline_control',
+                    deadlineConfig: { periodicityValue: 6, periodicityUnit: 'months' }
+                  }
+                ],
+                rows: [
+                  { id: 'r1', fio: 'Иванов', dl_col: '10.05.2026' },
+                  {
+                    id: 'r2',
+                    fio: 'Петров',
+                    dl_col: {
+                      actualDate: '2026-04-01',
+                      manualNextDate: '2026-10-15',
+                      note: '  Уточнить  ',
+                      completed: true
+                    }
+                  },
+                  { id: 'r3', fio: 'Сидоров', dl_col: 'освобождён' }
+                ],
+                attachedDocs: []
+              }
+            ],
+            tags: []
+          }
+        ],
+        settings: {
+          theme: 'light',
+          deadlineSettings: {
+            holidays: ['09.05.2026', '2026-05-01', '2026-05-01', 'invalid-date'],
+            snoozedNotificationKeys: {
+              old_key: pastDate,
+              active_key: futureDate
+            },
+            notificationsEnabled: true
+          }
+        }
+      };
+
+      const preview = inspectDatabaseBackupText(
+        JSON.stringify(backupWithDeadlines),
+        'with_deadlines.json'
+      );
+      expect(preview.warnings).toHaveLength(0);
+      expect(preview.incomingSummary.rowsCount).toBe(3);
+
+      const dlTab = preview.normalizedState.tabs[0];
+      expect(dlTab.columns[1].deadlineConfig).toEqual({
+        periodicityValue: 6,
+        periodicityUnit: 'months',
+        warningValue: 14,
+        warningDayType: 'calendar'
+      });
+      expect(dlTab.rows[0].dl_col).toEqual({ actualDate: '2026-05-10' });
+      expect(dlTab.rows[1].dl_col).toEqual({
+        actualDate: '2026-04-01',
+        manualNextDate: '2026-10-15',
+        note: 'Уточнить'
+      });
+      expect('completed' in dlTab.rows[1].dl_col).toBe(false);
+      expect(dlTab.rows[2].dl_col).toEqual({ _rawOriginal: 'освобождён' });
+
+      expect(preview.normalizedState.settings.deadlineSettings).toEqual({
+        holidays: ['2026-05-01', '2026-05-09'],
+        snoozedNotificationKeys: { active_key: futureDate },
+        notificationsEnabled: true
+      });
+    });
+  });
 });

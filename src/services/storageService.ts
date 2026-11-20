@@ -22,6 +22,11 @@ import {
   StorageMode
 } from './localApiClient';
 import { integrityService } from './integrityService';
+import {
+  normalizeDeadlineAppSettings,
+  normalizeDeadlineCellValue,
+  normalizeDeadlineColumnConfig
+} from './deadlineService';
 
 export const STORAGE_KEY = 'ot_base_database_v1';
 const LEGACY_MIGRATION_DONE_KEY = 'ot_base_migrated_to_native_v1';
@@ -426,6 +431,44 @@ function uidSuffix(): string {
   return `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
+function normalizeTabsDeadlineColumns(tabs: Tab[]): Tab[] {
+  let anyTabChanged = false;
+  const nextTabs = tabs.map((tab) => {
+    const deadlineCols = (tab.columns || []).filter((c) => c.type === 'deadline_control');
+    if (deadlineCols.length === 0) {
+      return tab;
+    }
+    anyTabChanged = true;
+    const nextColumns = tab.columns.map((c) =>
+      c.type === 'deadline_control'
+        ? { ...c, deadlineConfig: normalizeDeadlineColumnConfig(c.deadlineConfig) }
+        : c
+    );
+    const nextRows = (tab.rows || []).map((row) => {
+      let rowChanged = false;
+      const copy: Record<string, any> = { ...row };
+      for (const col of deadlineCols) {
+        const rawCell = row[col.id];
+        if (rawCell === undefined || rawCell === null || rawCell === '') {
+          continue;
+        }
+        const normalizedCell = normalizeDeadlineCellValue(rawCell);
+        if (JSON.stringify(normalizedCell) !== JSON.stringify(rawCell)) {
+          copy[col.id] = normalizedCell;
+          rowChanged = true;
+        }
+      }
+      return rowChanged ? (copy as Tab['rows'][number]) : row;
+    });
+    return {
+      ...tab,
+      columns: nextColumns,
+      rows: nextRows
+    };
+  });
+  return anyTabChanged ? nextTabs : tabs;
+}
+
 export function normalizeDatabaseState(raw: any): DatabaseState {
   if (!raw || typeof raw !== 'object') {
     return INITIAL_DATABASE_STATE;
@@ -456,10 +499,11 @@ export function normalizeDatabaseState(raw: any): DatabaseState {
   let entities: LegalEntity[] = Array.isArray(raw.entities) ? raw.entities : [];
 
   if (entities.length === 0) {
-    const legacyTabs: Tab[] =
+    const legacyTabs: Tab[] = normalizeTabsDeadlineColumns(
       Array.isArray(raw.tabs) && raw.tabs.length > 0
         ? raw.tabs
-        : INITIAL_DATABASE_STATE.tabs;
+        : INITIAL_DATABASE_STATE.tabs
+    );
     collectTabDocs(legacyTabs);
 
     if (sharedNormatives.length === 0) {
@@ -482,11 +526,15 @@ export function normalizeDatabaseState(raw: any): DatabaseState {
     ];
   } else {
     entities = entities.map((ent) => {
-      if (Array.isArray(ent.tabs)) {
-        collectTabDocs(ent.tabs);
+      const normalizedTabs = Array.isArray(ent.tabs)
+        ? normalizeTabsDeadlineColumns(ent.tabs)
+        : ent.tabs;
+      if (Array.isArray(normalizedTabs)) {
+        collectTabDocs(normalizedTabs);
       }
       return {
         ...ent,
+        tabs: normalizedTabs,
         generatedDocs: Array.isArray(ent.generatedDocs) ? ent.generatedDocs : []
       };
     });
@@ -518,7 +566,8 @@ export function normalizeDatabaseState(raw: any): DatabaseState {
       ...(raw.settings || {}),
       tabBarMode: raw.settings?.tabBarMode === 'auto' ? 'auto' : 'single',
       rowDensity: raw.settings?.rowDensity === 'normal' ? 'normal' : 'compact',
-      pageSize: allowedPageSizes.has(rawPageSize) ? rawPageSize : 100
+      pageSize: allowedPageSizes.has(rawPageSize) ? rawPageSize : 100,
+      deadlineSettings: normalizeDeadlineAppSettings(raw.settings?.deadlineSettings)
     }
   };
 }

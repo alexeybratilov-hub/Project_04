@@ -48,10 +48,13 @@
   - `T-37`: надёжность сохранения БД, heartbeat и восстановление соединения (`launcher.c`, `localApiClient.ts`, `storageService.ts`).
   - `T-38`–`T-43`: перенос/изоляция заголовков, Drag-and-Drop файлов в модалках, безопасное inline-переименование столбцов, Excel-like выделение и TSV-копирование, Drag-and-Drop переупорядочивание столбцов и вкладок.
   - **`T-44` + `T-36` (приняты в рамках последнего релиза перед «Контролем сроков»)**: поддержка готовых `.docx`-шаблонов (`docxTemplateService.ts`, каталог тегов, хранение в `./templates/` / `dataBase64`) и подробный отчёт пакетной генерации (`BatchGenerationReportPanel.tsx`) с изоляцией сбоев по строкам.
-- **Текущая фаза — «Контроль сроков» (планирование)**:
-  - Проведено локализованное исследование архитектуры и доработан технический план `DEADLINE_CONTROL_PLAN.md` (разделы А–Ж + «Замечания, учтённые перед согласованием», этапы `T-45`–`T-49`).
-  - Исходный код приложения, структура БД и миграции **не изменялись**; реализация **`T-45` не начиналась**.
-  - Требуется согласование доработанного плана пользователем перед началом разработки.
+- **Текущая фаза — «Контроль сроков» (`T-45` реализовано, ожидает приёмки)**:
+  - По согласованному `DEADLINE_CONTROL_PLAN.md` выполнен **только этап `T-45` (ядро расчётов, статусов, конверсии и совместимости данных)**:
+    - `src/types/database.ts`: добавлен `ColumnType` `'deadline_control'`, `COLUMN_TYPE_LABELS`, `DeadlineColumnConfig`, `DeadlineCellValue` (строго без `completed` и `completedAt`), `DeadlineAppSettings` и опциональные поля `Column.deadlineConfig` и `AppSettings.deadlineSettings`.
+    - `src/services/deadlineService.ts`: реализованы календарные и рабочие расчёты (`days`/`months`/`years`/`0`, концы месяцев и 29 февраля, выходные Сб/Вс + `holidays`, граница просрочки «пятница -> суббота» по календарю), разделение `lastExecution` и 5 статусов (`completed`, `missing_data`, `overdue`, `due_soon`, `scheduled`), приоритет `manualNextDate` и её автоматический сброс при новой `actualDate`, нормализация значений, `formatDeadlineCellDisplay`, агрегация событий по всем `entities[]`, дедупликация/`snooze`, а также чистые функции конверсии типов с превью (`previewConversionToDeadline`, `convertRowsToDeadline`, `previewConversionFromDeadline`, `convertRowsFromDeadline`, `applyColumnTypeConversion` с блокировкой `relation`).
+    - `src/services/storageService.ts`: `normalizeDatabaseState` нормализует `deadlineConfig`, непустые ячейки `deadline_control` и `settings.deadlineSettings` (`holidays`, `snoozedNotificationKeys`), оставляя старые вкладки/строки без `deadline_control` неизменными.
+    - Тесты и проверки `T-45`: `npx vitest run src/services/__tests__/deadlineService.test.ts src/services/__tests__/storageService.test.ts` (**27/27** пройдено: 12 в `deadlineService.test.ts`, 15 в `storageService.test.ts`), `tsc --noEmit` (0 ошибок), `vite build` (успешно).
+  - **Следующий шаг**: после приёмки `T-45` и отдельного разрешения — этап `T-46` (интеграция в `DataGrid`, `dataGridSelection`, `excelService`, `documentGenerator`, `NewTabModal` и `DeadlineCellPopover`). UI, `DataGrid`, Excel и генератор документов на этапе `T-45` не изменялись.
 
 ---
 

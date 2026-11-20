@@ -1,4 +1,12 @@
-export type ColumnType = 'text' | 'number' | 'date' | 'select' | 'boolean' | 'link' | 'relation';
+export type ColumnType =
+  | 'text'
+  | 'number'
+  | 'date'
+  | 'select'
+  | 'boolean'
+  | 'link'
+  | 'relation'
+  | 'deadline_control';
 
 export const COLUMN_TYPE_LABELS: Record<ColumnType, string> = {
   text: 'Текст',
@@ -7,7 +15,8 @@ export const COLUMN_TYPE_LABELS: Record<ColumnType, string> = {
   select: 'Список',
   boolean: 'Да / Нет',
   link: 'Ссылка',
-  relation: 'Связь'
+  relation: 'Связь',
+  deadline_control: 'Контроль сроков'
 };
 
 export function getColumnTypeLabel(type: ColumnType | string): string {
@@ -19,6 +28,23 @@ export interface ColumnRelation {
   masterColumnId: string;
 }
 
+export type DeadlinePeriodicityUnit = 'days' | 'months' | 'years';
+export type DeadlineWarningDayType = 'calendar' | 'working';
+
+export interface DeadlineColumnConfig {
+  periodicityValue: number; // >= 0 (0 = разовый срок без автосдвига)
+  periodicityUnit: DeadlinePeriodicityUnit;
+  warningValue: number; // >= 0 (порог статуса «скоро»)
+  warningDayType: DeadlineWarningDayType;
+}
+
+export interface DeadlineCellValue {
+  actualDate?: string; // ISO YYYY-MM-DD — фактическая дата последнего выполнения
+  manualNextDate?: string; // ISO YYYY-MM-DD — явное ручное переопределение следующей плановой даты
+  note?: string; // краткий комментарий (опционально)
+  _rawOriginal?: string; // исходное строковое значение (при конверсии нераспознанного текста)
+}
+
 export interface Column {
   id: string;
   name: string;
@@ -26,6 +52,7 @@ export interface Column {
   required?: boolean;
   options?: string[]; // for 'select'
   relation?: ColumnRelation;
+  deadlineConfig?: DeadlineColumnConfig; // for 'deadline_control'
   width?: number; // pixel width for column resizer
 }
 
@@ -170,6 +197,12 @@ export interface LegalEntity {
 export type TabBarMode = 'single' | 'auto';
 export type GridRowDensity = 'compact' | 'normal';
 
+export interface DeadlineAppSettings {
+  holidays?: string[]; // пользовательский список нерабочих/праздничных дат YYYY-MM-DD (отсортированный, без дублей)
+  snoozedNotificationKeys?: Record<string, string>; // notificationKey -> hideUntil (YYYY-MM-DD; скрыто пока today < hideUntil)
+  notificationsEnabled?: boolean; // default true
+}
+
 export interface AppSettings {
   databaseDirectory: string;
   portableMode: boolean;
@@ -179,6 +212,7 @@ export interface AppSettings {
   rowDensity?: GridRowDensity;
   pageSize?: number;
   lastBackupDate?: string;
+  deadlineSettings?: DeadlineAppSettings;
 }
 
 export interface DatabaseState {
