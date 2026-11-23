@@ -3,6 +3,7 @@ import {
   Plus, Key, Link2, Check, Table, Trash2, AlertTriangle
 } from 'lucide-react';
 import { Column, ColumnType, getColumnTypeLabel, Tab } from '../types/database';
+import { DEFAULT_DEADLINE_COLUMN_CONFIG } from '../services/deadlineService';
 import { createUniqueId } from '../services/integrityService';
 import {
   AppButton,
@@ -233,7 +234,9 @@ export const NewTabModal: React.FC<NewTabModalProps> = ({
           id: createUniqueId('col'),
           name: ec.name.trim(),
           type: ec.type,
-          width: 180
+          width: ec.type === 'deadline_control' ? 210 : 180,
+          deadlineConfig:
+            ec.type === 'deadline_control' ? { ...DEFAULT_DEADLINE_COLUMN_CONFIG } : undefined
         });
       }
     });
@@ -479,6 +482,7 @@ export const NewTabModal: React.FC<NewTabModalProps> = ({
                   <option value="text">Текст</option>
                   <option value="number">Число</option>
                   <option value="date">Дата</option>
+                  <option value="deadline_control">Контроль сроков</option>
                   <option value="boolean">Да / Нет</option>
                   <option value="link">Ссылка (URL)</option>
                 </AppSelect>

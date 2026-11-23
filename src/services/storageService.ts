@@ -1017,6 +1017,35 @@ export const storageService = {
     };
   },
 
+  async createPreConversionBackup(
+    currentState: DatabaseState
+  ): Promise<{ ok: boolean; backupFileName?: string; message?: string }> {
+    await persistenceChain;
+
+    if (localApiClient.isNative()) {
+      const backupRes = await localApiClient.createDiskBackup();
+      if (!backupRes.ok) {
+        return {
+          ok: false,
+          message:
+            backupRes.message ||
+            'Не удалось создать резервную копию текущей базы перед сменой типа столбца. Операция отменена.'
+        };
+      }
+      return {
+        ok: true,
+        backupFileName: backupRes.fileName
+      };
+    }
+
+    try {
+      localStorage.setItem(PRE_RESTORE_BACKUP_KEY, JSON.stringify(currentState));
+    } catch {
+      // Best-effort pre-conversion snapshot in browser storage
+    }
+    return { ok: true };
+  },
+
   async importDatabaseFromFile(file: File): Promise<DatabaseState> {
     const preview = await storageService.inspectDatabaseBackupFile(file);
     const saveRes = await storageService.saveDatabaseAsync(preview.normalizedState);

@@ -505,4 +505,142 @@ describe('documentGenerator', () => {
     expect(unknownTagReport.errors[0].tagNames).toEqual(['{Несуществующий_тег}']);
     expect(unknownTagReport.errors[0].reason).toContain('Неизвестные теги');
   });
+
+  it('T-46: resolves deadline_control tags in text, DOCX, PDF, and TagCatalog without [object Object] and keeps row identifier parity', async () => {
+    const { strFromU8, strToU8, unzipSync, zipSync } = await import('fflate');
+    const { docxTemplateService } = await import('../docxTemplateService');
+    const { resolveSafeRowIdentifier } = await import('../deadlineService');
+
+    const dlTab: Tab = {
+      id: 't_dl_doc',
+      name: 'Медосмотры',
+      columns: [
+        // Deliberately put deadline_control FIRST to ensure row identifier never picks it
+        {
+          id: 'c_next_med',
+          name: 'Следующий медосмотр',
+          type: 'deadline_control',
+          deadlineConfig: {
+            periodicityValue: 12,
+            periodicityUnit: 'months',
+            warningValue: 14,
+            warningDayType: 'calendar'
+          }
+        },
+        {
+          id: 'c_once',
+          name: 'Вводный инструктаж',
+          type: 'deadline_control',
+          deadlineConfig: {
+            periodicityValue: 0,
+            periodicityUnit: 'months',
+            warningValue: 0,
+            warningDayType: 'calendar'
+          }
+        },
+        { id: 'c_fio', name: 'ФИО', type: 'text' }
+      ],
+      rows: [
+        {
+          id: 'r_auto',
+          c_fio: 'Иванов И. И.',
+          c_next_med: { actualDate: '2025-05-01' },
+          c_once: { actualDate: '2025-01-10' }
+        },
+        {
+          id: 'r_manual',
+          c_fio: 'Петров П. П.',
+          c_next_med: { actualDate: '2025-05-01', manualNextDate: '2026-04-20' },
+          c_once: {}
+        }
+      ],
+      attachedDocs: []
+    };
+
+    const tags: Tag[] = [
+      { id: 'tg_fio', name: '{ФИО}', tabId: 't_dl_doc', columnId: 'c_fio' },
+      { id: 'tg_med', name: '{Дата_следующего_МО}', tabId: 't_dl_doc', columnId: 'c_next_med' }
+    ];
+
+    // 1. Row identifier consistency across deadlineService and documentGenerator
+    const { getRowDisplayIdentifier } = await import('../documentGenerator');
+    expect(getRowDisplayIdentifier(dlTab.rows[0], dlTab, 1)).toBe('Иванов И. И.');
+    expect(getRowDisplayIdentifier(dlTab.rows[0], dlTab, 1)).toBe(
+      resolveSafeRowIdentifier(dlTab.rows[0], dlTab, 1)
+    );
+    const namelessRow: Row = { id: 'r_anon', c_next_med: { actualDate: '2025-05-01' }, c_once: {}, c_fio: '' };
+    expect(getRowDisplayIdentifier(namelessRow, dlTab, 3)).toBe('Строка #3 (r_anon)');
+    expect(getRowDisplayIdentifier(namelessRow, dlTab, 3)).toBe(
+      resolveSafeRowIdentifier(namelessRow, dlTab, 3)
+    );
+
+    // 2. Text template resolution (auto, manual override, one-time completed, and empty {})
+    const resolvedAuto = documentGenerator.resolveTemplateTagsDetailed(
+      'Сотрудник: {ФИО}, МО до {Дата_следующего_МО}, вводный: {Вводный_инструктаж}',
+      dlTab.rows[0],
+      dlTab,
+      [dlTab],
+      tags,
+      TEST_PROFILE
+    );
+    expect(resolvedAuto.text).toBe('Сотрудник: Иванов И. И., МО до 01.05.2026, вводный: 10.01.2025');
+    expect(resolvedAuto.emptyRowTags).toEqual([]);
+
+    const resolvedManualWithEmpty = documentGenerator.resolveTemplateTagsDetailed(
+      'Сотрудник: {ФИО}, МО до {Следующий_медосмотр}, вводный: {Вводный_инструктаж}',
+      dlTab.rows[1],
+      dlTab,
+      [dlTab],
+      tags,
+      TEST_PROFILE
+    );
+    expect(resolvedManualWithEmpty.text).toBe('Сотрудник: Петров П. П., МО до 20.04.2026, вводный: ');
+    expect(resolvedManualWithEmpty.emptyRowTags).toEqual(['{Вводный_инструктаж}']);
+
+    // 3. Native DOCX template substitution & PDF generation
+    const docXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>{ФИО}: следующий МО {Дата_следующего_МО}</w:t></w:r></w:p>
+  </w:body>
+</w:document>`;
+    const docxBuffer = new Uint8Array(
+      zipSync({
+        '[Content_Types].xml': strToU8('<Types/>'),
+        'word/document.xml': strToU8(docXml)
+      })
+    ).buffer;
+
+    const docxOut = documentGenerator.renderDocxFromBuffer(
+      {
+        id: 'tpl_dl',
+        name: 'Направление МО',
+        tabId: 't_dl_doc',
+        templateType: 'docx',
+        fileName: 'mo.docx',
+        namingPattern: 'МО_{ФИО}.docx',
+        contentTemplate: ''
+      },
+      docxBuffer,
+      dlTab.rows[1],
+      dlTab,
+      [dlTab],
+      tags,
+      TEST_PROFILE
+    );
+    const outFiles = unzipSync(new Uint8Array(await docxOut.blob.arrayBuffer()));
+    const renderedXml = strFromU8(outFiles['word/document.xml']);
+    expect(renderedXml).toContain('Петров П. П.: следующий МО 20.04.2026');
+    expect(renderedXml).not.toContain('[object Object]');
+
+    const pdfBlob = await documentGenerator.generatePdf('Направление', resolvedAuto.text);
+    expect(pdfBlob.size).toBeGreaterThan(10_000);
+
+    // 4. TagCatalog must show formatted date examples, never [object Object]
+    const catalog = docxTemplateService.buildTagCatalog(dlTab, [dlTab], tags, TEST_PROFILE, dlTab.rows[0]);
+    const currentTabSection = catalog.find((s) => s.id === 'current_tab')!;
+    const userTagsSection = catalog.find((s) => s.id === 'user_tags')!;
+    expect(currentTabSection.items.find((i) => i.tag === '{Следующий медосмотр}')?.exampleValue).toBe('01.05.2026');
+    expect(userTagsSection.items.find((i) => i.tag === '{Дата_следующего_МО}')?.exampleValue).toBe('01.05.2026');
+  });
 });

@@ -5,19 +5,25 @@ import {
   addCalendarYears,
   applyActualDateUpdate,
   applyColumnTypeConversion,
+  applyScalarColumnTypeConversion,
   buildDeadlineNotificationKey,
   calculateNextDate,
   collectDeadlineEvents,
   convertRowsFromDeadline,
   convertRowsToDeadline,
   createSnoozeMapForNotification,
+  DEADLINE_PERIODICITY_PRESETS,
+  DEADLINE_WARNING_PRESETS,
+  detectPeriodicityPreset,
   diffCalendarDays,
   diffWorkingDays,
   evaluateDeadlineCell,
   filterDeadlineEvents,
   formatDeadlineCellDisplay,
+  formatDeadlineConfigShortSummary,
   getActiveAlertDeadlineEvents,
   isNotificationSnoozed,
+  isStandardWarningPreset,
   markDeadlineCompletedToday,
   normalizeDeadlineAppSettings,
   normalizeDeadlineCellValue,
@@ -25,7 +31,9 @@ import {
   parseFlexibleDateToIso,
   previewConversionFromDeadline,
   previewConversionToDeadline,
-  updateDeadlineCellValue
+  previewScalarConversion,
+  updateDeadlineCellValue,
+  validateDeadlinePeriodicityInput
 } from '../deadlineService';
 import { INITIAL_DATABASE_STATE } from '../../data/initialDatabase';
 import { DatabaseState, Tab } from '../../types/database';
@@ -562,3 +570,130 @@ describe('T-45: deadlineService core calculations, status machine, and conversio
     });
   });
 });
+
+describe('T-47: periodicity/warning presets, compatibility, validation, and scalar conversions', () => {
+  it('maps the 5 standard periodicity presets and keeps 365 days / 12 months / 0 in manual mode', () => {
+    expect(DEADLINE_PERIODICITY_PRESETS.map((p) => p.id)).toEqual([
+      '5y',
+      '3y',
+      '6m',
+      '3m',
+      '1m'
+    ]);
+    expect(detectPeriodicityPreset(5, 'years')).toBe('5y');
+    expect(detectPeriodicityPreset(3, 'years')).toBe('3y');
+    expect(detectPeriodicityPreset(6, 'months')).toBe('6m');
+    expect(detectPeriodicityPreset(3, 'months')).toBe('3m');
+    expect(detectPeriodicityPreset(1, 'months')).toBe('1m');
+
+    // Legacy 365 days must stay manual 365 days (never coerced to 1 year)
+    expect(detectPeriodicityPreset(365, 'days')).toBe('manual');
+    expect(detectPeriodicityPreset(12, 'months')).toBe('manual');
+    expect(detectPeriodicityPreset(0, 'months')).toBe('manual');
+
+    expect(
+      formatDeadlineConfigShortSummary({
+        periodicityValue: 365,
+        periodicityUnit: 'days',
+        warningValue: 14,
+        warningDayType: 'calendar'
+      })
+    ).toBe('Раз в 365 дн. · предупр. за 14 кал. дн.');
+
+    expect(
+      formatDeadlineConfigShortSummary({
+        periodicityValue: 6,
+        periodicityUnit: 'months',
+        warningValue: 180,
+        warningDayType: 'working'
+      })
+    ).toBe('1 раз в полгода · предупр. за 180 раб. дн.');
+  });
+
+  it('validates periodicity integers (>= 0, rejects empty/negative/decimal/too large)', () => {
+    expect(validateDeadlinePeriodicityInput('0')).toEqual({ ok: true, value: 0 });
+    expect(validateDeadlinePeriodicityInput('365')).toEqual({ ok: true, value: 365 });
+    expect(validateDeadlinePeriodicityInput('')).toMatchObject({ ok: false });
+    expect(validateDeadlinePeriodicityInput('-1')).toMatchObject({ ok: false });
+    expect(validateDeadlinePeriodicityInput('1.5')).toMatchObject({ ok: false });
+    expect(validateDeadlinePeriodicityInput('abc')).toMatchObject({ ok: false });
+    expect(validateDeadlinePeriodicityInput('99999')).toMatchObject({ ok: false });
+  });
+
+  it('supports warning presets (180/30/14/7/3), preserves non-standard values, and treats 180 as exact days without shifting nextDate', () => {
+    expect(DEADLINE_WARNING_PRESETS.map((w) => w.value)).toEqual([180, 30, 14, 7, 3]);
+    expect(isStandardWarningPreset(180)).toBe(true);
+    expect(isStandardWarningPreset(14)).toBe(true);
+    expect(isStandardWarningPreset(10)).toBe(false);
+
+    expect(
+      normalizeDeadlineColumnConfig({
+        periodicityValue: 365,
+        periodicityUnit: 'days',
+        warningValue: 10,
+        warningDayType: 'calendar'
+      })
+    ).toEqual({
+      periodicityValue: 365,
+      periodicityUnit: 'days',
+      warningValue: 10,
+      warningDayType: 'calendar'
+    });
+
+    // Half-year warning = strictly 180 calendar days (not 6 calendar months), and does NOT change calculatedNextDate
+    const ev180 = evaluateDeadlineCell(
+      { actualDate: '2025-12-01' },
+      {
+        periodicityValue: 5,
+        periodicityUnit: 'years',
+        warningValue: 180,
+        warningDayType: 'calendar'
+      },
+      { todayIso: '2030-06-05' } // 179 days before 2030-12-01
+    );
+    expect(ev180.calculatedNextDate).toBe('2030-12-01');
+    expect(ev180.effectiveNextDate).toBe('2030-12-01');
+    expect(ev180.calendarDaysRemaining).toBe(179);
+    expect(ev180.status).toBe('due_soon');
+  });
+
+  it('previews and converts scalar columns safely and blocks relation columns', () => {
+    const tab: Tab = {
+      id: 't_scalar',
+      name: 'Журнал',
+      columns: [
+        { id: 'c_txt', name: 'Дата строкой', type: 'text' },
+        { id: 'c_dl', name: 'Срок', type: 'deadline_control', deadlineConfig: { periodicityValue: 6, periodicityUnit: 'months', warningValue: 14, warningDayType: 'calendar' } },
+        { id: 'c_rel', name: 'Должность', type: 'relation', relation: { masterTabId: 'm1', masterColumnId: 'c1' } }
+      ],
+      rows: [
+        { id: 'r1', c_txt: '15.03.2026', c_dl: { actualDate: '2026-01-10', note: 'Ок' } },
+        { id: 'r2', c_txt: 'не дата', c_dl: { _rawOriginal: 'по приказу' } },
+        { id: 'r3', c_txt: '', c_dl: {} }
+      ],
+      attachedDocs: []
+    };
+
+    const preview = previewScalarConversion(tab.rows, 'c_txt', 'text', 'date');
+    expect(preview.totalRows).toBe(3);
+    expect(preview.convertedCount).toBe(1);
+    expect(preview.emptyCount).toBe(1);
+    expect(preview.lostDataCount).toBe(1);
+
+    const converted = applyScalarColumnTypeConversion(tab, 'c_txt', 'date');
+    expect(converted.tab.columns[0].type).toBe('date');
+    expect(converted.tab.rows[0].c_txt).toBe('2026-03-15');
+    expect(converted.tab.rows[1].c_txt).toBe('');
+    // Original tab unaffected
+    expect(tab.rows[0].c_txt).toBe('15.03.2026');
+
+    const dlToSelect = applyColumnTypeConversion(tab, 'c_dl', 'select', { todayIso: '2026-05-01' });
+    expect(dlToSelect.tab.columns[1].type).toBe('select');
+    expect(dlToSelect.tab.columns[1].deadlineConfig).toBeUndefined();
+    expect(dlToSelect.tab.columns[1].options?.length).toBeGreaterThan(0);
+
+    expect(() => applyScalarColumnTypeConversion(tab, 'c_rel', 'text')).toThrow(/relation/i);
+    expect(() => applyScalarColumnTypeConversion(tab, 'c_txt', 'relation')).toThrow(/relation/i);
+  });
+});
+

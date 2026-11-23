@@ -538,6 +538,7 @@ export default function App() {
       if (col.type === 'boolean') newRow[col.id] = false;
       else if (col.type === 'number') newRow[col.id] = 0;
       else if (col.type === 'date') newRow[col.id] = new Date().toISOString().split('T')[0];
+      else if (col.type === 'deadline_control') newRow[col.id] = {};
       else newRow[col.id] = '';
     });
 
@@ -953,7 +954,9 @@ export default function App() {
                 ? false
                 : newCol.type === 'number'
                   ? 0
-                  : ''
+                  : newCol.type === 'deadline_control'
+                    ? {}
+                    : ''
         }));
         return {
           ...t,
@@ -1341,7 +1344,11 @@ export default function App() {
       {/* 2. Menu Bar */}
       <MenuBar
         onSave={() => void handleRetrySave()}
-        onExportExcel={() => excelService.exportTabToXlsx(currentTab, dbState.tabs)}
+        onExportExcel={() =>
+          excelService.exportTabToXlsx(currentTab, dbState.tabs, undefined, {
+            holidays: dbState.settings.deadlineSettings?.holidays
+          })
+        }
         onFullBackup={() => setIsBackupOpen(true)}
         onRestore={() => setIsBackupOpen(true)}
         onOpenPortableModal={() => setIsWindowsPortableOpen(true)}
@@ -1517,7 +1524,11 @@ export default function App() {
           onUpdateRowMulti={handleUpdateRowMulti}
           onDeleteRows={handleDeleteRows}
           onOpenExcelImport={() => setIsExcelImportOpen(true)}
-          onExportExcel={() => excelService.exportTabToXlsx(currentTab, dbState.tabs)}
+          onExportExcel={() =>
+            excelService.exportTabToXlsx(currentTab, dbState.tabs, undefined, {
+              holidays: dbState.settings.deadlineSettings?.holidays
+            })
+          }
           onOpenColumnEditor={() => setIsColumnEditorOpen(true)}
           onOpenNormativeDocs={() => setIsNormativeDocsOpen(true)}
           onOpenTemplates={(ids) => {
@@ -1539,6 +1550,7 @@ export default function App() {
           tags={dbState.tags}
           templates={dbState.templates}
           highlightedRowId={highlightedRowId}
+          holidays={dbState.settings.deadlineSettings?.holidays}
         />
       )}
 
@@ -1683,20 +1695,42 @@ export default function App() {
         currentTab={currentTab}
         allTabs={dbState.tabs}
         tags={dbState.tags}
-        onUpdateColumns={(tabId, newCols) => {
+        holidays={dbState.settings.deadlineSettings?.holidays}
+        onUpdateColumns={async (tabId, newCols, updatedRows, options) => {
+          let backupFileName: string | undefined;
+          if (options?.hasNonEmptyRowConversions) {
+            const backupRes = await storageService.createPreConversionBackup(latestDbRef.current);
+            if (!backupRes.ok) {
+              const errMsg =
+                backupRes.message ||
+                'Не удалось создать резервную копию перед сменой типа столбца. Изменения не применены.';
+              showToast(errMsg, 'error');
+              return { ok: false, error: errMsg };
+            }
+            backupFileName = backupRes.backupFileName;
+          }
+
           updateDbState((p) => {
             const withDefaults = p.tabs.map((t) => {
               if (t.id !== tabId) return t;
-              const updatedRows = t.rows.map((r) => {
+              const baseRows = updatedRows ?? t.rows;
+              const normalizedRows = baseRows.map((r) => {
                 const rowCopy = { ...r };
                 newCols.forEach((col) => {
                   if (rowCopy[col.id] === undefined) {
-                    rowCopy[col.id] = col.type === 'boolean' ? false : col.type === 'number' ? 0 : '';
+                    rowCopy[col.id] =
+                      col.type === 'boolean'
+                        ? false
+                        : col.type === 'number'
+                          ? 0
+                          : col.type === 'deadline_control'
+                            ? {}
+                            : '';
                   }
                 });
                 return rowCopy;
               });
-              return { ...t, columns: newCols, rows: updatedRows };
+              return { ...t, columns: newCols, rows: normalizedRows };
             });
 
             const cleanedTabs = integrityService.cleanReferencesAfterColumnsUpdate(
@@ -1708,6 +1742,13 @@ export default function App() {
 
             return { ...p, tabs: cleanedTabs, tags: cleanedTags };
           });
+
+          if (options?.hasTypeConversions) {
+            const backupNote = backupFileName ? ` (резервная копия: ${backupFileName})` : '';
+            showToast(`Структура и тип столбцов обновлены${backupNote}`, 'success');
+          }
+
+          return { ok: true, backupFileName };
         }}
       />
 

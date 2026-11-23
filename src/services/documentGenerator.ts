@@ -1,7 +1,8 @@
 import { Document, Packer, Paragraph, TextRun, AlignmentType } from 'docx';
 import jsPDF from 'jspdf';
-import { DocumentTemplate, LegalEntityProfile, Row, Tab, Tag } from '../types/database';
+import { Column, DocumentTemplate, LegalEntityProfile, Row, Tab, Tag } from '../types/database';
 import { DEJAVU_SANS_BOLD_B64, DEJAVU_SANS_REGULAR_B64 } from '../data/cyrillicFont';
+import { formatDeadlineCellDisplay, resolveSafeRowIdentifier } from './deadlineService';
 import { localApiClient } from './localApiClient';
 import { BUILT_IN_ENTITY_AND_SYSTEM_TAGS } from './integrityService';
 import {
@@ -83,27 +84,24 @@ function normalizeLookupValue(value: unknown): string {
 }
 
 export function getRowDisplayIdentifier(row: Row, tabRef: Tab, fallbackRowNumber?: number): string {
-  const semanticCol = tabRef.columns.find((c) =>
-    /^(фио|ф\.и\.о|работник|сотрудник|пострадавш|должност|наименован)/i.test(c.name.trim())
-  );
-  const semanticVal = semanticCol ? row[semanticCol.id] : '';
-  const firstColVal = tabRef.columns[0] ? row[tabRef.columns[0].id] : '';
-  const secondColVal = tabRef.columns[1] ? row[tabRef.columns[1].id] : '';
-  const candidate =
-    row.emp_fio ||
-    row.pos_title ||
-    row.fac_name ||
-    row.med_worker ||
-    row.siz_item ||
-    row.inst_worker ||
-    row.inc_victim ||
-    semanticVal ||
-    firstColVal ||
-    secondColVal ||
-    '';
-  const trimmed = String(candidate).trim();
-  if (trimmed) return trimmed;
-  return fallbackRowNumber ? `Строка #${fallbackRowNumber} (${row.id})` : String(row.id || 'Без ID');
+  return resolveSafeRowIdentifier(row, tabRef, fallbackRowNumber);
+}
+
+function formatRowCellForTemplate(
+  rawVal: unknown,
+  col?: Column,
+  options?: { holidays?: string[]; todayIso?: string }
+): string {
+  if (rawVal === undefined || rawVal === null) return '';
+  if (col?.type === 'deadline_control') {
+    return formatDeadlineCellDisplay(rawVal, col.deadlineConfig, {
+      mode: 'next_date',
+      holidays: options?.holidays,
+      todayIso: options?.todayIso
+    });
+  }
+  if (typeof rawVal === 'object') return '';
+  return String(rawVal);
 }
 
 /**
@@ -199,7 +197,8 @@ export function createRowTagResolver(
   currentTab: Tab,
   allTabs: Tab[],
   tags: Tag[],
-  entityProfile?: LegalEntityProfile
+  entityProfile?: LegalEntityProfile,
+  options?: { holidays?: string[]; todayIso?: string }
 ): RowTagContextResolver {
   const lookupCache = new Map<string, MasterRowMatchResult>();
   const issues: TemplateResolutionIssue[] = [];
@@ -213,10 +212,10 @@ export function createRowTagResolver(
     if (!tagMap.has(t.name)) tagMap.set(t.name, t);
   });
 
-  const colTagMap = new Map<string, string>();
+  const colTagMap = new Map<string, Column>();
   currentTab.columns.forEach((col) => {
-    colTagMap.set(`{${col.name}}`, col.id);
-    colTagMap.set(`{${col.name.replace(/\s+/g, '_')}}`, col.id);
+    colTagMap.set(`{${col.name}}`, col);
+    colTagMap.set(`{${col.name.replace(/\s+/g, '_')}}`, col);
   });
 
   const pushIssueOnce = (issue: TemplateResolutionIssue) => {
@@ -234,8 +233,8 @@ export function createRowTagResolver(
     if (boundTag) {
       let value = '';
       if (boundTag.tabId === currentTab.id) {
-        const colExists = currentTab.columns.some((c) => c.id === boundTag.columnId);
-        if (!colExists) {
+        const targetCol = currentTab.columns.find((c) => c.id === boundTag.columnId);
+        if (!targetCol) {
           pushIssueOnce({
             type: 'broken_tag',
             tagName: boundTag.name,
@@ -246,9 +245,7 @@ export function createRowTagResolver(
           });
           return { known: true, value: '' };
         }
-        value = row[boundTag.columnId] !== undefined && row[boundTag.columnId] !== null
-          ? String(row[boundTag.columnId])
-          : '';
+        value = formatRowCellForTemplate(row[boundTag.columnId], targetCol, options);
         if (value.trim() === '') {
           emptyRowTags.add(tagName);
           return { known: true, value: '', isEmptyRowValue: true };
@@ -269,8 +266,8 @@ export function createRowTagResolver(
         return { known: true, value: '' };
       }
 
-      const otherColExists = otherTab.columns.some((c) => c.id === boundTag.columnId);
-      if (!otherColExists) {
+      const otherCol = otherTab.columns.find((c) => c.id === boundTag.columnId);
+      if (!otherCol) {
         pushIssueOnce({
           type: 'broken_tag',
           tagName: boundTag.name,
@@ -289,11 +286,7 @@ export function createRowTagResolver(
       }
 
       if (matchResult.status === 'matched') {
-        value =
-          matchResult.row[boundTag.columnId] !== undefined &&
-          matchResult.row[boundTag.columnId] !== null
-            ? String(matchResult.row[boundTag.columnId])
-            : '';
+        value = formatRowCellForTemplate(matchResult.row[boundTag.columnId], otherCol, options);
         if (value.trim() === '') {
           emptyRowTags.add(tagName);
           return { known: true, value: '', isEmptyRowValue: true };
@@ -339,12 +332,9 @@ export function createRowTagResolver(
     }
 
     // 2. Direct current tab column name tags: {Должность}, {ФИО_работника}
-    const directColId = colTagMap.get(tagName);
-    if (directColId) {
-      const val =
-        row[directColId] !== undefined && row[directColId] !== null
-          ? String(row[directColId])
-          : '';
+    const directCol = colTagMap.get(tagName);
+    if (directCol) {
+      const val = formatRowCellForTemplate(row[directCol.id], directCol, options);
       if (val.trim() === '') {
         emptyRowTags.add(tagName);
         return { known: true, value: '', isEmptyRowValue: true };
@@ -392,9 +382,10 @@ export const documentGenerator = {
     currentTab: Tab,
     allTabs: Tab[],
     tags: Tag[],
-    entityProfile?: LegalEntityProfile
+    entityProfile?: LegalEntityProfile,
+    options?: { holidays?: string[]; todayIso?: string }
   ): DetailedTemplateResolutionResult {
-    const resolver = createRowTagResolver(row, currentTab, allTabs, tags, entityProfile);
+    const resolver = createRowTagResolver(row, currentTab, allTabs, tags, entityProfile, options);
     const resolved = templateContent.replace(PLACEHOLDER_REGEX, (fullMatch, inner) => {
       if (!String(inner).trim()) return fullMatch;
       const outcome = resolver.resolveTag(fullMatch);
@@ -419,7 +410,8 @@ export const documentGenerator = {
     currentTab: Tab,
     allTabs: Tab[],
     tags: Tag[],
-    entityProfile?: LegalEntityProfile
+    entityProfile?: LegalEntityProfile,
+    options?: { holidays?: string[]; todayIso?: string }
   ): TemplateResolutionResult {
     const detailed = documentGenerator.resolveTemplateTagsDetailed(
       templateContent,
@@ -427,7 +419,8 @@ export const documentGenerator = {
       currentTab,
       allTabs,
       tags,
-      entityProfile
+      entityProfile,
+      options
     );
     return { text: detailed.text, issues: detailed.issues };
   },
@@ -441,7 +434,8 @@ export const documentGenerator = {
     currentTab: Tab,
     allTabs: Tab[],
     tags: Tag[],
-    entityProfile?: LegalEntityProfile
+    entityProfile?: LegalEntityProfile,
+    options?: { holidays?: string[]; todayIso?: string }
   ): string {
     return documentGenerator.resolveTemplateTagsWithReport(
       templateContent,
@@ -449,7 +443,8 @@ export const documentGenerator = {
       currentTab,
       allTabs,
       tags,
-      entityProfile
+      entityProfile,
+      options
     ).text;
   },
 
@@ -463,10 +458,19 @@ export const documentGenerator = {
     allTabs: Tab[],
     tags: Tag[],
     extension: 'docx' | 'pdf',
-    entityProfile?: LegalEntityProfile
+    entityProfile?: LegalEntityProfile,
+    options?: { holidays?: string[]; todayIso?: string }
   ): string {
     let base = pattern || 'Документ_{id}.docx';
-    base = documentGenerator.resolveTemplateTags(base, row, currentTab, allTabs, tags, entityProfile);
+    base = documentGenerator.resolveTemplateTags(
+      base,
+      row,
+      currentTab,
+      allTabs,
+      tags,
+      entityProfile,
+      options
+    );
     base = base.replace(/[/\\?%*:|"<>]/g, '_').trim();
     if (!base.toLowerCase().endsWith('.' + extension)) {
       base = base.replace(/\.(docx|pdf)$/i, '') + '.' + extension;
@@ -484,7 +488,8 @@ export const documentGenerator = {
     currentTab: Tab,
     allTabs: Tab[],
     tags: Tag[],
-    entityProfile?: LegalEntityProfile
+    entityProfile?: LegalEntityProfile,
+    options?: { holidays?: string[]; todayIso?: string }
   ): {
     blob: Blob;
     previewText: string;
@@ -495,7 +500,7 @@ export const documentGenerator = {
     emptyProfileTags: string[];
     docxDiagnostics: DocxRenderDiagnostic;
   } {
-    const resolver = createRowTagResolver(row, currentTab, allTabs, tags, entityProfile);
+    const resolver = createRowTagResolver(row, currentTab, allTabs, tags, entityProfile, options);
     const docxRes = docxTemplateService.renderDocxTemplate(docxBuffer, (tagName) =>
       resolver.resolveTag(tagName)
     );
@@ -541,6 +546,8 @@ export const documentGenerator = {
     entityProfile?: LegalEntityProfile;
     docxSourceBuffer?: ArrayBuffer | null;
     failOnEmptyRowTags?: boolean;
+    holidays?: string[];
+    todayIso?: string;
     onSaveDocument: (payload: {
       row: Row;
       fileName: string;
@@ -558,6 +565,8 @@ export const documentGenerator = {
       entityProfile,
       docxSourceBuffer,
       failOnEmptyRowTags = true,
+      holidays,
+      todayIso,
       onSaveDocument,
       delayBetweenRowsMs = 0
     } = options;
@@ -596,7 +605,8 @@ export const documentGenerator = {
             boundTab,
             allTabs,
             tags,
-            entityProfile
+            entityProfile,
+            { holidays, todayIso }
           );
 
           const blockingReasons: string[] = [];
@@ -650,7 +660,10 @@ export const documentGenerator = {
             ]
           });
         } else {
-          const resolver = createRowTagResolver(row, boundTab, allTabs, tags, entityProfile);
+          const resolver = createRowTagResolver(row, boundTab, allTabs, tags, entityProfile, {
+            holidays,
+            todayIso
+          });
           const resolvedBody = template.contentTemplate.replace(
             PLACEHOLDER_REGEX,
             (fullMatch, inner) => {

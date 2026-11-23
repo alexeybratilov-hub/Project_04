@@ -217,4 +217,157 @@ describe('excelService', () => {
     expect(rowDupAnalysis.duplicateWithinFileIndices).toEqual([2]);
     expect(rowDupAnalysis.uniqueIndices).toEqual([1]);
   });
+
+  it('T-46: exports and re-imports deadline_control via real .xlsx without losing actualDate, manualNextDate, note, or _rawOriginal', async () => {
+    const XLSX = await import('xlsx');
+
+    const deadlineTab: Tab = {
+      id: 'tab_dl',
+      name: 'Контроль МО',
+      columns: [
+        { id: 'c_fio', name: 'ФИО', type: 'text' },
+        {
+          id: 'c_med',
+          name: 'Медосмотр',
+          type: 'deadline_control',
+          deadlineConfig: {
+            periodicityValue: 12,
+            periodicityUnit: 'months',
+            warningValue: 14,
+            warningDayType: 'calendar'
+          }
+        },
+        {
+          id: 'c_once',
+          name: 'Вводный инструктаж',
+          type: 'deadline_control',
+          deadlineConfig: {
+            periodicityValue: 0,
+            periodicityUnit: 'months',
+            warningValue: 0,
+            warningDayType: 'calendar'
+          }
+        }
+      ],
+      rows: [
+        {
+          id: 'r1',
+          c_fio: 'Иванов',
+          c_med: { actualDate: '2025-05-01' },
+          c_once: { actualDate: '2025-01-15' }
+        },
+        {
+          id: 'r2',
+          c_fio: 'Петров',
+          c_med: { actualDate: '2025-05-01', manualNextDate: '2026-04-20', note: 'Спецграфик | цех 2' },
+          c_once: {}
+        },
+        {
+          id: 'r3',
+          c_fio: 'Сидоров',
+          c_med: { manualNextDate: '2026-08-01' },
+          c_once: { _rawOriginal: 'май 2025 (уточнить)' }
+        }
+      ],
+      attachedDocs: []
+    };
+
+    const exportedRows = excelService.buildExportRowsForTab(deadlineTab, {
+      todayIso: '2026-04-10'
+    });
+    expect(exportedRows[0]['Медосмотр']).toBe('План: 01.05.2026 (Запланировано) | Факт: 01.05.2025');
+    expect(exportedRows[0]['Вводный инструктаж']).toBe('Выполнено: 15.01.2025');
+    expect(exportedRows[1]['Медосмотр']).toBe(
+      'План: 20.04.2026 (Скоро, ручн.) | Факт: 01.05.2025 | Прим.: Спецграфик | цех 2'
+    );
+    expect(exportedRows[1]['Вводный инструктаж']).toBe('');
+    expect(exportedRows[2]['Медосмотр']).toBe('План: 01.08.2026 (Запланировано, ручн.)');
+    expect(exportedRows[2]['Вводный инструктаж']).toBe('май 2025 (уточнить)');
+    expect(JSON.stringify(exportedRows)).not.toContain('[object Object]');
+
+    // Write real XLSX binary and re-parse with parseFile
+    const ws = XLSX.utils.json_to_sheet(exportedRows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Контроль МО');
+    const xlsxBytes = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+    const file = new File([xlsxBytes], 'roundtrip.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    });
+
+    const parsedSheets = await excelService.parseFile(file);
+    const sheet = parsedSheets['Контроль МО'];
+    expect(sheet).toBeDefined();
+    expect(sheet.rawRows).toHaveLength(3);
+
+    const medCol = deadlineTab.columns[1];
+    const onceCol = deadlineTab.columns[2];
+
+    // Reconstruct DeadlineCellValue using normalizeImportedCellValue
+    expect(excelService.normalizeImportedCellValue(medCol, sheet.rawRows[0]['Медосмотр'])).toEqual({
+      actualDate: '2025-05-01'
+    });
+    expect(excelService.normalizeImportedCellValue(onceCol, sheet.rawRows[0]['Вводный инструктаж'])).toEqual({
+      actualDate: '2025-01-15'
+    });
+    expect(excelService.normalizeImportedCellValue(medCol, sheet.rawRows[1]['Медосмотр'])).toEqual({
+      actualDate: '2025-05-01',
+      manualNextDate: '2026-04-20',
+      note: 'Спецграфик | цех 2'
+    });
+    expect(excelService.normalizeImportedCellValue(onceCol, sheet.rawRows[1]['Вводный инструктаж'])).toEqual({});
+    expect(excelService.normalizeImportedCellValue(medCol, sheet.rawRows[2]['Медосмотр'])).toEqual({
+      manualNextDate: '2026-08-01'
+    });
+    expect(excelService.normalizeImportedCellValue(onceCol, sheet.rawRows[2]['Вводный инструктаж'])).toEqual({
+      _rawOriginal: 'май 2025 (уточнить)'
+    });
+
+    // Duplicate detection must match existing DeadlineCellValue objects against exported strings
+    const dupRes = excelService.analyzeImportDuplicates(
+      sheet.rawRows,
+      { c_fio: 'ФИО', c_med: 'Медосмотр', c_once: 'Вводный инструктаж' },
+      deadlineTab,
+      'existing',
+      sheet.headers
+    );
+    expect(dupRes.duplicateAgainstExistingIndices).toEqual([0, 1, 2]);
+    expect(dupRes.uniqueIndices).toEqual([]);
+  });
+
+  it('T-46: parses plain dates and structured clipboard paste for deadline_control columns', () => {
+    const tabWithDeadline: Tab = {
+      id: 't_dl_paste',
+      name: 'Инструктажи',
+      columns: [
+        { id: 'c_fio', name: 'ФИО', type: 'text' },
+        {
+          id: 'c_dl',
+          name: 'Срок проверки',
+          type: 'deadline_control',
+          deadlineConfig: {
+            periodicityValue: 6,
+            periodicityUnit: 'months',
+            warningValue: 14,
+            warningDayType: 'calendar'
+          }
+        }
+      ],
+      rows: [],
+      attachedDocs: []
+    };
+
+    const pasteRes = excelService.parseInlineClipboardPaste(
+      'ФИО\tСрок проверки\nИванов\t15.04.2025\nПетров\tПлан: 20.11.2026 (Запланировано, ручн.) | Факт: 01.05.2025\nСидоров\tвесна 2026',
+      tabWithDeadline,
+      [tabWithDeadline]
+    );
+    expect(pasteRes.ok).toBe(true);
+    expect(pasteRes.rows).toHaveLength(3);
+    expect(pasteRes.rows[0].c_dl).toEqual({ actualDate: '2025-04-15' });
+    expect(pasteRes.rows[1].c_dl).toEqual({
+      actualDate: '2025-05-01',
+      manualNextDate: '2026-11-20'
+    });
+    expect(pasteRes.rows[2].c_dl).toEqual({ _rawOriginal: 'весна 2026' });
+  });
 });

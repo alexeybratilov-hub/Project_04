@@ -185,4 +185,60 @@ describe('dataGridSelection (T-41)', () => {
     expect(isCopyShortcutEvent({ ctrlKey: true, metaKey: false, altKey: true, key: 'c', code: 'KeyC' })).toBe(false);
     expect(isCopyShortcutEvent({ ctrlKey: false, metaKey: false, key: 'c', code: 'KeyC' })).toBe(false);
   });
+
+  it('T-46: serializes deadline_control cells into human-readable TSV without [object Object]', () => {
+    const cols: Column[] = [
+      { id: 'c_fio', name: 'ФИО', type: 'text' },
+      {
+        id: 'c_med',
+        name: 'Медосмотр',
+        type: 'deadline_control',
+        deadlineConfig: {
+          periodicityValue: 12,
+          periodicityUnit: 'months',
+          warningValue: 14,
+          warningDayType: 'calendar'
+        }
+      },
+      {
+        id: 'c_once',
+        name: 'Вводный инструктаж',
+        type: 'deadline_control',
+        deadlineConfig: {
+          periodicityValue: 0,
+          periodicityUnit: 'months',
+          warningValue: 0,
+          warningDayType: 'calendar'
+        }
+      }
+    ];
+    const rows: Row[] = [
+      {
+        id: 'r1',
+        c_fio: 'Иванов И.И.',
+        c_med: { actualDate: '2025-05-01' },
+        c_once: { actualDate: '2025-01-10' }
+      },
+      {
+        id: 'r2',
+        c_fio: 'Петров П.П.',
+        c_med: { actualDate: '2025-05-01', manualNextDate: '2026-04-20' },
+        c_once: {}
+      }
+    ];
+
+    const built = buildTsvFromSelection(
+      { mode: 'range', anchor: { rowIndex: 0, colIndex: 0 }, focus: { rowIndex: 1, colIndex: 2 } },
+      rows,
+      cols,
+      { todayIso: '2026-04-10' }
+    );
+
+    expect(built).not.toBeNull();
+    expect(built!.tsv).not.toContain('[object Object]');
+    expect(built!.tsv).toContain('План: 01.05.2026 (Запланировано) | Факт: 01.05.2025');
+    expect(built!.tsv).toContain('Выполнено: 10.01.2025');
+    expect(built!.tsv).toContain('План: 20.04.2026 (Скоро, ручн.) | Факт: 01.05.2025');
+    expect(formatCellValueForTsv({}, cols[1])).toBe('');
+  });
 });

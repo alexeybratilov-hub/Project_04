@@ -5,11 +5,24 @@ import {
   ArrowDown, Check, BookOpen, FileText, Cpu,
   Columns, CheckSquare, Square, X, Edit2,
   AlertCircle, ChevronDown, ChevronLeft, ChevronRight, Rows3,
-  Maximize2, Copy, GripVertical
+  Maximize2, Copy, GripVertical, Calendar, AlertTriangle
 } from 'lucide-react';
 import { Column, ColumnType, DocumentTemplate, GridRowDensity, Row, Tab, Tag } from '../types/database';
 import { ImportHintCard } from './ImportHintCard';
 import { AppButton, AppModal, ConfirmDialog, StatusBanner, Z_INDEX } from './ui';
+import {
+  DeadlineAnchorRect,
+  DeadlineCellPopover,
+  getDeadlineStatusToneClasses
+} from './DeadlineCellPopover';
+import {
+  DEFAULT_DEADLINE_COLUMN_CONFIG,
+  DeadlineEvaluation,
+  evaluateDeadlineCell,
+  formatDeadlineCellDisplay,
+  formatIsoToDisplay,
+  normalizeHolidaysList
+} from '../services/deadlineService';
 import { excelService, ValidationDiscrepancy } from '../services/excelService';
 import {
   ColumnRenameImpact,
@@ -41,8 +54,179 @@ export function clampColumnWidth(width?: number): number {
   return Math.max(MIN_COLUMN_WIDTH, Math.min(MAX_COLUMN_WIDTH, Math.round(raw)));
 }
 
+export function createQuickAddColumn(
+  name: string,
+  type: ColumnType,
+  id: string = createUniqueId('col')
+): Column {
+  return {
+    id,
+    name,
+    type,
+    width: type === 'deadline_control' ? 210 : 180,
+    options: type === 'select' ? ['Вариант 1', 'Вариант 2'] : undefined,
+    deadlineConfig:
+      type === 'deadline_control' ? { ...DEFAULT_DEADLINE_COLUMN_CONFIG } : undefined
+  };
+}
+
+export interface DeadlineCellDisplayModel {
+  evaluation: DeadlineEvaluation;
+  primaryText: string;
+  secondaryText: string | null;
+  badgeLabel: string;
+  badgeToneClasses: string;
+  isManual: boolean;
+  isEmpty: boolean;
+  hasRawOriginal: boolean;
+  rawOriginalText?: string;
+  noteText?: string;
+  tooltip: string;
+}
+
+export function getDeadlineCellDisplayModel(
+  rawValue: unknown,
+  column: Column,
+  options?: { todayIso?: string; holidaysSet?: Set<string>; holidays?: string[] }
+): DeadlineCellDisplayModel {
+  const evaluation = evaluateDeadlineCell(rawValue, column.deadlineConfig, options);
+  const nextDisp = formatIsoToDisplay(evaluation.effectiveNextDate);
+  const actualDisp = formatIsoToDisplay(evaluation.actualDate);
+  const isManual = evaluation.nextDateSource === 'manual';
+  const rawOriginalText = evaluation.value._rawOriginal;
+  const hasRawOriginal = Boolean(rawOriginalText);
+  const noteText = evaluation.value.note;
+  const isEmpty = !nextDisp && !actualDisp && !hasRawOriginal && !noteText;
+
+  let primaryText = 'Не задан';
+  if (evaluation.status === 'completed' && actualDisp) {
+    primaryText = actualDisp;
+  } else if (nextDisp) {
+    primaryText = nextDisp;
+  } else if (actualDisp) {
+    primaryText = actualDisp;
+  } else if (hasRawOriginal && rawOriginalText) {
+    primaryText = rawOriginalText;
+  }
+
+  let secondaryText: string | null = null;
+  if (evaluation.status === 'completed') {
+    secondaryText = noteText || 'Разовое мероприятие';
+  } else if (nextDisp && actualDisp) {
+    secondaryText = `Факт: ${actualDisp}`;
+  } else if (nextDisp && !actualDisp) {
+    secondaryText = 'Факт не указан';
+  } else if (hasRawOriginal) {
+    secondaryText = 'Требует уточнения';
+  } else if (noteText) {
+    secondaryText = noteText;
+  }
+
+  const tooltipParts: string[] = [];
+  if (evaluation.status === 'completed' && actualDisp) {
+    tooltipParts.push(`Выполнено ${actualDisp} (разовое)`);
+  } else {
+    if (nextDisp) {
+      tooltipParts.push(`Следующий срок: ${nextDisp} (${isManual ? 'вручную' : 'авто'})`);
+    }
+    if (actualDisp) {
+      tooltipParts.push(`Последнее выполнение: ${actualDisp}`);
+    }
+  }
+  tooltipParts.push(`Статус: ${evaluation.statusLabel}`);
+  if (rawOriginalText) {
+    tooltipParts.push(`Исходный текст: «${rawOriginalText}»`);
+  }
+  if (noteText) {
+    tooltipParts.push(`Примечание: ${noteText}`);
+  }
+  tooltipParts.push('Двойной клик / F2 / Enter — изменить даты');
+
+  return {
+    evaluation,
+    primaryText,
+    secondaryText,
+    badgeLabel: evaluation.statusLabel,
+    badgeToneClasses: getDeadlineStatusToneClasses(evaluation.status),
+    isManual,
+    isEmpty,
+    hasRawOriginal,
+    rawOriginalText,
+    noteText,
+    tooltip: tooltipParts.join(' · ')
+  };
+}
+
+export function getCellSearchableText(
+  val: unknown,
+  column: Column,
+  options?: { todayIso?: string; holidaysSet?: Set<string> }
+): string {
+  if (column.type === 'deadline_control') {
+    const ev = evaluateDeadlineCell(val, column.deadlineConfig, options);
+    const parts = [
+      ev.actualDate,
+      formatIsoToDisplay(ev.actualDate),
+      ev.effectiveNextDate,
+      formatIsoToDisplay(ev.effectiveNextDate),
+      ev.statusLabel,
+      ev.value.note,
+      ev.value._rawOriginal,
+      ev.nextDateSource === 'manual' ? 'ручн вручную' : ''
+    ].filter((part): part is string => Boolean(part));
+    return parts.join(' ').toLowerCase();
+  }
+  if (val === undefined || val === null || typeof val === 'object') return '';
+  return String(val).toLowerCase();
+}
+
+export function compareGridCellValues(
+  valA: unknown,
+  valB: unknown,
+  column: Column | undefined,
+  sortDir: 'asc' | 'desc',
+  options?: { todayIso?: string; holidaysSet?: Set<string> }
+): number {
+  if (column?.type === 'deadline_control') {
+    const evA = evaluateDeadlineCell(valA, column.deadlineConfig, options);
+    const evB = evaluateDeadlineCell(valB, column.deadlineConfig, options);
+    const keyA = evA.effectiveNextDate || evA.actualDate || '';
+    const keyB = evB.effectiveNextDate || evB.actualDate || '';
+    if (keyA === keyB) {
+      const fallbackA = (evA.actualDate || evA.value.note || evA.value._rawOriginal || '').toLowerCase();
+      const fallbackB = (evB.actualDate || evB.value.note || evB.value._rawOriginal || '').toLowerCase();
+      if (fallbackA === fallbackB) return 0;
+      if (!fallbackA) return 1;
+      if (!fallbackB) return -1;
+      return sortDir === 'asc'
+        ? fallbackA < fallbackB
+          ? -1
+          : 1
+        : fallbackA < fallbackB
+          ? 1
+          : -1;
+    }
+    if (!keyA) return 1;
+    if (!keyB) return -1;
+    return sortDir === 'asc' ? (keyA < keyB ? -1 : 1) : keyA < keyB ? 1 : -1;
+  }
+
+  if (valA === valB) return 0;
+  if (valA === undefined || valA === null) return 1;
+  if (valB === undefined || valB === null) return -1;
+
+  if (typeof valA === 'number' && typeof valB === 'number') {
+    return sortDir === 'asc' ? valA - valB : valB - valA;
+  }
+  const strA = typeof valA === 'object' ? '' : String(valA).toLowerCase();
+  const strB = typeof valB === 'object' ? '' : String(valB).toLowerCase();
+  if (strA === strB) return 0;
+  if (strA < strB) return sortDir === 'asc' ? -1 : 1;
+  return sortDir === 'asc' ? 1 : -1;
+}
+
 function isLongCellValue(val: unknown): boolean {
-  if (val === undefined || val === null) return false;
+  if (val === undefined || val === null || typeof val === 'object') return false;
   const s = String(val);
   return s.length > 100 || s.includes('\n');
 }
@@ -98,6 +282,7 @@ interface DataGridProps {
   tags?: Tag[];
   templates?: DocumentTemplate[];
   highlightedRowId?: string | null;
+  holidays?: string[];
 }
 
 interface InlinePasteAnchor {
@@ -154,8 +339,11 @@ export const DataGrid: React.FC<DataGridProps> = ({
   onReorderColumns,
   tags = [],
   templates = [],
-  highlightedRowId
+  highlightedRowId,
+  holidays
 }) => {
+  const holidaysSet = useMemo(() => new Set(normalizeHolidaysList(holidays)), [holidays]);
+
   const [searchQuery, setSearchQuery] = useState('');
   const [internalSelectedIds, setInternalSelectedIds] = useState<Set<string>>(new Set());
   const selectedRowIds = controlledSelectedIds ?? internalSelectedIds;
@@ -173,6 +361,7 @@ export const DataGrid: React.FC<DataGridProps> = ({
 
   // Inline editing state with Esc draft rollback
   const [editingCell, setEditingCell] = useState<{ rowId: string; colId: string } | null>(null);
+  const [deadlinePopoverAnchor, setDeadlinePopoverAnchor] = useState<DeadlineAnchorRect | null>(null);
   const [draftValue, setDraftValue] = useState<any>('');
   const escapeCancelRef = useRef(false);
 
@@ -285,6 +474,7 @@ export const DataGrid: React.FC<DataGridProps> = ({
     setPendingRenameConfirm(null);
     suppressRenameBlurRef.current = false;
     setEditingCell(null);
+    setDeadlinePopoverAnchor(null);
     setViewingCell(null);
     setCopiedFullCell(false);
     setIsQuickAddOpen(false);
@@ -588,18 +778,12 @@ export const DataGrid: React.FC<DataGridProps> = ({
     }
 
     if (onAddColumn) {
-      const newCol: Column = {
-        id: createUniqueId('col'),
-        name: trimmed,
-        type: quickColType,
-        width: 180,
-        options: quickColType === 'select' ? ['Вариант 1', 'Вариант 2'] : undefined
-      };
-      onAddColumn(newCol);
+      onAddColumn(createQuickAddColumn(trimmed, quickColType));
     } else {
       onOpenColumnEditor();
     }
     setQuickColName('');
+    setQuickColType('text');
     setQuickColError('');
     setIsQuickAddOpen(false);
   };
@@ -702,7 +886,17 @@ export const DataGrid: React.FC<DataGridProps> = ({
         const lowerSet = new Set<string>();
 
         tab.rows.forEach((r) => {
-          const s = String(r[col.id] ?? '').trim();
+          const raw = r[col.id];
+          const s = (
+            col.type === 'deadline_control'
+              ? formatDeadlineCellDisplay(raw, col.deadlineConfig, {
+                  mode: 'next_date',
+                  holidaysSet
+                })
+              : typeof raw === 'object' && raw !== null
+                ? ''
+                : String(raw ?? '')
+          ).trim();
           if (!s) return;
           lowerSet.add(s.toLowerCase());
           if (!seen.has(s)) {
@@ -719,7 +913,7 @@ export const DataGrid: React.FC<DataGridProps> = ({
     });
 
     return map;
-  }, [allTabs]);
+  }, [allTabs, holidaysSet]);
 
   // Sibling relation columns sharing the same master table inside currentTab
   const siblingRelationColsByMaster = useMemo(() => {
@@ -741,33 +935,21 @@ export const DataGrid: React.FC<DataGridProps> = ({
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
       rows = rows.filter((row) =>
-        currentTab.columns.some((col) => {
-          const val = row[col.id];
-          return val !== undefined && val !== null && String(val).toLowerCase().includes(q);
-        })
+        currentTab.columns.some((col) =>
+          getCellSearchableText(row[col.id], col, { holidaysSet }).includes(q)
+        )
       );
     }
 
     if (sortColId) {
-      rows = [...rows].sort((a, b) => {
-        const valA = a[sortColId];
-        const valB = b[sortColId];
-        if (valA === valB) return 0;
-        if (valA === undefined || valA === null) return 1;
-        if (valB === undefined || valB === null) return -1;
-
-        if (typeof valA === 'number' && typeof valB === 'number') {
-          return sortDir === 'asc' ? valA - valB : valB - valA;
-        }
-        const strA = String(valA).toLowerCase();
-        const strB = String(valB).toLowerCase();
-        if (strA < strB) return sortDir === 'asc' ? -1 : 1;
-        return sortDir === 'asc' ? 1 : -1;
-      });
+      const sortCol = currentTab.columns.find((c) => c.id === sortColId);
+      rows = [...rows].sort((a, b) =>
+        compareGridCellValues(a[sortColId], b[sortColId], sortCol, sortDir, { holidaysSet })
+      );
     }
 
     return rows;
-  }, [currentTab.rows, currentTab.columns, searchQuery, sortColId, sortDir]);
+  }, [currentTab.rows, currentTab.columns, searchQuery, sortColId, sortDir, holidaysSet]);
 
   // Pagination calculation
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
@@ -862,6 +1044,7 @@ export const DataGrid: React.FC<DataGridProps> = ({
   const cancelInlineEdit = (options?: { restoreFocus?: boolean }) => {
     escapeCancelRef.current = true;
     setEditingCell(null);
+    setDeadlinePopoverAnchor(null);
     if (options?.restoreFocus) focusGridContainer();
   };
 
@@ -911,7 +1094,9 @@ export const DataGrid: React.FC<DataGridProps> = ({
   };
 
   const copySelectionToClipboard = async () => {
-    const built = buildTsvFromSelection(gridSelection, filteredRows, currentTab.columns);
+    const built = buildTsvFromSelection(gridSelection, filteredRows, currentTab.columns, {
+      holidays
+    });
     if (!built) return false;
     const ok = await writeTsvWithFallback(built.tsv);
     if (ok) {
@@ -919,6 +1104,35 @@ export const DataGrid: React.FC<DataGridProps> = ({
     }
     focusGridContainer();
     return ok;
+  };
+
+  const openDeadlinePopover = (
+    row: Row,
+    col: Column,
+    anchorEl?: HTMLElement | null,
+    rowIndex?: number
+  ) => {
+    let targetEl = anchorEl;
+    if (!targetEl && rowIndex !== undefined && gridContainerRef.current) {
+      targetEl = gridContainerRef.current.querySelector<HTMLElement>(
+        `td[data-row-index="${rowIndex}"][data-col-id="${col.id}"]`
+      );
+    }
+    if (targetEl) {
+      const rect = targetEl.getBoundingClientRect();
+      setDeadlinePopoverAnchor({
+        top: rect.top,
+        left: rect.left,
+        bottom: rect.bottom,
+        right: rect.right,
+        width: rect.width,
+        height: rect.height
+      });
+    } else {
+      setDeadlinePopoverAnchor(null);
+    }
+    escapeCancelRef.current = false;
+    setEditingCell({ rowId: row.id, colId: col.id });
   };
 
   const activateCellEditByCoord = (rowIndex: number, colIndex: number) => {
@@ -930,6 +1144,8 @@ export const DataGrid: React.FC<DataGridProps> = ({
       onUpdateCell(row.id, col.id, !Boolean(row[col.id]));
     } else if (col.type === 'relation') {
       setEditingCell({ rowId: row.id, colId: col.id });
+    } else if (col.type === 'deadline_control') {
+      openDeadlinePopover(row, col, null, rowIndex);
     } else {
       beginInlineEdit(row, col);
     }
@@ -998,6 +1214,8 @@ export const DataGrid: React.FC<DataGridProps> = ({
       onUpdateCell(row.id, column.id, !Boolean(row[column.id]));
     } else if (column.type === 'relation') {
       setEditingCell({ rowId: row.id, colId: column.id });
+    } else if (column.type === 'deadline_control') {
+      openDeadlinePopover(row, column, e.currentTarget as HTMLElement);
     } else {
       beginInlineEdit(row, column);
     }
@@ -1032,6 +1250,7 @@ export const DataGrid: React.FC<DataGridProps> = ({
     gridSelection: GridSelection | null;
     filteredRows: Row[];
     columns: Column[];
+    holidays?: string[];
     editingCell: { rowId: string; colId: string } | null;
     renamingColId: string | null;
     viewingCell: ViewingCellState | null;
@@ -1041,6 +1260,7 @@ export const DataGrid: React.FC<DataGridProps> = ({
     gridSelection,
     filteredRows,
     columns: currentTab.columns,
+    holidays,
     editingCell,
     renamingColId,
     viewingCell,
@@ -1051,6 +1271,7 @@ export const DataGrid: React.FC<DataGridProps> = ({
     gridSelection,
     filteredRows,
     columns: currentTab.columns,
+    holidays,
     editingCell,
     renamingColId,
     viewingCell,
@@ -1078,7 +1299,9 @@ export const DataGrid: React.FC<DataGridProps> = ({
     const handleNativeCopy = (e: ClipboardEvent) => {
       if (!canCopyFromGrid(e.target)) return;
       const state = copyBridgeRef.current;
-      const built = buildTsvFromSelection(state.gridSelection, state.filteredRows, state.columns);
+      const built = buildTsvFromSelection(state.gridSelection, state.filteredRows, state.columns, {
+        holidays: state.holidays
+      });
       if (!built) return;
       e.preventDefault();
       e.clipboardData?.setData('text/plain', built.tsv);
@@ -1090,7 +1313,9 @@ export const DataGrid: React.FC<DataGridProps> = ({
       if (!isCopyShortcutEvent(e)) return;
       if (!canCopyFromGrid(e.target)) return;
       const state = copyBridgeRef.current;
-      const built = buildTsvFromSelection(state.gridSelection, state.filteredRows, state.columns);
+      const built = buildTsvFromSelection(state.gridSelection, state.filteredRows, state.columns, {
+        holidays: state.holidays
+      });
       if (!built) return;
       const triggerTs = performance.now();
       window.setTimeout(() => {
@@ -2013,6 +2238,7 @@ export const DataGrid: React.FC<DataGridProps> = ({
                               <option value="text">Текст</option>
                               <option value="number">Число</option>
                               <option value="date">Дата</option>
+                              <option value="deadline_control">Контроль сроков</option>
                               <option value="select">Выпадающий список</option>
                               <option value="boolean">Да / Нет (флаг)</option>
                               <option value="link">Ссылка (URL)</option>
@@ -2347,6 +2573,90 @@ export const DataGrid: React.FC<DataGridProps> = ({
                                     </button>
                                   </div>
                                 )
+                              ) : column.type === 'deadline_control' ? (
+                                (() => {
+                                  const model = getDeadlineCellDisplayModel(value, column, {
+                                    holidaysSet
+                                  });
+                                  return (
+                                    <div
+                                      className={`group/cell min-h-[20px] py-0.5 cursor-cell space-y-0.5 ${
+                                        isEditing ? 'rounded bg-blue-50/70 dark:bg-blue-950/40 px-1 -mx-1' : ''
+                                      }`}
+                                      title={model.tooltip}
+                                    >
+                                      <div className="flex flex-wrap items-center justify-between gap-1">
+                                        <div className="flex items-center gap-1 min-w-0">
+                                          {model.hasRawOriginal && (
+                                            <AlertTriangle
+                                              className="w-3 h-3 text-amber-500 shrink-0"
+                                              aria-hidden="true"
+                                            />
+                                          )}
+                                          <span
+                                            className={`text-[12px] truncate ${
+                                              model.isEmpty
+                                                ? 'text-slate-400 italic'
+                                                : model.hasRawOriginal && !model.evaluation.effectiveNextDate && !model.evaluation.actualDate
+                                                  ? 'text-amber-700 dark:text-amber-300 font-medium'
+                                                  : 'font-mono tabular-nums font-medium text-slate-900 dark:text-slate-100'
+                                            }`}
+                                          >
+                                            {model.primaryText}
+                                          </span>
+                                          {model.isManual && (
+                                            <span
+                                              className="px-1 py-0 rounded bg-amber-100/80 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 text-[9.5px] font-medium shrink-0"
+                                              title="Следующая дата задана вручную"
+                                            >
+                                              ручн.
+                                            </span>
+                                          )}
+                                        </div>
+
+                                        <div className="flex items-center gap-1 shrink-0">
+                                          <span
+                                            className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold leading-none whitespace-nowrap ${model.badgeToneClasses}`}
+                                          >
+                                            {model.badgeLabel}
+                                          </span>
+                                          <button
+                                            type="button"
+                                            data-cell-action="true"
+                                            onMouseDown={(e) => e.stopPropagation()}
+                                            onDoubleClick={(e) => e.stopPropagation()}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setAnchorForRowCell(row.id, column);
+                                              setGridSelection({
+                                                mode: 'cell',
+                                                anchor: { rowIndex, colIndex },
+                                                focus: { rowIndex, colIndex }
+                                              });
+                                              openDeadlinePopover(
+                                                row,
+                                                column,
+                                                e.currentTarget.closest('td'),
+                                                rowIndex
+                                              );
+                                            }}
+                                            className="opacity-0 group-hover/cell:opacity-100 focus:opacity-100 p-0.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded cursor-pointer transition-opacity"
+                                            title="Редактировать фактическую и плановую даты"
+                                            aria-label="Редактировать срок"
+                                          >
+                                            <Calendar className="w-3 h-3" />
+                                          </button>
+                                        </div>
+                                      </div>
+
+                                      {model.secondaryText && (
+                                        <div className="text-[10.5px] text-slate-500 dark:text-slate-400 truncate leading-tight">
+                                          {model.secondaryText}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })()
                               ) : isEditing ? (
                                 column.type === 'select' ? (
                                   <select
@@ -2888,7 +3198,9 @@ export const DataGrid: React.FC<DataGridProps> = ({
             </AppButton>
 
             <div className="flex items-center gap-2">
-              {viewingCell && viewingCell.colType !== 'relation' && (
+              {viewingCell &&
+                viewingCell.colType !== 'relation' &&
+                viewingCell.colType !== 'deadline_control' && (
                 <AppButton
                   variant="secondary"
                   size="sm"
@@ -2918,6 +3230,41 @@ export const DataGrid: React.FC<DataGridProps> = ({
           </div>
         </div>
       </AppModal>
+
+      {/* DEADLINE CONTROL POPOVER EDITOR */}
+      {(() => {
+        if (!editingCell) return null;
+        const targetCol = currentTab.columns.find(
+          (c) => c.id === editingCell.colId && c.type === 'deadline_control'
+        );
+        if (!targetCol) return null;
+        const targetRow = currentTab.rows.find((r) => r.id === editingCell.rowId);
+        if (!targetRow) return null;
+
+        return (
+          <DeadlineCellPopover
+            column={targetCol}
+            initialValue={targetRow[targetCol.id]}
+            anchorRect={deadlinePopoverAnchor}
+            holidays={holidays}
+            onSave={(nextValue, opts) => {
+              onUpdateCell(targetRow.id, targetCol.id, nextValue);
+              setEditingCell(null);
+              setDeadlinePopoverAnchor(null);
+              if (opts?.restoreFocus) {
+                focusGridContainer();
+              }
+            }}
+            onCancel={(opts) => {
+              setEditingCell(null);
+              setDeadlinePopoverAnchor(null);
+              if (opts?.restoreFocus) {
+                focusGridContainer();
+              }
+            }}
+          />
+        );
+      })()}
     </div>
   );
 };

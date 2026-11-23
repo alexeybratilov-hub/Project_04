@@ -586,5 +586,35 @@ describe('storageService', () => {
         notificationsEnabled: true
       });
     });
+
+    it('creates pre-conversion backup in web-preview and aborts safely when native disk backup fails', async () => {
+      const store = new Map<string, string>();
+      vi.stubGlobal('localStorage', {
+        getItem: (k: string) => store.get(k) ?? null,
+        setItem: (k: string, v: string) => store.set(k, v),
+        removeItem: (k: string) => store.delete(k)
+      });
+
+      const isNativeSpy = vi.spyOn(localApiClient, 'isNative').mockReturnValue(false);
+      const webRes = await storageService.createPreConversionBackup(INITIAL_DATABASE_STATE);
+      expect(webRes.ok).toBe(true);
+      expect(store.get(PRE_RESTORE_BACKUP_KEY)).toBeTruthy();
+
+      isNativeSpy.mockReturnValue(true);
+      const diskBackupSpy = vi
+        .spyOn(localApiClient, 'createDiskBackup')
+        .mockResolvedValue({ ok: false, message: 'USB отключён' });
+      const failRes = await storageService.createPreConversionBackup(INITIAL_DATABASE_STATE);
+      expect(failRes.ok).toBe(false);
+      expect(failRes.message).toContain('USB');
+
+      diskBackupSpy.mockResolvedValue({ ok: true, fileName: 'ot_db_prev.json' });
+      const okNativeRes = await storageService.createPreConversionBackup(INITIAL_DATABASE_STATE);
+      expect(okNativeRes).toEqual({ ok: true, backupFileName: 'ot_db_prev.json' });
+
+      isNativeSpy.mockRestore();
+      diskBackupSpy.mockRestore();
+      vi.unstubAllGlobals();
+    });
   });
 });

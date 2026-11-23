@@ -207,7 +207,10 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
         const rowObj: Record<string, any> = { id: createUniqueId('row_imp') };
         currentTab.columns.forEach((col) => {
           const fileHeader = columnMapping[col.id];
-          rowObj[col.id] = fileHeader ? fileRow[fileHeader] : '';
+          rowObj[col.id] = excelService.normalizeImportedCellValue(
+            col,
+            fileHeader ? fileRow[fileHeader] : undefined
+          );
         });
         return rowObj;
       });

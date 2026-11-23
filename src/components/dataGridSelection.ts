@@ -1,4 +1,5 @@
 import { Column, Row } from '../types/database';
+import { formatDeadlineCellDisplay } from '../services/deadlineService';
 
 export interface CellCoord {
   rowIndex: number;
@@ -139,11 +140,25 @@ export function getCellPerimeterFlags(
   };
 }
 
-export function formatCellValueForTsv(value: unknown, column: Column): string {
+export function formatCellValueForTsv(
+  value: unknown,
+  column: Column,
+  options?: { holidays?: string[]; todayIso?: string }
+): string {
   if (column.type === 'boolean') {
     return value ? 'Да' : 'Нет';
   }
+  if (column.type === 'deadline_control') {
+    return formatDeadlineCellDisplay(value, column.deadlineConfig, {
+      mode: 'tsv',
+      holidays: options?.holidays,
+      todayIso: options?.todayIso
+    });
+  }
   if (value === undefined || value === null) {
+    return '';
+  }
+  if (typeof value === 'object') {
     return '';
   }
   return String(value);
@@ -159,7 +174,8 @@ export function escapeTsvCell(raw: string): string {
 export function buildTsvFromSelection(
   selection: GridSelection | null,
   rows: Row[],
-  columns: Column[]
+  columns: Column[],
+  options?: { holidays?: string[]; todayIso?: string }
 ): { tsv: string; rowCount: number; colCount: number; cellCount: number } | null {
   const bounds = getSelectionBounds(selection, rows.length, columns.length);
   if (!bounds) return null;
@@ -172,7 +188,7 @@ export function buildTsvFromSelection(
     for (let c = bounds.minCol; c <= bounds.maxCol; c++) {
       const col = columns[c];
       if (!col) continue;
-      cells.push(escapeTsvCell(formatCellValueForTsv(row[col.id], col)));
+      cells.push(escapeTsvCell(formatCellValueForTsv(row[col.id], col, options)));
     }
     lines.push(cells.join('\t'));
   }

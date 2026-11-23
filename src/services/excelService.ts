@@ -1,5 +1,9 @@
 import * as XLSX from 'xlsx';
 import { Column, ColumnType, Tab } from '../types/database';
+import {
+  formatDeadlineCellForExcel,
+  parseDeadlineCellFromExcel
+} from './deadlineService';
 
 export interface ParsedExcelSheet {
   headers: string[];
@@ -33,7 +37,24 @@ function tokenizeHeader(value: string): string[] {
     .filter(Boolean);
 }
 
-function normalizeCellForDupCheck(val: any): string {
+function normalizeCellForDupCheck(val: any, col?: Column): string {
+  if (col?.type === 'deadline_control') {
+    const parsed = parseDeadlineCellFromExcel(val);
+    if (
+      !parsed.actualDate &&
+      !parsed.manualNextDate &&
+      !parsed.note &&
+      !parsed._rawOriginal
+    ) {
+      return '';
+    }
+    return JSON.stringify([
+      parsed.actualDate || '',
+      parsed.manualNextDate || '',
+      parsed.note || '',
+      parsed._rawOriginal || ''
+    ]);
+  }
   return String(val ?? '')
     .trim()
     .toLowerCase()
@@ -244,11 +265,11 @@ export const excelService = {
       });
     }
 
-    const activePairs: Array<{ existingKey: string; incomingKey: string }> =
+    const activePairs: Array<{ existingKey: string; incomingKey: string; col?: Column }> =
       mode === 'existing'
         ? targetTab.columns
             .filter((col) => Boolean(columnMapping[col.id]))
-            .map((col) => ({ existingKey: col.id, incomingKey: columnMapping[col.id] }))
+            .map((col) => ({ existingKey: col.id, incomingKey: columnMapping[col.id], col }))
         : fileHeaders.map((h) => ({ existingKey: h, incomingKey: h }));
 
     if (activePairs.length === 0) {
@@ -263,7 +284,7 @@ export const excelService = {
     const existingSignatures = new Set<string>();
     if (mode === 'existing') {
       targetTab.rows.forEach((row) => {
-        const parts = activePairs.map((p) => normalizeCellForDupCheck(row[p.existingKey]));
+        const parts = activePairs.map((p) => normalizeCellForDupCheck(row[p.existingKey], p.col));
         if (parts.some((p) => p !== '')) {
           existingSignatures.add(parts.join('\u0001'));
         }
@@ -276,7 +297,7 @@ export const excelService = {
     const uniqueIndices: number[] = [];
 
     rawRows.forEach((row, idx) => {
-      const parts = activePairs.map((p) => normalizeCellForDupCheck(row[p.incomingKey]));
+      const parts = activePairs.map((p) => normalizeCellForDupCheck(row[p.incomingKey], p.col));
       if (!parts.some((p) => p !== '')) {
         uniqueIndices.push(idx);
         return;
@@ -476,22 +497,51 @@ export const excelService = {
   },
 
   /**
-   * Export tab to XLSX
+   * Normalize raw imported Excel value according to target column type
    */
-  exportTabToXlsx(tab: Tab, _allTabs: Tab[], fileName?: string): void {
-    const finalFileName = fileName || `${tab.name.replace(/[/\\?%*:|"<>]/g, '_')}_${new Date().toISOString().split('T')[0]}.xlsx`;
+  normalizeImportedCellValue(col: Column, rawVal: unknown): any {
+    if (col.type === 'deadline_control') {
+      return parseDeadlineCellFromExcel(rawVal);
+    }
+    return rawVal ?? '';
+  },
 
-    const exportData = tab.rows.map((row) => {
+  /**
+   * Build plain export objects for XLSX sheet generation (handles boolean & deadline_control without [object Object])
+   */
+  buildExportRowsForTab(
+    tab: Tab,
+    options?: { holidays?: string[]; todayIso?: string }
+  ): Record<string, any>[] {
+    return tab.rows.map((row) => {
       const obj: Record<string, any> = {};
       tab.columns.forEach((col) => {
         let val = row[col.id];
         if (col.type === 'boolean') {
           val = val ? 'Да' : 'Нет';
+        } else if (col.type === 'deadline_control') {
+          val = formatDeadlineCellForExcel(val, col.deadlineConfig, options);
         }
         obj[col.name] = val ?? '';
       });
       return obj;
     });
+  },
+
+  /**
+   * Export tab to XLSX
+   */
+  exportTabToXlsx(
+    tab: Tab,
+    _allTabs: Tab[],
+    fileName?: string,
+    options?: { holidays?: string[]; todayIso?: string }
+  ): void {
+    const finalFileName =
+      fileName ||
+      `${tab.name.replace(/[/\\?%*:|"<>]/g, '_')}_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+    const exportData = excelService.buildExportRowsForTab(tab, options);
 
     const worksheet = XLSX.utils.json_to_sheet(exportData);
     const workbook = XLSX.utils.book_new();
@@ -732,7 +782,14 @@ export const excelService = {
       targetTab.columns.forEach((col) => {
         const mappedKey = columnMapping[col.id];
         if (!mappedKey) {
-          r[col.id] = col.type === 'boolean' ? false : col.type === 'number' ? 0 : '';
+          r[col.id] =
+            col.type === 'boolean'
+              ? false
+              : col.type === 'number'
+                ? 0
+                : col.type === 'deadline_control'
+                  ? {}
+                  : '';
           return;
         }
         let val: any = fileRow[mappedKey] ?? '';
@@ -748,6 +805,8 @@ export const excelService = {
           if (ruDateMatch) {
             val = `${ruDateMatch[3]}-${ruDateMatch[2]}-${ruDateMatch[1]}`;
           }
+        } else if (col.type === 'deadline_control') {
+          val = parseDeadlineCellFromExcel(val);
         }
         r[col.id] = val ?? '';
       });

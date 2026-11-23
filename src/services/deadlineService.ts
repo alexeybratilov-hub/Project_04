@@ -746,6 +746,194 @@ export function formatDeadlineCellDisplay(
   return '';
 }
 
+/**
+ * Lossless single-column Excel serialization for `deadline_control` cells.
+ * Preserves actualDate, effectiveNextDate (distinguishing manual vs auto), note, and _rawOriginal:
+ * - Empty -> ''
+ * - Periodic with auto plan -> "План: ДД.ММ.ГГГГ (<Статус>) | Факт: ДД.ММ.ГГГГ"
+ * - With manualNextDate -> "План: ДД.ММ.ГГГГ (<Статус>, ручн.) [| Факт: ДД.ММ.ГГГГ]"
+ * - One-time completed -> "Выполнено: ДД.ММ.ГГГГ"
+ * - Optional suffixes: " | Исх.: <_rawOriginal>" (when dates/note also present) and " | Прим.: <note>" (always last)
+ */
+export function formatDeadlineCellForExcel(
+  rawValue: unknown,
+  rawConfig?: Partial<DeadlineColumnConfig> | null,
+  options?: DeadlineEvaluateOptions
+): string {
+  const ev = evaluateDeadlineCell(rawValue, rawConfig, options);
+  if (!hasAnyDeadlineCellContent(ev.value)) {
+    return '';
+  }
+
+  const nextDisp = formatIsoToDisplay(ev.effectiveNextDate);
+  const actualDisp = formatIsoToDisplay(ev.actualDate);
+  const parts: string[] = [];
+
+  if (ev.status === 'completed' && actualDisp) {
+    parts.push(`Выполнено: ${actualDisp}`);
+  } else {
+    if (nextDisp) {
+      const manualTag = ev.nextDateSource === 'manual' ? ', ручн.' : '';
+      parts.push(`План: ${nextDisp} (${ev.statusLabel}${manualTag})`);
+    }
+    if (actualDisp) {
+      parts.push(`Факт: ${actualDisp}`);
+    }
+  }
+
+  const hasDateParts = parts.length > 0;
+  if (ev.value._rawOriginal) {
+    if (!hasDateParts && !ev.value.note) {
+      return ev.value._rawOriginal;
+    }
+    parts.push(`Исх.: ${ev.value._rawOriginal}`);
+  }
+
+  if (ev.value.note) {
+    parts.push(`Прим.: ${ev.value.note}`);
+  }
+
+  return parts.join(' | ');
+}
+
+const KNOWN_STATUS_MARKERS = [
+  'просрочено',
+  'скоро',
+  'запланировано',
+  'выполнено',
+  'данные отсутствуют'
+];
+
+/**
+ * Parses Excel/clipboard cell input for a `deadline_control` column back into DeadlineCellValue
+ * without losing `actualDate`, `manualNextDate`, `note`, or `_rawOriginal`.
+ */
+export function parseDeadlineCellFromExcel(raw: unknown): DeadlineCellValue {
+  if (raw === null || raw === undefined) return {};
+
+  if (isDeadlineCellObject(raw)) {
+    return normalizeDeadlineCellValue(raw);
+  }
+
+  if (raw instanceof Date || typeof raw === 'number') {
+    const parsed = parseFlexibleDateToIso(raw);
+    return parsed ? { actualDate: parsed } : { _rawOriginal: String(raw) };
+  }
+
+  if (typeof raw !== 'string') {
+    return { _rawOriginal: String(raw) };
+  }
+
+  const trimmed = raw.trim();
+  if (!trimmed) return {};
+
+  // Check if input uses structured markers exported by OT-Baza (План:/Факт:/Выполнено:/Исх.:/Прим.:)
+  const hasStructuredMarker =
+    /(?:^|\|\s*)(План(?:\s*\([^)]*\))?|Факт|Выполнено|Исх\.?|Прим\.?)\s*:/i.test(trimmed);
+
+  if (hasStructuredMarker) {
+    let working = trimmed;
+    let note: string | undefined;
+    let rawOriginal: string | undefined;
+
+    // Extract trailing "Прим.:" first so pipes inside note text are preserved intact
+    const noteMatch = /(?:^|\|\s*)Прим\.?\s*:\s*([\s\S]*)$/i.exec(working);
+    if (noteMatch) {
+      const noteText = noteMatch[1].trim();
+      if (noteText) note = noteText;
+      working = working.slice(0, noteMatch.index).trim();
+    }
+
+    // Extract "Исх.:" if present
+    const origMatch = /(?:^|\|\s*)Исх\.?\s*:\s*([\s\S]*?)(?=(?:\|\s*(?:План(?:\s*\([^)]*\))?|Факт|Выполнено)\s*:|$))/i.exec(
+      working
+    );
+    if (origMatch) {
+      const origText = origMatch[1].trim();
+      if (origText) rawOriginal = origText;
+      working = (
+        working.slice(0, origMatch.index) +
+        working.slice(origMatch.index + origMatch[0].length)
+      )
+        .replace(/^\s*\|\s*|\s*\|\s*$/g, '')
+        .trim();
+    }
+
+    let actualDate: string | undefined;
+    let planDate: string | undefined;
+    let planExplicitManual = false;
+    let planHasAutoOrStatusTag = false;
+
+    const segments = working
+      .split('|')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    for (const seg of segments) {
+      const segMatch = /^(План(?:\s*\([^)]*\))?|Факт|Выполнено)\s*:\s*(.+)$/i.exec(seg);
+      if (!segMatch) {
+        if (!rawOriginal) rawOriginal = seg;
+        continue;
+      }
+      const label = segMatch[1].toLowerCase();
+      const body = segMatch[2].trim();
+      const dateTokenMatch = /^(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[./]\d{1,2}[./]\d{4})(?:\s*(.*))?$/.exec(
+        body
+      );
+      const parsedDate = dateTokenMatch
+        ? parseFlexibleDateToIso(dateTokenMatch[1])
+        : parseFlexibleDateToIso(body);
+      const trailingMeta = `${label} ${dateTokenMatch?.[2] || ''}`.toLowerCase();
+
+      if (!parsedDate) {
+        if (!rawOriginal) rawOriginal = seg;
+        continue;
+      }
+
+      if (label.startsWith('факт') || label.startsWith('выполнено')) {
+        actualDate = parsedDate;
+      } else if (label.startsWith('план')) {
+        planDate = parsedDate;
+        if (trailingMeta.includes('ручн')) {
+          planExplicitManual = true;
+        } else if (
+          trailingMeta.includes('авто') ||
+          KNOWN_STATUS_MARKERS.some((statusWord) => trailingMeta.includes(statusWord))
+        ) {
+          planHasAutoOrStatusTag = true;
+        }
+      }
+    }
+
+    let manualNextDate: string | undefined;
+    if (planDate) {
+      // Set manualNextDate when explicitly marked manual, when user wrote bare "План: DATE",
+      // or when no actualDate is present (an auto-calculated plan cannot exist without actualDate).
+      if (planExplicitManual || !planHasAutoOrStatusTag || !actualDate) {
+        manualNextDate = planDate;
+      }
+    }
+
+    const out: DeadlineCellValue = {};
+    if (actualDate) out.actualDate = actualDate;
+    if (manualNextDate) out.manualNextDate = manualNextDate;
+    if (note) out.note = note;
+    if (rawOriginal) out._rawOriginal = rawOriginal;
+
+    if (hasAnyDeadlineCellContent(out)) {
+      return out;
+    }
+    return { _rawOriginal: trimmed };
+  }
+
+  const plainIso = parseFlexibleDateToIso(trimmed);
+  if (plainIso) {
+    return { actualDate: plainIso };
+  }
+
+  return { _rawOriginal: trimmed };
+}
+
 export function buildDeadlineNotificationKey(params: {
   entityId: string;
   tabId: string;
@@ -780,13 +968,15 @@ export function createSnoozeMapForNotification(
   return nextMap;
 }
 
-function getSafeRowIdentifier(row: Row, tab: Tab, fallbackRowNumber: number): string {
-  const semanticCol = tab.columns.find(
-    (c) =>
-      c.type !== 'deadline_control' &&
-      /^(фио|ф\.и\.о|работник|сотрудник|пострадавш|должност|наименован)/i.test(c.name.trim())
+export function resolveSafeRowIdentifier(
+  row: Row,
+  tab?: Tab,
+  fallbackRowNumber?: number
+): string {
+  const nonDeadlineCols = (tab?.columns || []).filter((c) => c.type !== 'deadline_control');
+  const semanticCol = nonDeadlineCols.find((c) =>
+    /^(фио|ф\.и\.о|работник|сотрудник|пострадавш|должност|наименован)/i.test(c.name.trim())
   );
-  const firstTextCol = tab.columns.find((c) => c.type !== 'deadline_control');
 
   const candidates = [
     row.emp_fio,
@@ -797,7 +987,8 @@ function getSafeRowIdentifier(row: Row, tab: Tab, fallbackRowNumber: number): st
     row.inst_worker,
     row.inc_victim,
     semanticCol ? row[semanticCol.id] : undefined,
-    firstTextCol ? row[firstTextCol.id] : undefined
+    nonDeadlineCols[0] ? row[nonDeadlineCols[0].id] : undefined,
+    nonDeadlineCols[1] ? row[nonDeadlineCols[1].id] : undefined
   ];
 
   for (const val of candidates) {
@@ -807,7 +998,7 @@ function getSafeRowIdentifier(row: Row, tab: Tab, fallbackRowNumber: number): st
     if (trimmed) return trimmed;
   }
 
-  return `Строка #${fallbackRowNumber} (${row.id})`;
+  return fallbackRowNumber ? `Строка #${fallbackRowNumber} (${row.id})` : String(row.id || 'Без ID');
 }
 
 const STATUS_SORT_WEIGHT: Record<DeadlineStatus, number> = {
@@ -846,7 +1037,7 @@ export function collectDeadlineEvents(
 
       const rows = Array.isArray(tab.rows) ? tab.rows : [];
       rows.forEach((row, rowIdx) => {
-        const rowIdentifier = getSafeRowIdentifier(row, tab, rowIdx + 1);
+        const rowIdentifier = resolveSafeRowIdentifier(row, tab, rowIdx + 1);
         for (const col of deadlineCols) {
           const evaluation = evaluateDeadlineCell(row[col.id], col.deadlineConfig, {
             todayIso,
@@ -1363,7 +1554,21 @@ export function applyColumnTypeConversion(
     });
     const nextColumns: Column[] = tab.columns.map((c) => {
       if (c.id !== columnId) return c;
-      const { deadlineConfig: _dropDeadline, ...rest } = c;
+      const { deadlineConfig: _dropDeadline, options: _dropOpts, ...rest } = c;
+      if (nextType === 'select') {
+        const collectedOpts = Array.from(
+          new Set(
+            nextRows
+              .map((r) => String(r[columnId] ?? '').trim())
+              .filter(Boolean)
+          )
+        );
+        return {
+          ...rest,
+          type: 'select',
+          options: collectedOpts.length > 0 ? collectedOpts : ['Значение 1', 'Значение 2']
+        };
+      }
       return {
         ...rest,
         type: nextType
@@ -1379,3 +1584,293 @@ export function applyColumnTypeConversion(
     `Конвертация между ${col.type} и ${nextType} не поддерживается сервисом контроля сроков.`
   );
 }
+
+// ==================== T-47: Presets, Validation, & Safe Scalar Conversion ====================
+
+export type DeadlinePeriodicityPresetId = '5y' | '3y' | '6m' | '3m' | '1m' | 'manual';
+
+export interface DeadlinePeriodicityPreset {
+  id: Exclude<DeadlinePeriodicityPresetId, 'manual'>;
+  label: string;
+  value: number;
+  unit: DeadlinePeriodicityUnit;
+}
+
+export const DEADLINE_PERIODICITY_PRESETS: readonly DeadlinePeriodicityPreset[] = [
+  { id: '5y', label: '1 раз в 5 лет', value: 5, unit: 'years' },
+  { id: '3y', label: '1 раз в 3 года', value: 3, unit: 'years' },
+  { id: '6m', label: '1 раз в полгода', value: 6, unit: 'months' },
+  { id: '3m', label: '1 раз в квартал', value: 3, unit: 'months' },
+  { id: '1m', label: 'Ежемесячно', value: 1, unit: 'months' }
+] as const;
+
+export interface DeadlineWarningPreset {
+  value: number;
+  label: string;
+}
+
+export const DEADLINE_WARNING_PRESETS: readonly DeadlineWarningPreset[] = [
+  { value: 180, label: 'За полгода (180 дней)' },
+  { value: 30, label: 'За 30 дней' },
+  { value: 14, label: 'За 14 дней' },
+  { value: 7, label: 'За 7 дней' },
+  { value: 3, label: 'За 3 дня' }
+] as const;
+
+export const MAX_DEADLINE_PERIODICITY_VALUE = 36500;
+
+export function detectPeriodicityPreset(
+  periodicityValue: number,
+  periodicityUnit: DeadlinePeriodicityUnit
+): DeadlinePeriodicityPresetId {
+  const match = DEADLINE_PERIODICITY_PRESETS.find(
+    (p) => p.value === periodicityValue && p.unit === periodicityUnit
+  );
+  return match ? match.id : 'manual';
+}
+
+export function isStandardWarningPreset(warningValue: number): boolean {
+  return DEADLINE_WARNING_PRESETS.some((p) => p.value === warningValue);
+}
+
+export function validateDeadlinePeriodicityInput(
+  rawInput: string | number
+): { ok: true; value: number } | { ok: false; error: string } {
+  const str = String(rawInput ?? '').trim();
+  if (!str) {
+    return {
+      ok: false,
+      error: 'Укажите числовое значение периодичности (0 — разовое мероприятие).'
+    };
+  }
+  if (!/^\d+$/.test(str)) {
+    return {
+      ok: false,
+      error: 'Периодичность должна быть целым неотрицательным числом.'
+    };
+  }
+  const num = Number(str);
+  if (!Number.isSafeInteger(num) || num < 0) {
+    return {
+      ok: false,
+      error: 'Периодичность не может быть отрицательной.'
+    };
+  }
+  if (num > MAX_DEADLINE_PERIODICITY_VALUE) {
+    return {
+      ok: false,
+      error: `Максимально допустимое значение периодичности — ${MAX_DEADLINE_PERIODICITY_VALUE}.`
+    };
+  }
+  return { ok: true, value: num };
+}
+
+export function formatDeadlineConfigShortSummary(
+  rawConfig?: Partial<DeadlineColumnConfig> | null
+): string {
+  const cfg = normalizeDeadlineColumnConfig(rawConfig);
+  const presetId = detectPeriodicityPreset(cfg.periodicityValue, cfg.periodicityUnit);
+  const preset = DEADLINE_PERIODICITY_PRESETS.find((p) => p.id === presetId);
+
+  let periodicityLabel: string;
+  if (preset) {
+    periodicityLabel = preset.label;
+  } else if (cfg.periodicityValue === 0) {
+    periodicityLabel = 'Разовое (0)';
+  } else {
+    const unitText =
+      cfg.periodicityUnit === 'days'
+        ? 'дн.'
+        : cfg.periodicityUnit === 'years'
+          ? 'г./лет'
+          : 'мес.';
+    periodicityLabel = `Раз в ${cfg.periodicityValue} ${unitText}`;
+  }
+
+  const warningUnit = cfg.warningDayType === 'working' ? 'раб. дн.' : 'кал. дн.';
+  return `${periodicityLabel} · предупр. за ${cfg.warningValue} ${warningUnit}`;
+}
+
+export interface ScalarConversionPreview {
+  totalRows: number;
+  convertedCount: number;
+  emptyCount: number;
+  lostDataCount: number;
+  samplesOfLostData: Array<{ rowId: string; rawValue: string; reason: string }>;
+  sourceType: ColumnType;
+  targetType: ColumnType;
+}
+
+function convertScalarCellValue(
+  raw: unknown,
+  sourceType: ColumnType,
+  targetType: ColumnType
+): {
+  value: any;
+  isEmpty: boolean;
+  lostReason?: string;
+} {
+  if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) {
+    return {
+      value: targetType === 'boolean' ? false : '',
+      isEmpty: true
+    };
+  }
+
+  if (targetType === 'text' || targetType === 'select' || targetType === 'link') {
+    if (typeof raw === 'boolean') {
+      return { value: raw ? 'Да' : 'Нет', isEmpty: false };
+    }
+    if (sourceType === 'date') {
+      const iso = parseFlexibleDateToIso(raw);
+      return { value: iso || String(raw).trim(), isEmpty: false };
+    }
+    return { value: String(raw).trim(), isEmpty: false };
+  }
+
+  if (targetType === 'date') {
+    const parsed = parseFlexibleDateToIso(raw);
+    if (parsed) {
+      return { value: parsed, isEmpty: false };
+    }
+    return {
+      value: '',
+      isEmpty: false,
+      lostReason: 'Значение не распознано как календарная дата (ожидается ГГГГ-ММ-ДД или ДД.ММ.ГГГГ)'
+    };
+  }
+
+  if (targetType === 'number') {
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      return { value: raw, isEmpty: false };
+    }
+    if (typeof raw === 'boolean') {
+      return { value: raw ? 1 : 0, isEmpty: false };
+    }
+    const normalized = String(raw).trim().replace(/\s+/g, '').replace(',', '.');
+    if (/^-?\d+(?:\.\d+)?$/.test(normalized)) {
+      return { value: Number(normalized), isEmpty: false };
+    }
+    return {
+      value: '',
+      isEmpty: false,
+      lostReason: 'Значение не является числом'
+    };
+  }
+
+  if (targetType === 'boolean') {
+    if (typeof raw === 'boolean') {
+      return { value: raw, isEmpty: false };
+    }
+    const lower = String(raw).trim().toLowerCase();
+    if (['да', 'true', '1', 'yes', '+'].includes(lower)) {
+      return { value: true, isEmpty: false };
+    }
+    if (['нет', 'false', '0', 'no', '-'].includes(lower)) {
+      return { value: false, isEmpty: false };
+    }
+    return {
+      value: false,
+      isEmpty: false,
+      lostReason: 'Текст нельзя однозначно преобразовать в «Да / Нет»'
+    };
+  }
+
+  return { value: String(raw).trim(), isEmpty: false };
+}
+
+export function previewScalarConversion(
+  rows: Row[],
+  columnId: string,
+  sourceType: ColumnType,
+  targetType: ColumnType
+): ScalarConversionPreview {
+  let convertedCount = 0;
+  let emptyCount = 0;
+  let lostDataCount = 0;
+  const samplesOfLostData: Array<{ rowId: string; rawValue: string; reason: string }> = [];
+
+  for (const row of rows) {
+    const res = convertScalarCellValue(row[columnId], sourceType, targetType);
+    if (res.isEmpty) {
+      emptyCount += 1;
+    } else if (res.lostReason) {
+      lostDataCount += 1;
+      if (samplesOfLostData.length < 10) {
+        samplesOfLostData.push({
+          rowId: row.id,
+          rawValue: String(row[columnId] ?? '').trim(),
+          reason: res.lostReason
+        });
+      }
+    } else {
+      convertedCount += 1;
+    }
+  }
+
+  return {
+    totalRows: rows.length,
+    convertedCount,
+    emptyCount,
+    lostDataCount,
+    samplesOfLostData,
+    sourceType,
+    targetType
+  };
+}
+
+export function applyScalarColumnTypeConversion(
+  tab: Tab,
+  columnId: string,
+  targetType: ColumnType,
+  options?: { selectOptions?: string[] }
+): {
+  tab: Tab;
+  preview: ScalarConversionPreview;
+} {
+  const col = tab.columns.find((c) => c.id === columnId);
+  if (!col) {
+    throw new Error(`Столбец ${columnId} не найден во вкладке «${tab.name}».`);
+  }
+  if (col.type === 'relation' || targetType === 'relation') {
+    throw new Error(
+      'Смена типа столбца со связью (relation) заблокирована. Сначала открепите связь в структуре таблицы.'
+    );
+  }
+  if (col.type === 'deadline_control' || targetType === 'deadline_control') {
+    throw new Error('Для конвертации контроля сроков используйте applyColumnTypeConversion.');
+  }
+
+  const preview = previewScalarConversion(tab.rows, columnId, col.type, targetType);
+  const nextRows = tab.rows.map((row) => ({
+    ...row,
+    [columnId]: convertScalarCellValue(row[columnId], col.type, targetType).value
+  }));
+
+  const nextColumns: Column[] = tab.columns.map((c) => {
+    if (c.id !== columnId) return c;
+    const { options: _dropOpts, deadlineConfig: _dropDeadline, ...rest } = c;
+    if (targetType === 'select') {
+      const explicit = (options?.selectOptions || []).map((s) => s.trim()).filter(Boolean);
+      const collected = Array.from(
+        new Set(nextRows.map((r) => String(r[columnId] ?? '').trim()).filter(Boolean))
+      );
+      const finalOpts = explicit.length > 0 ? explicit : collected;
+      return {
+        ...rest,
+        type: 'select',
+        options: finalOpts.length > 0 ? finalOpts : ['Значение 1', 'Значение 2']
+      };
+    }
+    return {
+      ...rest,
+      type: targetType
+    };
+  });
+
+  return {
+    tab: { ...tab, columns: nextColumns, rows: nextRows },
+    preview
+  };
+}
+

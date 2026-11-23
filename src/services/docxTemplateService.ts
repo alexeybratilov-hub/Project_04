@@ -1,5 +1,6 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
-import { LegalEntityProfile, Row, Tab, Tag } from '../types/database';
+import { Column, LegalEntityProfile, Row, Tab, Tag } from '../types/database';
+import { formatDeadlineCellDisplay } from './deadlineService';
 
 export interface DocxInspectResult {
   detectedTags: string[];
@@ -798,19 +799,29 @@ export const docxTemplateService = {
     entityProfile?: LegalEntityProfile,
     sampleRow?: Row
   ): TagCatalogSection[] {
+    const formatCatalogExample = (rawVal: unknown, col?: Column): string => {
+      if (col?.type === 'deadline_control') {
+        return formatDeadlineCellDisplay(rawVal, col.deadlineConfig, { mode: 'next_date' });
+      }
+      if (rawVal === undefined || rawVal === null || typeof rawVal === 'object') {
+        return '';
+      }
+      return String(rawVal);
+    };
+
     const tabColumnsItems: TagCatalogItem[] = targetTab.columns.map((col) => {
       const rawVal = sampleRow ? sampleRow[col.id] : targetTab.rows[0]?.[col.id];
-      const exampleValue =
-        rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== ''
-          ? String(rawVal)
-          : '— (пусто в выбранной строке)';
+      const formattedExample = formatCatalogExample(rawVal, col).trim();
+      const exampleValue = formattedExample || '— (пусто в выбранной строке)';
       return {
         tag: `{${col.name}}`,
         label: col.name,
         description:
           col.type === 'relation'
             ? 'Поле текущей таблицы (связь со справочником)'
-            : 'Поле текущей таблицы',
+            : col.type === 'deadline_control'
+              ? 'Поле текущей таблицы (контроль сроков — подставляется ближайшая дата)'
+              : 'Поле текущей таблицы',
         exampleValue,
         sourceInfo: `Таблица «${targetTab.name}»`
       };
@@ -831,10 +842,8 @@ export const docxTemplateService = {
         t.tabId === targetTab.id && sampleRow
           ? sampleRow[t.columnId]
           : srcTab?.rows[0]?.[t.columnId];
-      const exampleValue =
-        firstVal !== undefined && firstVal !== null && String(firstVal).trim() !== ''
-          ? String(firstVal)
-          : '—';
+      const formattedExample = formatCatalogExample(firstVal, srcCol).trim();
+      const exampleValue = formattedExample || '—';
       return {
         tag: t.name,
         label: srcCol?.name || t.name,
