@@ -7,7 +7,8 @@ import {
   DeadlineConfigFields,
   validateAndBuildDeadlineConfig
 } from '../DeadlineConfigFields';
-import { ColumnEditorModal } from '../ColumnEditorModal';
+import { ColumnEditorModal, FromDeadlinePreviewPanel } from '../ColumnEditorModal';
+import { previewConversionFromDeadline } from '../../services/deadlineService';
 import { Tab } from '../../types/database';
 
 describe('T-47: DeadlineConfigFields and ColumnEditorModal', () => {
@@ -168,5 +169,62 @@ describe('T-47: DeadlineConfigFields and ColumnEditorModal', () => {
     expect(html).toContain('Настроить');
     expect(html).toContain('Изменить тип');
     expect(html).toContain('Смена типа столбца со связью (relation) заблокирована');
+  });
+
+  it('renders specific lost deadline fields (actualDate, manualNextDate, note, _rawOriginal) in reverse conversion preview', () => {
+    const config = {
+      periodicityValue: 6,
+      periodicityUnit: 'months' as const,
+      warningValue: 14,
+      warningDayType: 'calendar' as const
+    };
+    const rows = [
+      {
+        id: 'r1',
+        dl: {
+          actualDate: '2026-01-10',
+          manualNextDate: '2026-11-15',
+          note: 'Особое условие',
+          _rawOriginal: '123'
+        }
+      },
+      { id: 'r2', dl: { note: 'Только заметка' } }
+    ];
+    const rowMap = new Map<string, string>([
+      ['r1', 'Иванов И.И.'],
+      ['r2', 'Петров П.П.']
+    ]);
+
+    const previewNumber = previewConversionFromDeadline(rows, 'dl', 'number', {
+      config,
+      todayIso: '2026-05-01'
+    });
+    const numberHtml = renderToStaticMarkup(
+      React.createElement(FromDeadlinePreviewPanel, {
+        preview: previewNumber,
+        rowIdentifierById: rowMap
+      })
+    );
+    expect(numberHtml).toContain('Будут потеряны поля контроля сроков');
+    expect(numberHtml).toContain('частичный перенос в 1 стр.');
+    expect(numberHtml).toContain('Фактическая дата (actualDate)');
+    expect(numberHtml).toContain('Ручная плановая дата (manualNextDate)');
+    expect(numberHtml).toContain('Примечание (note)');
+    expect(numberHtml).toContain('Петров П.П.');
+
+    const losslessPreview = previewConversionFromDeadline(
+      [{ id: 'r_only_act', dl: { actualDate: '2026-01-10' } }],
+      'dl',
+      'date',
+      { extractMode: 'actualDate', config, todayIso: '2026-05-01' }
+    );
+    const losslessHtml = renderToStaticMarkup(
+      React.createElement(FromDeadlinePreviewPanel, {
+        preview: losslessPreview,
+        rowIdentifierById: new Map([['r_only_act', 'Сидоров']])
+      })
+    );
+    expect(losslessHtml).toContain('без потерь');
+    expect(losslessHtml).not.toContain('Будут потеряны');
   });
 });

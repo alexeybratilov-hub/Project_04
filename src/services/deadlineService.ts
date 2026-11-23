@@ -99,12 +99,15 @@ export interface ToDeadlineConversionPreview {
   canConvert: boolean;
 }
 
+export type DeadlineLostFieldKey = 'actualDate' | 'manualNextDate' | 'note' | '_rawOriginal';
+
 export interface FromDeadlineConversionPreview {
   totalRows: number;
   convertedCount: number;
   emptyCount: number;
   lostDataCount: number;
   partialLossCount: number;
+  lostFieldsSummary: Record<DeadlineLostFieldKey, number>;
   samplesOfLostData: Array<{ rowId: string; summary: string; reason: string }>;
   targetType: ColumnType;
   extractMode: DeadlineReverseExtractMode;
@@ -1263,6 +1266,22 @@ export function convertRowsToDeadline(
   return { rows: nextRows, preview };
 }
 
+function getFilledDeadlineFields(norm: DeadlineCellValue): DeadlineLostFieldKey[] {
+  const fields: DeadlineLostFieldKey[] = [];
+  if (norm.actualDate) fields.push('actualDate');
+  if (norm.manualNextDate) fields.push('manualNextDate');
+  if (norm.note) fields.push('note');
+  if (norm._rawOriginal) fields.push('_rawOriginal');
+  return fields;
+}
+
+function getLostDeadlineFields(
+  filledFields: ReadonlyArray<DeadlineLostFieldKey>,
+  preservedFields: ReadonlyArray<DeadlineLostFieldKey>
+): DeadlineLostFieldKey[] {
+  return filledFields.filter((f) => !preservedFields.includes(f));
+}
+
 function extractValueFromDeadlineCell(
   raw: unknown,
   targetType: ColumnType,
@@ -1274,11 +1293,17 @@ function extractValueFromDeadlineCell(
   hasContent: boolean;
   lostReason?: string;
   partialLoss?: boolean;
+  lostFields: DeadlineLostFieldKey[];
 } {
   const norm = normalizeDeadlineCellValue(raw);
-  const hasContent = hasAnyDeadlineCellContent(norm);
+  const filledFields = getFilledDeadlineFields(norm);
+  const hasContent = filledFields.length > 0;
   if (!hasContent) {
-    return { value: targetType === 'boolean' ? false : '', hasContent: false };
+    return {
+      value: targetType === 'boolean' ? false : '',
+      hasContent: false,
+      lostFields: []
+    };
   }
 
   const ev = evaluateDeadlineCell(norm, config, options);
@@ -1293,38 +1318,66 @@ function extractValueFromDeadlineCell(
         lostReason:
           extractMode === 'actualDate'
             ? 'Отсутствует фактическая дата'
-            : 'Отсутствует плановая дата (возможно, сохранён только текст или факт для разового срока)'
+            : 'Отсутствует плановая дата (возможно, сохранён только текст, примечание или факт для разового срока)',
+        lostFields: filledFields
       };
     }
-    const hasExtraFields = Boolean(
-      norm.note ||
-        norm._rawOriginal ||
-        (extractMode === 'actualDate' ? norm.manualNextDate : norm.actualDate && norm.manualNextDate)
-    );
+    const preserved: DeadlineLostFieldKey[] =
+      extractMode === 'actualDate'
+        ? ['actualDate']
+        : ev.nextDateSource === 'manual'
+          ? ['manualNextDate']
+          : [];
+    const lostFields = getLostDeadlineFields(filledFields, preserved);
     return {
       value: picked,
       hasContent: true,
-      partialLoss: hasExtraFields
+      partialLoss: lostFields.length > 0,
+      lostFields
     };
   }
 
   if (targetType === 'text') {
     if (extractMode === 'rawOriginal') {
       if (norm._rawOriginal) {
+        const lostFields = getLostDeadlineFields(filledFields, ['_rawOriginal']);
         return {
           value: norm._rawOriginal,
           hasContent: true,
-          partialLoss: Boolean(norm.actualDate || norm.manualNextDate || norm.note)
+          partialLoss: lostFields.length > 0,
+          lostFields
         };
       }
       const fallbackIso = ev.effectiveNextDate || ev.actualDate;
       if (fallbackIso) {
-        return { value: formatIsoToDisplay(fallbackIso), hasContent: true };
+        const preserved: DeadlineLostFieldKey[] =
+          norm.manualNextDate && fallbackIso === norm.manualNextDate
+            ? ['manualNextDate']
+            : norm.actualDate && fallbackIso === norm.actualDate
+              ? ['actualDate']
+              : [];
+        const lostFields = getLostDeadlineFields(filledFields, preserved);
+        return {
+          value: formatIsoToDisplay(fallbackIso),
+          hasContent: true,
+          partialLoss: lostFields.length > 0,
+          lostFields
+        };
+      }
+      if (norm.note) {
+        const lostFields = getLostDeadlineFields(filledFields, ['note']);
+        return {
+          value: norm.note,
+          hasContent: true,
+          partialLoss: lostFields.length > 0,
+          lostFields
+        };
       }
       return {
-        value: norm.note || '',
+        value: '',
         hasContent: true,
-        lostReason: !norm.note ? 'Отсутствует исходный текст' : undefined
+        lostReason: 'Отсутствует исходный текст',
+        lostFields: filledFields
       };
     }
 
@@ -1334,13 +1387,16 @@ function extractValueFromDeadlineCell(
         return {
           value: '',
           hasContent: true,
-          lostReason: 'Отсутствует фактическая дата'
+          lostReason: 'Отсутствует фактическая дата',
+          lostFields: filledFields
         };
       }
+      const lostFields = getLostDeadlineFields(filledFields, ['actualDate']);
       return {
         value: val,
         hasContent: true,
-        partialLoss: Boolean(norm.manualNextDate || norm.note || norm._rawOriginal)
+        partialLoss: lostFields.length > 0,
+        lostFields
       };
     }
 
@@ -1350,67 +1406,123 @@ function extractValueFromDeadlineCell(
         return {
           value: '',
           hasContent: true,
-          lostReason: 'Отсутствует плановая дата'
+          lostReason: 'Отсутствует плановая дата',
+          lostFields: filledFields
         };
       }
+      const preserved: DeadlineLostFieldKey[] =
+        ev.nextDateSource === 'manual' ? ['manualNextDate'] : [];
+      const lostFields = getLostDeadlineFields(filledFields, preserved);
       return {
         value: val,
         hasContent: true,
-        partialLoss: Boolean(norm.actualDate || norm.note || norm._rawOriginal)
+        partialLoss: lostFields.length > 0,
+        lostFields
       };
     }
 
     // 'summary'
     const summaryText = formatDeadlineCellDisplay(norm, config, { ...options, mode: 'summary' });
+    if (!summaryText) {
+      return {
+        value: '',
+        hasContent: true,
+        lostReason: 'Примечание не входит в краткую сводку (План / Статус / Факт)',
+        lostFields: filledFields
+      };
+    }
+    const preserved: DeadlineLostFieldKey[] = [];
+    if (ev.status === 'completed' && formatIsoToDisplay(ev.actualDate)) {
+      preserved.push('actualDate');
+    } else if (ev.effectiveNextDate || ev.actualDate) {
+      if (ev.nextDateSource === 'manual' && norm.manualNextDate) {
+        preserved.push('manualNextDate');
+      }
+      if (norm.actualDate) {
+        preserved.push('actualDate');
+      }
+    } else if (norm._rawOriginal) {
+      preserved.push('_rawOriginal');
+    }
+    const lostFields = getLostDeadlineFields(filledFields, preserved);
     return {
       value: summaryText,
       hasContent: true,
-      partialLoss: Boolean(norm.note)
+      partialLoss: lostFields.length > 0,
+      lostFields
     };
   }
 
   if (targetType === 'number') {
     const candidate = norm._rawOriginal?.trim();
     if (candidate && /^-?\d+(?:[.,]\d+)?$/.test(candidate)) {
-      return { value: Number(candidate.replace(',', '.')), hasContent: true };
+      const lostFields = getLostDeadlineFields(filledFields, ['_rawOriginal']);
+      return {
+        value: Number(candidate.replace(',', '.')),
+        hasContent: true,
+        partialLoss: lostFields.length > 0,
+        lostFields
+      };
     }
     return {
       value: '',
       hasContent: true,
-      lostReason: 'Значение контроля сроков не является числом'
+      lostReason: 'Значение контроля сроков не является числом',
+      lostFields: filledFields
     };
   }
 
   if (targetType === 'boolean') {
     const rawLower = (norm._rawOriginal || '').trim().toLowerCase();
     if (['да', 'true', '1', 'yes'].includes(rawLower)) {
-      return { value: true, hasContent: true };
+      const lostFields = getLostDeadlineFields(filledFields, ['_rawOriginal']);
+      return {
+        value: true,
+        hasContent: true,
+        partialLoss: lostFields.length > 0,
+        lostFields
+      };
     }
     if (['нет', 'false', '0', 'no'].includes(rawLower)) {
-      return { value: false, hasContent: true };
+      const lostFields = getLostDeadlineFields(filledFields, ['_rawOriginal']);
+      return {
+        value: false,
+        hasContent: true,
+        partialLoss: lostFields.length > 0,
+        lostFields
+      };
     }
     return {
       value: false,
       hasContent: true,
-      lostReason: 'Даты и статусы нельзя однозначно свести к «Да / Нет»'
+      lostReason: 'Даты и статусы нельзя однозначно свести к «Да / Нет»',
+      lostFields: filledFields
     };
   }
 
   if (targetType === 'select' || targetType === 'link') {
     if (norm._rawOriginal) {
-      return { value: norm._rawOriginal, hasContent: true };
+      const lostFields = getLostDeadlineFields(filledFields, ['_rawOriginal']);
+      return {
+        value: norm._rawOriginal,
+        hasContent: true,
+        partialLoss: lostFields.length > 0,
+        lostFields
+      };
     }
     return {
       value: '',
       hasContent: true,
-      lostReason: `Сложные данные контроля сроков несовместимы с типом «${targetType}»`
+      lostReason: `Сложные данные контроля сроков несовместимы с типом «${targetType}»`,
+      lostFields: filledFields
     };
   }
 
   return {
     value: '',
     hasContent: true,
-    lostReason: `Несовместимый целевой тип «${targetType}»`
+    lostReason: `Несовместимый целевой тип «${targetType}»`,
+    lostFields: filledFields
   };
 }
 
@@ -1432,6 +1544,12 @@ export function previewConversionFromDeadline(
   let emptyCount = 0;
   let lostDataCount = 0;
   let partialLossCount = 0;
+  const lostFieldsSummary: Record<DeadlineLostFieldKey, number> = {
+    actualDate: 0,
+    manualNextDate: 0,
+    note: 0,
+    _rawOriginal: 0
+  };
   const samplesOfLostData: Array<{ rowId: string; summary: string; reason: string }> = [];
 
   for (const row of rows) {
@@ -1440,12 +1558,19 @@ export function previewConversionFromDeadline(
       emptyCount += 1;
       continue;
     }
+    for (const field of res.lostFields) {
+      lostFieldsSummary[field] += 1;
+    }
     if (res.lostReason) {
       lostDataCount += 1;
       if (samplesOfLostData.length < 10) {
+        const norm = normalizeDeadlineCellValue(row[columnId]);
+        const summaryDisplay =
+          formatDeadlineCellDisplay(row[columnId], config, { ...options, mode: 'summary' }) ||
+          (norm.note ? `Прим.: ${norm.note}` : '');
         samplesOfLostData.push({
           rowId: row.id,
-          summary: formatDeadlineCellDisplay(row[columnId], config, { ...options, mode: 'summary' }),
+          summary: summaryDisplay,
           reason: res.lostReason
         });
       }
@@ -1463,6 +1588,7 @@ export function previewConversionFromDeadline(
     emptyCount,
     lostDataCount,
     partialLossCount,
+    lostFieldsSummary,
     samplesOfLostData,
     targetType,
     extractMode
@@ -1511,6 +1637,7 @@ export function applyColumnTypeConversion(
     targetField?: DeadlineConversionTargetField;
     extractMode?: DeadlineReverseExtractMode;
     deadlineConfig?: Partial<DeadlineColumnConfig> | null;
+    selectOptions?: string[];
   }
 ): {
   tab: Tab;
@@ -1556,6 +1683,9 @@ export function applyColumnTypeConversion(
       if (c.id !== columnId) return c;
       const { deadlineConfig: _dropDeadline, options: _dropOpts, ...rest } = c;
       if (nextType === 'select') {
+        const explicitOpts = Array.from(
+          new Set((options?.selectOptions || []).map((s) => s.trim()).filter(Boolean))
+        );
         const collectedOpts = Array.from(
           new Set(
             nextRows
@@ -1563,10 +1693,16 @@ export function applyColumnTypeConversion(
               .filter(Boolean)
           )
         );
+        const finalOpts =
+          explicitOpts.length > 0
+            ? explicitOpts
+            : collectedOpts.length > 0
+              ? collectedOpts
+              : ['Значение 1', 'Значение 2'];
         return {
           ...rest,
           type: 'select',
-          options: collectedOpts.length > 0 ? collectedOpts : ['Значение 1', 'Значение 2']
+          options: finalOpts
         };
       }
       return {

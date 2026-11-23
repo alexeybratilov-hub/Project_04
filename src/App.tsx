@@ -45,10 +45,17 @@ import {
   applyDatabaseTransition,
   cloneLegalEntity,
   createIsolatedEmptyEntity,
+  executeColumnsUpdateTransaction,
   normalizeDatabaseState,
   storageService
 } from './services/storageService';
-import { getCurrentRevision, localApiClient, NativeErrorKind, StorageMode } from './services/localApiClient';
+import {
+  getCurrentRevision,
+  localApiClient,
+  NativeErrorKind,
+  SaveDatabaseResult,
+  StorageMode
+} from './services/localApiClient';
 import { createUniqueId, integrityService } from './services/integrityService';
 import { excelService } from './services/excelService';
 import { documentGenerator } from './services/documentGenerator';
@@ -199,74 +206,90 @@ export default function App() {
     (
       targetState: DatabaseState,
       notifySuccess = false,
-      options?: { expectedRevision?: number; isAutoRecovery?: boolean }
-    ): Promise<void> => {
-      hasUnsavedChangesRef.current = true;
-      setHasUnsavedChanges(true);
+      options?: { expectedRevision?: number; isAutoRecovery?: boolean; deferUnsavedFlag?: boolean }
+    ): Promise<SaveDatabaseResult> => {
+      if (!options?.deferUnsavedFlag) {
+        hasUnsavedChangesRef.current = true;
+        setHasUnsavedChanges(true);
+      }
       setSaveStatus('saving');
-      const nextTask = saveQueueRef.current
-        .then(async () => {
-          if (initialLoadFailedRef.current && options?.expectedRevision === undefined) {
-            const guardMsg =
-              'Начальная загрузка базы с диска не завершилась успешно. Перезагрузите базу с диска или скачайте JSON-копию перед записью.';
-            setSaveStatus('error');
-            setSaveErrorKind(saveErrorKindRef.current || 'connection');
-            setSaveErrorMessage(guardMsg);
-            showThrottledErrorToast(guardMsg);
-            return;
-          }
+      const runPersist = async (): Promise<SaveDatabaseResult> => {
+        if (initialLoadFailedRef.current && options?.expectedRevision === undefined) {
+          const guardMsg =
+            'Начальная загрузка базы с диска не завершилась успешно. Перезагрузите базу с диска или скачайте JSON-копию перед записью.';
+          setSaveStatus('error');
+          setSaveErrorKind(saveErrorKindRef.current || 'connection');
+          setSaveErrorMessage(guardMsg);
+          showThrottledErrorToast(guardMsg);
+          return {
+            ok: false,
+            errorKind: 'connection',
+            errorCode: 'INITIAL_LOAD_FAILED',
+            message: guardMsg
+          };
+        }
 
-          const res = await storageService.saveDatabaseAsync(
-            targetState,
-            options?.expectedRevision !== undefined
-              ? { expectedRevision: options.expectedRevision }
-              : undefined
-          );
-          if (res.ok) {
-            setSaveStatus('saved');
-            setSaveErrorMessage(null);
-            setSaveErrorKind(null);
-            setUsbDisconnected(false);
-            setConflictServerRevision(null);
-            initialLoadFailedRef.current = false;
-            setInitialLoadFailed(false);
-            if (latestDbRef.current === targetState) {
-              hasUnsavedChangesRef.current = false;
-              setHasUnsavedChanges(false);
-            }
-            if (options?.isAutoRecovery) {
-              showToast('Связь с сервером восстановлена, несохранённые изменения записаны на диск.', 'success');
-            } else if (notifySuccess) {
-              showToast('База данных успешно сохранена.', 'success');
-            }
-          } else {
-            const isUsb = Boolean(res.usbDisconnected || res.errorKind === 'usb');
-            const isConflict = Boolean(res.isConflict || res.errorKind === 'conflict');
-            const nextStatus: SaveStatusState = isUsb
-              ? 'usb_disconnected'
-              : isConflict
-                ? 'conflict'
-                : 'error';
-            setSaveStatus(nextStatus);
-            setSaveErrorKind(
-              res.errorKind ||
-                (isUsb ? 'usb' : isConflict ? 'conflict' : 'disk_write')
-            );
-            setUsbDisconnected(isUsb);
-            setConflictServerRevision(
-              isConflict ? (res.serverRevision ?? res.revision ?? null) : null
-            );
-            const msg = res.message || 'Ошибка сохранения базы данных';
-            setSaveErrorMessage(msg);
-            showThrottledErrorToast(msg);
+        const res = await storageService.saveDatabaseAsync(
+          targetState,
+          options?.expectedRevision !== undefined
+            ? { expectedRevision: options.expectedRevision }
+            : undefined
+        );
+        if (res.ok) {
+          setSaveStatus('saved');
+          setSaveErrorMessage(null);
+          setSaveErrorKind(null);
+          setUsbDisconnected(false);
+          setConflictServerRevision(null);
+          initialLoadFailedRef.current = false;
+          setInitialLoadFailed(false);
+          if (latestDbRef.current === targetState || options?.deferUnsavedFlag) {
+            hasUnsavedChangesRef.current = false;
+            setHasUnsavedChanges(false);
           }
-        })
-        .catch((err: any) => {
+          if (options?.isAutoRecovery) {
+            showToast('Связь с сервером восстановлена, несохранённые изменения записаны на диск.', 'success');
+          } else if (notifySuccess) {
+            showToast('База данных успешно сохранена.', 'success');
+          }
+        } else {
+          const isUsb = Boolean(res.usbDisconnected || res.errorKind === 'usb');
+          const isConflict = Boolean(res.isConflict || res.errorKind === 'conflict');
+          const nextStatus: SaveStatusState = isUsb
+            ? 'usb_disconnected'
+            : isConflict
+              ? 'conflict'
+              : 'error';
+          setSaveStatus(nextStatus);
+          setSaveErrorKind(
+            res.errorKind ||
+              (isUsb ? 'usb' : isConflict ? 'conflict' : 'disk_write')
+          );
+          setUsbDisconnected(isUsb);
+          setConflictServerRevision(
+            isConflict ? (res.serverRevision ?? res.revision ?? null) : null
+          );
+          const msg = res.message || 'Ошибка сохранения базы данных';
+          setSaveErrorMessage(msg);
+          showThrottledErrorToast(msg);
+        }
+        return res;
+      };
+
+      const nextTask = saveQueueRef.current
+        .then(runPersist, runPersist)
+        .catch((err: any): SaveDatabaseResult => {
+          const errMsg = err?.message || 'Непредвиденная ошибка сохранения';
           setSaveStatus('error');
           setSaveErrorKind('connection');
-          setSaveErrorMessage(err?.message || 'Непредвиденная ошибка сохранения');
+          setSaveErrorMessage(errMsg);
+          return {
+            ok: false,
+            errorKind: 'connection',
+            message: errMsg
+          };
         });
-      saveQueueRef.current = nextTask;
+      saveQueueRef.current = nextTask.then(() => undefined);
       return nextTask;
     },
     [showThrottledErrorToast, showToast]
@@ -1697,20 +1720,8 @@ export default function App() {
         tags={dbState.tags}
         holidays={dbState.settings.deadlineSettings?.holidays}
         onUpdateColumns={async (tabId, newCols, updatedRows, options) => {
-          let backupFileName: string | undefined;
-          if (options?.hasNonEmptyRowConversions) {
-            const backupRes = await storageService.createPreConversionBackup(latestDbRef.current);
-            if (!backupRes.ok) {
-              const errMsg =
-                backupRes.message ||
-                'Не удалось создать резервную копию перед сменой типа столбца. Изменения не применены.';
-              showToast(errMsg, 'error');
-              return { ok: false, error: errMsg };
-            }
-            backupFileName = backupRes.backupFileName;
-          }
-
-          updateDbState((p) => {
+          const snapshotBeforeUpdate = latestDbRef.current;
+          const nextState = applyDatabaseTransition(snapshotBeforeUpdate, (p) => {
             const withDefaults = p.tabs.map((t) => {
               if (t.id !== tabId) return t;
               const baseRows = updatedRows ?? t.rows;
@@ -1743,12 +1754,37 @@ export default function App() {
             return { ...p, tabs: cleanedTabs, tags: cleanedTags };
           });
 
+          const txRes = await executeColumnsUpdateTransaction({
+            currentState: snapshotBeforeUpdate,
+            nextState,
+            hasNonEmptyRowConversions: options?.hasNonEmptyRowConversions,
+            createBackup: (state) => storageService.createPreConversionBackup(state),
+            persistNextState: (target) => persistState(target, false, { deferUnsavedFlag: true })
+          });
+
+          if (!txRes.ok) {
+            const errMsg =
+              txRes.error ||
+              'Не удалось сохранить изменения столбцов. Исходная база данных не изменена.';
+            showThrottledErrorToast(errMsg);
+            return { ok: false, error: errMsg };
+          }
+
+          if (txRes.committedState && txRes.committedState !== snapshotBeforeUpdate) {
+            latestDbRef.current = txRes.committedState;
+            setDbState(txRes.committedState);
+            hasUnsavedChangesRef.current = false;
+            setHasUnsavedChanges(false);
+          }
+
           if (options?.hasTypeConversions) {
-            const backupNote = backupFileName ? ` (резервная копия: ${backupFileName})` : '';
+            const backupNote = txRes.backupFileName
+              ? ` (резервная копия: ${txRes.backupFileName})`
+              : '';
             showToast(`Структура и тип столбцов обновлены${backupNote}`, 'success');
           }
 
-          return { ok: true, backupFileName };
+          return { ok: true, backupFileName: txRes.backupFileName };
         }}
       />
 

@@ -3,6 +3,7 @@ import {
   applyDatabaseTransition,
   cloneLegalEntity,
   createIsolatedEmptyEntity,
+  executeColumnsUpdateTransaction,
   inspectDatabaseBackupText,
   normalizeDatabaseState,
   PRE_RESTORE_BACKUP_KEY,
@@ -615,6 +616,118 @@ describe('storageService', () => {
       isNativeSpy.mockRestore();
       diskBackupSpy.mockRestore();
       vi.unstubAllGlobals();
+    });
+
+    it('fails pre-conversion backup when localStorage.setItem throws and blocks DB save on any backup error', async () => {
+      vi.spyOn(localApiClient, 'isNative').mockReturnValue(false);
+      vi.stubGlobal('localStorage', {
+        getItem: () => null,
+        setItem: () => {
+          const err = new Error('QuotaExceededError');
+          err.name = 'QuotaExceededError';
+          throw err;
+        },
+        removeItem: () => undefined
+      });
+
+      const webFail = await storageService.createPreConversionBackup(INITIAL_DATABASE_STATE);
+      expect(webFail.ok).toBe(false);
+      expect(webFail.message).toMatch(/QuotaExceeded|резервную копию/i);
+
+      const nextState: DatabaseState = {
+        ...JSON.parse(JSON.stringify(INITIAL_DATABASE_STATE)),
+        tags: [{ id: 't_new', name: '{Новый}', tabId: 'tab_positions', columnId: 'col_title' }]
+      };
+      const persistSpy = vi.fn().mockResolvedValue({ ok: true });
+
+      const abortedByWebBackup = await executeColumnsUpdateTransaction({
+        currentState: INITIAL_DATABASE_STATE,
+        nextState,
+        hasNonEmptyRowConversions: true,
+        persistNextState: persistSpy
+      });
+      expect(abortedByWebBackup.ok).toBe(false);
+      expect(abortedByWebBackup.committedState).toBeUndefined();
+      expect(persistSpy).not.toHaveBeenCalled();
+
+      // Native backup failure also aborts persistNextState
+      vi.spyOn(localApiClient, 'isNative').mockReturnValue(true);
+      vi.spyOn(localApiClient, 'createDiskBackup').mockResolvedValueOnce({
+        ok: false,
+        message: 'Диск переполнен'
+      });
+      const abortedByNativeBackup = await executeColumnsUpdateTransaction({
+        currentState: INITIAL_DATABASE_STATE,
+        nextState,
+        hasNonEmptyRowConversions: true,
+        persistNextState: persistSpy
+      });
+      expect(abortedByNativeBackup.ok).toBe(false);
+      expect(abortedByNativeBackup.error).toContain('Диск переполнен');
+      expect(persistSpy).not.toHaveBeenCalled();
+
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    });
+
+    it('waits for confirmed async save before returning ok, rolls back/rejects on write error, and supports retry', async () => {
+      const currentState: DatabaseState = JSON.parse(JSON.stringify(INITIAL_DATABASE_STATE));
+      const nextState: DatabaseState = {
+        ...JSON.parse(JSON.stringify(INITIAL_DATABASE_STATE)),
+        tags: [{ id: 't_retry', name: '{Повтор}', tabId: 'tab_positions', columnId: 'col_title' }]
+      };
+
+      const callOrder: string[] = [];
+      let resolveSave!: (res: { ok: boolean; message?: string }) => void;
+      const persistDeferred = vi.fn(
+        () =>
+          new Promise<{ ok: boolean; message?: string }>((resolve) => {
+            callOrder.push('persist_start');
+            resolveSave = resolve;
+          })
+      );
+      const backupMock = vi.fn(async () => {
+        callOrder.push('backup_done');
+        return { ok: true, backupFileName: 'ot_backup_1.json' };
+      });
+
+      let settled = false;
+      const txPromise = executeColumnsUpdateTransaction({
+        currentState,
+        nextState,
+        hasNonEmptyRowConversions: true,
+        createBackup: backupMock,
+        persistNextState: persistDeferred
+      }).then((res) => {
+        settled = true;
+        return res;
+      });
+
+      // Let backup microtask finish and persist start; transaction MUST NOT settle yet
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(callOrder).toEqual(['backup_done', 'persist_start']);
+      expect(settled).toBe(false);
+
+      // Simulate disk write failure
+      resolveSave({ ok: false, message: 'USB-накопитель отключён при записи' });
+      const failedTx = await txPromise;
+      expect(failedTx.ok).toBe(false);
+      expect(failedTx.committedState).toBeUndefined();
+      expect(failedTx.error).toContain('USB-накопитель отключён');
+
+      // Retry after reconnecting drive -> backup then persist succeeds and commits nextState
+      const persistRetry = vi.fn(async () => ({ ok: true, revision: 42 }));
+      const retryTx = await executeColumnsUpdateTransaction({
+        currentState,
+        nextState,
+        hasNonEmptyRowConversions: true,
+        createBackup: backupMock,
+        persistNextState: persistRetry
+      });
+      expect(retryTx.ok).toBe(true);
+      expect(retryTx.committedState).toBe(nextState);
+      expect(retryTx.backupFileName).toBe('ot_backup_1.json');
     });
   });
 });

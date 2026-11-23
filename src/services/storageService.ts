@@ -1040,10 +1040,20 @@ export const storageService = {
 
     try {
       localStorage.setItem(PRE_RESTORE_BACKUP_KEY, JSON.stringify(currentState));
-    } catch {
-      // Best-effort pre-conversion snapshot in browser storage
+      return { ok: true };
+    } catch (e: any) {
+      const isQuota =
+        e?.name === 'QuotaExceededError' ||
+        e?.code === 22 ||
+        String(e?.message || '').toLowerCase().includes('quota');
+      return {
+        ok: false,
+        message: isQuota
+          ? 'Недостаточно места в локальном хранилище браузера (QuotaExceeded) для создания резервной копии перед сменой типа столбца. Операция отменена.'
+          : e?.message ||
+            'Не удалось создать резервную копию текущей базы в браузере перед сменой типа столбца. Операция отменена.'
+      };
     }
-    return { ok: true };
   },
 
   async importDatabaseFromFile(file: File): Promise<DatabaseState> {
@@ -1055,3 +1065,61 @@ export const storageService = {
     return preview.normalizedState;
   }
 };
+
+export interface ColumnsUpdateTransactionResult {
+  ok: boolean;
+  committedState?: DatabaseState;
+  backupFileName?: string;
+  error?: string;
+}
+
+export async function executeColumnsUpdateTransaction(params: {
+  currentState: DatabaseState;
+  nextState: DatabaseState;
+  hasNonEmptyRowConversions?: boolean;
+  createBackup?: (
+    state: DatabaseState
+  ) => Promise<{ ok: boolean; backupFileName?: string; message?: string }>;
+  persistNextState: (nextState: DatabaseState) => Promise<SaveDatabaseResult>;
+}): Promise<ColumnsUpdateTransactionResult> {
+  let backupFileName: string | undefined;
+
+  if (params.hasNonEmptyRowConversions) {
+    const createBackupFn = params.createBackup ?? storageService.createPreConversionBackup;
+    const backupRes = await createBackupFn(params.currentState);
+    if (!backupRes.ok) {
+      return {
+        ok: false,
+        error:
+          backupRes.message ||
+          'Не удалось создать резервную копию перед сменой типа столбца. Изменения не применены.'
+      };
+    }
+    backupFileName = backupRes.backupFileName;
+  }
+
+  if (params.nextState === params.currentState) {
+    return {
+      ok: true,
+      committedState: params.currentState,
+      backupFileName
+    };
+  }
+
+  const saveRes = await params.persistNextState(params.nextState);
+  if (!saveRes.ok) {
+    return {
+      ok: false,
+      backupFileName,
+      error:
+        saveRes.message ||
+        'Не удалось сохранить обновлённую структуру таблицы. Исходные данные не изменены.'
+    };
+  }
+
+  return {
+    ok: true,
+    committedState: params.nextState,
+    backupFileName
+  };
+}

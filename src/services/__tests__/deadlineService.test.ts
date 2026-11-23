@@ -695,5 +695,196 @@ describe('T-47: periodicity/warning presets, compatibility, validation, and scal
     expect(() => applyScalarColumnTypeConversion(tab, 'c_rel', 'text')).toThrow(/relation/i);
     expect(() => applyScalarColumnTypeConversion(tab, 'c_txt', 'relation')).toThrow(/relation/i);
   });
+
+  it('tracks exact field losses (actualDate, manualNextDate, note, _rawOriginal) across all reverse conversion modes and respects custom selectOptions', () => {
+    const config = {
+      periodicityValue: 6,
+      periodicityUnit: 'months' as const,
+      warningValue: 14,
+      warningDayType: 'calendar' as const
+    };
+    const rows = [
+      {
+        id: 'r_all',
+        dl: {
+          actualDate: '2026-01-10',
+          manualNextDate: '2026-11-15',
+          note: 'Особое условие',
+          _rawOriginal: '123'
+        }
+      },
+      { id: 'r_actual', dl: { actualDate: '2026-02-01' } },
+      { id: 'r_manual', dl: { manualNextDate: '2026-12-01' } },
+      { id: 'r_note', dl: { note: 'Только заметка' } },
+      { id: 'r_raw', dl: { _rawOriginal: 'да' } },
+      { id: 'r_empty', dl: {} }
+    ];
+
+    // 1) date / effectiveNextDate:
+    // r_all -> manualNextDate kept (actualDate, note, _rawOriginal lost)
+    // r_actual -> calculatedNextDate kept (actualDate lost!)
+    // r_manual -> manualNextDate kept (lossless)
+    // r_note -> full loss (note lost)
+    // r_raw -> full loss (_rawOriginal lost)
+    const pDateEff = previewConversionFromDeadline(rows, 'dl', 'date', {
+      extractMode: 'effectiveNextDate',
+      config,
+      todayIso: '2026-05-01'
+    });
+    expect(pDateEff.convertedCount).toBe(3);
+    expect(pDateEff.emptyCount).toBe(1);
+    expect(pDateEff.lostDataCount).toBe(2);
+    expect(pDateEff.partialLossCount).toBe(2);
+    expect(pDateEff.lostFieldsSummary).toEqual({
+      actualDate: 2,
+      manualNextDate: 0,
+      note: 2,
+      _rawOriginal: 2
+    });
+
+    // 2) date / actualDate:
+    // r_all -> actualDate kept (manualNextDate, note, _rawOriginal lost)
+    // r_actual -> actualDate kept (lossless)
+    // r_manual, r_note, r_raw -> full loss
+    const pDateActual = previewConversionFromDeadline(rows, 'dl', 'date', {
+      extractMode: 'actualDate',
+      config,
+      todayIso: '2026-05-01'
+    });
+    expect(pDateActual.convertedCount).toBe(2);
+    expect(pDateActual.lostDataCount).toBe(3);
+    expect(pDateActual.partialLossCount).toBe(1);
+    expect(pDateActual.lostFieldsSummary).toEqual({
+      actualDate: 0,
+      manualNextDate: 2,
+      note: 2,
+      _rawOriginal: 2
+    });
+
+    // 3) text / summary:
+    // r_all -> План + Факт kept (note, _rawOriginal lost)
+    // r_actual, r_manual -> lossless
+    // r_note -> summary is '' -> full loss! (note lost)
+    // r_raw -> _rawOriginal kept (lossless)
+    const pTextSummary = previewConversionFromDeadline(rows, 'dl', 'text', {
+      extractMode: 'summary',
+      config,
+      todayIso: '2026-05-01'
+    });
+    expect(pTextSummary.convertedCount).toBe(4);
+    expect(pTextSummary.lostDataCount).toBe(1);
+    expect(pTextSummary.partialLossCount).toBe(1);
+    expect(pTextSummary.lostFieldsSummary).toEqual({
+      actualDate: 0,
+      manualNextDate: 0,
+      note: 2,
+      _rawOriginal: 1
+    });
+
+    // 4) text / rawOriginal:
+    // r_all -> '123' kept (actualDate, manualNextDate, note lost)
+    // r_actual -> fallback calculated next date (actualDate lost)
+    // r_manual -> fallback manualNextDate (lossless)
+    // r_note -> fallback note (lossless)
+    // r_raw -> 'да' kept (lossless)
+    const pTextRaw = previewConversionFromDeadline(rows, 'dl', 'text', {
+      extractMode: 'rawOriginal',
+      config,
+      todayIso: '2026-05-01'
+    });
+    expect(pTextRaw.convertedCount).toBe(5);
+    expect(pTextRaw.lostDataCount).toBe(0);
+    expect(pTextRaw.partialLossCount).toBe(2);
+    expect(pTextRaw.lostFieldsSummary).toEqual({
+      actualDate: 2,
+      manualNextDate: 1,
+      note: 1,
+      _rawOriginal: 0
+    });
+
+    // 5) number:
+    // r_all -> _rawOriginal '123' -> 123 (actualDate, manualNextDate, note lost -> partialLoss!)
+    // r_actual, r_manual, r_note, r_raw ('да') -> full loss
+    const pNumber = previewConversionFromDeadline(rows, 'dl', 'number', {
+      config,
+      todayIso: '2026-05-01'
+    });
+    expect(pNumber.convertedCount).toBe(1);
+    expect(pNumber.lostDataCount).toBe(4);
+    expect(pNumber.partialLossCount).toBe(1);
+    expect(pNumber.lostFieldsSummary).toEqual({
+      actualDate: 2,
+      manualNextDate: 2,
+      note: 2,
+      _rawOriginal: 1
+    });
+
+    // 6) boolean:
+    // r_raw ('да') -> true (lossless); r_all ('123') & others -> full loss
+    const pBool = previewConversionFromDeadline(rows, 'dl', 'boolean', {
+      config,
+      todayIso: '2026-05-01'
+    });
+    expect(pBool.convertedCount).toBe(1);
+    expect(pBool.lostDataCount).toBe(4);
+    expect(pBool.partialLossCount).toBe(0);
+    expect(pBool.lostFieldsSummary).toEqual({
+      actualDate: 2,
+      manualNextDate: 2,
+      note: 2,
+      _rawOriginal: 1
+    });
+
+    // 7) select & 8) link:
+    // r_all -> '123' (partialLoss: actualDate, manualNextDate, note lost)
+    // r_raw -> 'да' (lossless)
+    // r_actual, r_manual, r_note -> full loss
+    for (const targetType of ['select', 'link'] as const) {
+      const pTarget = previewConversionFromDeadline(rows, 'dl', targetType, {
+        config,
+        todayIso: '2026-05-01'
+      });
+      expect(pTarget.convertedCount).toBe(2);
+      expect(pTarget.lostDataCount).toBe(3);
+      expect(pTarget.partialLossCount).toBe(1);
+      expect(pTarget.lostFieldsSummary).toEqual({
+        actualDate: 2,
+        manualNextDate: 2,
+        note: 2,
+        _rawOriginal: 0
+      });
+    }
+
+    // selectOptions: explicit user options vs automatic collection
+    const tab: Tab = {
+      id: 't_sel',
+      name: 'МО',
+      columns: [{ id: 'dl', name: 'Срок', type: 'deadline_control', deadlineConfig: config }],
+      rows,
+      attachedDocs: []
+    };
+    const withCustomSelect = applyColumnTypeConversion(tab, 'dl', 'select', {
+      selectOptions: ['Годен', 'Отстранён']
+    });
+    expect(withCustomSelect.tab.columns[0].options).toEqual(['Годен', 'Отстранён']);
+
+    const withAutoSelect = applyColumnTypeConversion(tab, 'dl', 'select');
+    expect(withAutoSelect.tab.columns[0].options).toEqual(['123', 'да']);
+
+    const scalarTab: Tab = {
+      id: 't_scalar_sel',
+      name: 'Текст',
+      columns: [{ id: 'txt', name: 'Поле', type: 'text' }],
+      rows: [{ id: 'r1', txt: 'Alpha' }, { id: 'r2', txt: 'Beta' }],
+      attachedDocs: []
+    };
+    const scalarCustomSelect = applyScalarColumnTypeConversion(scalarTab, 'txt', 'select', {
+      selectOptions: ['Вариант А', 'Вариант Б']
+    });
+    expect(scalarCustomSelect.tab.columns[0].options).toEqual(['Вариант А', 'Вариант Б']);
+
+    const scalarAutoSelect = applyScalarColumnTypeConversion(scalarTab, 'txt', 'select');
+    expect(scalarAutoSelect.tab.columns[0].options).toEqual(['Alpha', 'Beta']);
+  });
 });
 

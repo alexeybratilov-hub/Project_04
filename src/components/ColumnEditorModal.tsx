@@ -36,6 +36,7 @@ import {
   applyColumnTypeConversion,
   applyScalarColumnTypeConversion,
   DeadlineConversionTargetField,
+  DeadlineLostFieldKey,
   DeadlineReverseExtractMode,
   DEFAULT_DEADLINE_COLUMN_CONFIG,
   formatDeadlineConfigShortSummary,
@@ -97,6 +98,105 @@ const CONVERTIBLE_COLUMN_TYPES: Array<{ value: Exclude<ColumnType, 'relation'>; 
   { value: 'link', label: 'Ссылка (URL / веб-адрес)' },
   { value: 'deadline_control', label: 'Контроль сроков (периодичность и статусы)' }
 ];
+
+export const DEADLINE_LOST_FIELD_LABELS: Record<DeadlineLostFieldKey, string> = {
+  actualDate: 'Фактическая дата (actualDate)',
+  manualNextDate: 'Ручная плановая дата (manualNextDate)',
+  note: 'Примечание (note)',
+  _rawOriginal: 'Исходный текст (_rawOriginal)'
+};
+
+export const FromDeadlinePreviewPanel: React.FC<{
+  preview: FromDeadlineConversionPreview;
+  rowIdentifierById: Map<string, string>;
+}> = ({ preview, rowIdentifierById }) => {
+  const lostFieldEntries = (
+    Object.keys(DEADLINE_LOST_FIELD_LABELS) as DeadlineLostFieldKey[]
+  )
+    .map((key) => ({
+      key,
+      label: DEADLINE_LOST_FIELD_LABELS[key],
+      count: preview.lostFieldsSummary?.[key] ?? 0
+    }))
+    .filter((item) => item.count > 0);
+
+  return (
+    <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 space-y-3">
+      <div className="font-semibold text-slate-800 dark:text-slate-100">
+        Предварительный просмотр обратного преобразования
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+        <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+          <div className="text-[10px] text-slate-500">Всего строк</div>
+          <div className="text-sm font-bold font-mono tabular-nums text-slate-800 dark:text-slate-100">
+            {preview.totalRows}
+          </div>
+        </div>
+        <div className="p-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800">
+          <div className="text-[10px] text-emerald-700 dark:text-emerald-300">Перенесётся</div>
+          <div className="text-sm font-bold font-mono tabular-nums text-emerald-700 dark:text-emerald-300">
+            {preview.convertedCount}
+          </div>
+        </div>
+        <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+          <div className="text-[10px] text-slate-500">Пустых ячеек</div>
+          <div className="text-sm font-bold font-mono tabular-nums text-slate-600 dark:text-slate-300">
+            {preview.emptyCount}
+          </div>
+        </div>
+        <div className="p-2 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800">
+          <div className="text-[10px] text-red-700 dark:text-red-300">Без значения / потеря</div>
+          <div className="text-sm font-bold font-mono tabular-nums text-red-700 dark:text-red-300">
+            {preview.lostDataCount}
+          </div>
+        </div>
+      </div>
+
+      {lostFieldEntries.length > 0 && (
+        <StatusBanner
+          variant="warning"
+          compact
+          title={
+            preview.partialLossCount > 0
+              ? `Будут потеряны поля контроля сроков (частичный перенос в ${preview.partialLossCount} стр.):`
+              : 'Будут потеряны следующие поля контроля сроков:'
+          }
+        >
+          <ul className="list-disc pl-4 space-y-0.5 text-[11px]">
+            {lostFieldEntries.map((item) => (
+              <li key={item.key}>
+                <span className="font-medium">{item.label}</span> — в {item.count} стр.
+              </li>
+            ))}
+          </ul>
+        </StatusBanner>
+      )}
+
+      {preview.lostDataCount > 0 ? (
+        <StatusBanner
+          variant="warning"
+          compact
+          title={`Внимание: ${preview.lostDataCount} непустых строк останутся пустыми`}
+        >
+          <ul className="list-disc pl-4 space-y-0.5 text-[11px]">
+            {preview.samplesOfLostData.map((sample) => (
+              <li key={sample.rowId}>
+                <span className="font-medium">
+                  {rowIdentifierById.get(sample.rowId) || sample.rowId}
+                </span>{' '}
+                ({sample.summary || 'пусто'}): {sample.reason}
+              </li>
+            ))}
+          </ul>
+        </StatusBanner>
+      ) : lostFieldEntries.length === 0 ? (
+        <StatusBanner variant="success" compact>
+          Все непустые записи и заполненные поля будут перенесены без потерь.
+        </StatusBanner>
+      ) : null}
+    </div>
+  );
+};
 
 function isCellNonEmptyForBackup(val: unknown): boolean {
   if (val === null || val === undefined) return false;
@@ -595,20 +695,25 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
 
       const hadNonEmptyBefore = draftRows.some((r) => isCellNonEmptyForBackup(r[convertingCol.id]));
 
+      const selectOpts =
+        convertTargetType === 'select'
+          ? convertSelectOptions
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : undefined;
+
       let nextTab: Tab;
       if (convertTargetType === 'deadline_control' || convertingCol.type === 'deadline_control') {
         const res = applyColumnTypeConversion(workingTab, convertingCol.id, convertTargetType, {
           targetField: convertTargetField,
           extractMode: convertExtractMode,
           deadlineConfig: nextDeadlineCfg,
-          holidays
+          holidays,
+          selectOptions: selectOpts
         });
         nextTab = res.tab;
       } else {
-        const selectOpts = convertSelectOptions
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean);
         const res = applyScalarColumnTypeConversion(
           workingTab,
           convertingCol.id,
@@ -1499,72 +1604,10 @@ export const ColumnEditorModal: React.FC<ColumnEditorModalProps> = ({
             )}
 
             {conversionPreview?.kind === 'from_deadline' && conversionPreview.fromDeadline && (
-              <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 space-y-3">
-                <div className="font-semibold text-slate-800 dark:text-slate-100">
-                  Предварительный просмотр обратного преобразования
-                </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
-                  <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
-                    <div className="text-[10px] text-slate-500">Всего строк</div>
-                    <div className="text-sm font-bold font-mono tabular-nums text-slate-800 dark:text-slate-100">
-                      {conversionPreview.fromDeadline.totalRows}
-                    </div>
-                  </div>
-                  <div className="p-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800">
-                    <div className="text-[10px] text-emerald-700 dark:text-emerald-300">
-                      Перенесётся
-                    </div>
-                    <div className="text-sm font-bold font-mono tabular-nums text-emerald-700 dark:text-emerald-300">
-                      {conversionPreview.fromDeadline.convertedCount}
-                    </div>
-                  </div>
-                  <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
-                    <div className="text-[10px] text-slate-500">Пустых ячеек</div>
-                    <div className="text-sm font-bold font-mono tabular-nums text-slate-600 dark:text-slate-300">
-                      {conversionPreview.fromDeadline.emptyCount}
-                    </div>
-                  </div>
-                  <div className="p-2 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800">
-                    <div className="text-[10px] text-red-700 dark:text-red-300">
-                      Без значения / потеря
-                    </div>
-                    <div className="text-sm font-bold font-mono tabular-nums text-red-700 dark:text-red-300">
-                      {conversionPreview.fromDeadline.lostDataCount}
-                    </div>
-                  </div>
-                </div>
-
-                {conversionPreview.fromDeadline.partialLossCount > 0 && (
-                  <StatusBanner variant="info" compact>
-                    В {conversionPreview.fromDeadline.partialLossCount} строках дополнительные поля
-                    контроля сроков (вторая дата, примечание или исходный текст) не поместятся в
-                    выбранный плоский формат.
-                  </StatusBanner>
-                )}
-
-                {conversionPreview.fromDeadline.lostDataCount > 0 ? (
-                  <StatusBanner
-                    variant="warning"
-                    compact
-                    title={`Внимание: ${conversionPreview.fromDeadline.lostDataCount} непустых строк останутся пустыми`}
-                  >
-                    <ul className="list-disc pl-4 space-y-0.5 text-[11px]">
-                      {conversionPreview.fromDeadline.samplesOfLostData.map((sample) => (
-                        <li key={sample.rowId}>
-                          <span className="font-medium">
-                            {rowIdentifierById.get(sample.rowId) || sample.rowId}
-                          </span>{' '}
-                          ({sample.summary || 'пусто'}): {sample.reason}
-                        </li>
-                      ))}
-                    </ul>
-                  </StatusBanner>
-                ) : (
-                  <StatusBanner variant="success" compact>
-                    Все непустые записи будут перенесены в новый тип столбца.
-                  </StatusBanner>
-                )}
-              </div>
+              <FromDeadlinePreviewPanel
+                preview={conversionPreview.fromDeadline}
+                rowIdentifierById={rowIdentifierById}
+              />
             )}
 
             {conversionPreview?.kind === 'scalar' && conversionPreview.scalar && (
