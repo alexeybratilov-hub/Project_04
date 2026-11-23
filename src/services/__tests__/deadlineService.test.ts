@@ -4,6 +4,7 @@ import {
   addCalendarMonths,
   addCalendarYears,
   applyActualDateUpdate,
+  applyDeadlineCompletedTodayInState,
   applyColumnTypeConversion,
   applyScalarColumnTypeConversion,
   buildDeadlineNotificationKey,
@@ -21,7 +22,10 @@ import {
   filterDeadlineEvents,
   formatDeadlineCellDisplay,
   formatDeadlineConfigShortSummary,
+  formatDeadlinePeriodicityOnly,
   getActiveAlertDeadlineEvents,
+  getDeadlineFilterOptions,
+  hasAnyDeadlineControlColumn,
   isNotificationSnoozed,
   isStandardWarningPreset,
   markDeadlineCompletedToday,
@@ -32,6 +36,9 @@ import {
   previewConversionFromDeadline,
   previewConversionToDeadline,
   previewScalarConversion,
+  resolveDeadlineEventTarget,
+  summarizeDeadlineEvents,
+  SYSTEM_DEADLINE_TAB_ID,
   updateDeadlineCellValue,
   validateDeadlinePeriodicityInput
 } from '../deadlineService';
@@ -887,4 +894,300 @@ describe('T-47: periodicity/warning presets, compatibility, validation, and scal
     expect(scalarAutoSelect.tab.columns[0].options).toEqual(['Alpha', 'Beta']);
   });
 });
+
+describe('T-48: System Deadline Control aggregation, filtering, target resolution & immutability', () => {
+  function buildMultiEntityDeadlineDb(): DatabaseState {
+    const base: DatabaseState = JSON.parse(JSON.stringify(INITIAL_DATABASE_STATE));
+    base.settings = {
+      ...base.settings,
+      deadlineSettings: {
+        holidays: ['2026-05-01'],
+        notificationsEnabled: true
+      }
+    };
+
+    const e1 = base.entities[0];
+    e1.id = 'ent_alpha';
+    e1.profile.shortName = 'ООО «Альфа»';
+    e1.tabs = [
+      {
+        id: 'tab_med',
+        name: 'Медосмотры',
+        columns: [
+          { id: 'emp_fio', name: 'ФИО работника', type: 'text' },
+          {
+            id: 'col_med',
+            name: 'Периодический МО',
+            type: 'deadline_control',
+            deadlineConfig: {
+              periodicityValue: 12,
+              periodicityUnit: 'months',
+              warningValue: 14,
+              warningDayType: 'calendar'
+            }
+          }
+        ],
+        rows: [
+          {
+            id: 'r_overdue',
+            emp_fio: 'Иванов Иван',
+            col_med: { actualDate: '2025-04-01', note: 'Пропустил запись' }
+          },
+          {
+            id: 'r_due_soon',
+            emp_fio: 'Петров Пётр',
+            col_med: { actualDate: '2025-05-10', note: 'Записан в клинику' }
+          },
+          {
+            id: 'r_missing',
+            emp_fio: 'Смирнов Сергей',
+            col_med: {}
+          }
+        ],
+        attachedDocs: []
+      },
+      {
+        id: 'tab_train',
+        name: 'Обучение ОТ',
+        columns: [
+          { id: 'emp_fio', name: 'ФИО работника', type: 'text' },
+          {
+            id: 'col_once',
+            name: 'Вводный инструктаж',
+            type: 'deadline_control',
+            deadlineConfig: {
+              periodicityValue: 0,
+              periodicityUnit: 'months',
+              warningValue: 14,
+              warningDayType: 'calendar'
+            }
+          }
+        ],
+        rows: [
+          {
+            id: 'r_completed',
+            emp_fio: 'Иванов Иван',
+            col_once: { actualDate: '2026-02-15', note: 'Журнал №1' }
+          }
+        ],
+        attachedDocs: []
+      }
+    ];
+    base.activeEntityId = e1.id;
+    base.tabs = e1.tabs;
+
+    const e2 = JSON.parse(JSON.stringify(e1));
+    e2.id = 'ent_beta';
+    e2.profile.shortName = 'ООО «Бета»';
+    e2.tabs = [
+      {
+        id: 'tab_med', // intentionally matches e1's cloned tab id!
+        name: 'Медосмотры',
+        columns: [
+          { id: 'emp_fio', name: 'ФИО работника', type: 'text' },
+          {
+            id: 'col_med',
+            name: 'Периодический МО',
+            type: 'deadline_control',
+            deadlineConfig: {
+              periodicityValue: 3,
+              periodicityUnit: 'years',
+              warningValue: 30,
+              warningDayType: 'calendar'
+            }
+          }
+        ],
+        rows: [
+          {
+            id: 'r_scheduled',
+            emp_fio: 'Сидорова Анна',
+            col_med: {
+              actualDate: '2025-01-10',
+              manualNextDate: '2027-09-01',
+              note: 'Перенесено по приказу'
+            }
+          }
+        ],
+        attachedDocs: []
+      }
+    ];
+    base.entities.push(e2);
+    return base;
+  }
+
+  it('uses stable system tab ID and aggregates events across multiple entities/tables without duplication', () => {
+    expect(SYSTEM_DEADLINE_TAB_ID).toBe('__system_deadline_control__');
+    const db = buildMultiEntityDeadlineDb();
+    expect(hasAnyDeadlineControlColumn(db)).toBe(true);
+
+    const events = collectDeadlineEvents(db, { todayIso: '2026-05-01' });
+    expect(events).toHaveLength(5);
+
+    // Unique eventIds even on repeated collection calls
+    const eventIds = events.map((e) => e.eventId);
+    expect(new Set(eventIds).size).toBe(5);
+    const eventsAgain = collectDeadlineEvents(db, { todayIso: '2026-05-01' });
+    expect(eventsAgain.map((e) => e.eventId)).toEqual(eventIds);
+
+    // Verify all 5 statuses & exact source attribution
+    const statuses = events.map((e) => e.evaluation.status);
+    expect(statuses).toEqual(['overdue', 'due_soon', 'scheduled', 'missing_data', 'completed']);
+
+    const betaScheduled = events.find((e) => e.rowId === 'r_scheduled')!;
+    expect(betaScheduled.entityId).toBe('ent_beta');
+    expect(betaScheduled.entityName).toBe('ООО «Бета»');
+    expect(betaScheduled.tabId).toBe('tab_med');
+    expect(betaScheduled.tabName).toBe('Медосмотры');
+    expect(betaScheduled.rowIdentifier).toBe('Сидорова Анна');
+    expect(betaScheduled.columnName).toBe('Периодический МО');
+    expect(betaScheduled.evaluation.actualDate).toBe('2025-01-10');
+    expect(betaScheduled.evaluation.effectiveNextDate).toBe('2027-09-01');
+    expect(betaScheduled.evaluation.nextDateSource).toBe('manual');
+    expect(betaScheduled.evaluation.value.note).toBe('Перенесено по приказу');
+    expect(formatDeadlinePeriodicityOnly(betaScheduled.evaluation.config)).toBe('1 раз в 3 года');
+
+    const summary = summarizeDeadlineEvents(events);
+    expect(summary).toEqual({
+      total: 5,
+      overdue: 1,
+      dueSoon: 1,
+      scheduled: 1,
+      completed: 1,
+      missingData: 1,
+      actionable: 2,
+      closedOrMissing: 2
+    });
+  });
+
+  it('supports joint filtering (entity + tab + rowIdentifier + status + search) and clean reset', () => {
+    const db = buildMultiEntityDeadlineDb();
+    const events = collectDeadlineEvents(db, { todayIso: '2026-05-01' });
+
+    const optionsAll = getDeadlineFilterOptions(events);
+    expect(optionsAll.entities.map((e) => e.id)).toEqual(['ent_alpha', 'ent_beta']);
+    expect(optionsAll.tabs.map((t) => t.id)).toContain('tab_med');
+    expect(optionsAll.tabs.map((t) => t.id)).toContain('tab_train');
+
+    // Entity-scoped options isolate tabs & rowIdentifiers for that entity
+    const optionsBeta = getDeadlineFilterOptions(events, { entityId: 'ent_beta' });
+    expect(optionsBeta.tabs.map((t) => t.id)).toEqual(['tab_med']);
+    expect(optionsBeta.rowIdentifiers).toEqual(['Сидорова Анна']);
+
+    // Joint filter combining entityId + tabId + rowIdentifier + status + search
+    const narrowed = filterDeadlineEvents(events, {
+      entityId: 'ent_alpha',
+      tabId: 'tab_med',
+      rowIdentifier: 'Иванов Иван',
+      status: 'overdue',
+      search: 'Пропустил'
+    });
+    expect(narrowed).toHaveLength(1);
+    expect(narrowed[0].rowId).toBe('r_overdue');
+
+    // Mismatched combination yields 0
+    const emptyFiltered = filterDeadlineEvents(events, {
+      entityId: 'ent_beta',
+      tabId: 'tab_train'
+    });
+    expect(emptyFiltered).toHaveLength(0);
+
+    // Resetting all filters returns all 5 events
+    const resetFiltered = filterDeadlineEvents(events, {
+      entityId: 'all',
+      tabId: 'all',
+      rowIdentifier: 'all',
+      status: 'all',
+      search: ''
+    });
+    expect(resetFiltered).toHaveLength(5);
+  });
+
+  it('resolves target by exact IDs across entities/tabs and fails safely when row, tab, column, or entity is deleted', () => {
+    const db = buildMultiEntityDeadlineDb();
+    const events = collectDeadlineEvents(db, { todayIso: '2026-05-01' });
+
+    // Cross-entity target resolution finds exact row on inactive entity
+    const betaEvent = events.find((e) => e.entityId === 'ent_beta')!;
+    const okRes = resolveDeadlineEventTarget(db, betaEvent);
+    expect(okRes.ok).toBe(true);
+    if (okRes.ok) {
+      expect(okRes.entity.id).toBe('ent_beta');
+      expect(okRes.tab.id).toBe('tab_med');
+      expect(okRes.row.id).toBe('r_scheduled');
+      expect(okRes.rowIdentifier).toBe('Сидорова Анна');
+    }
+
+    // Deleted row must NOT fall back to another row by index
+    const dbDeletedRow: DatabaseState = JSON.parse(JSON.stringify(db));
+    dbDeletedRow.tabs[0].rows = dbDeletedRow.tabs[0].rows.filter((r) => r.id !== 'r_overdue');
+    const alphaOverdue = events.find((e) => e.rowId === 'r_overdue')!;
+    const rowMissing = resolveDeadlineEventTarget(dbDeletedRow, alphaOverdue);
+    expect(rowMissing.ok).toBe(false);
+    if (!rowMissing.ok) {
+      expect(rowMissing.reason).toBe('row_missing');
+    }
+
+    // Deleted tab
+    const dbDeletedTab: DatabaseState = JSON.parse(JSON.stringify(db));
+    dbDeletedTab.tabs = dbDeletedTab.tabs.filter((t) => t.id !== 'tab_train');
+    const completedEv = events.find((e) => e.tabId === 'tab_train')!;
+    const tabMissing = resolveDeadlineEventTarget(dbDeletedTab, completedEv);
+    expect(tabMissing.ok).toBe(false);
+    if (!tabMissing.ok) {
+      expect(tabMissing.reason).toBe('tab_missing');
+    }
+
+    // Deleted/converted column
+    const dbDeletedCol: DatabaseState = JSON.parse(JSON.stringify(db));
+    dbDeletedCol.tabs[0].columns = dbDeletedCol.tabs[0].columns.filter((c) => c.id !== 'col_med');
+    const colMissing = resolveDeadlineEventTarget(dbDeletedCol, alphaOverdue);
+    expect(colMissing.ok).toBe(false);
+    if (!colMissing.ok) {
+      expect(colMissing.reason).toBe('column_missing');
+    }
+  });
+
+  it('reflects live updates when marking completed today on active or inactive entity and leaves db intact during read-only operations', () => {
+    const db = buildMultiEntityDeadlineDb();
+    const snapshotBefore = JSON.stringify(db);
+
+    // Read-only operations: collect, summarize, filterOptions, filter, resolve
+    const events = collectDeadlineEvents(db, { todayIso: '2026-05-01' });
+    summarizeDeadlineEvents(events);
+    getDeadlineFilterOptions(events, { entityId: 'ent_alpha' });
+    filterDeadlineEvents(events, { status: 'overdue', search: 'Иванов' });
+    resolveDeadlineEventTarget(db, events[0]);
+
+    // Database must be byte-for-byte identical after read-only operations
+    expect(JSON.stringify(db)).toBe(snapshotBefore);
+
+    // Mark overdue event on active entity as completed today (2026-05-01)
+    const overdueEv = events.find((e) => e.rowId === 'r_overdue')!;
+    const resActive = applyDeadlineCompletedTodayInState(db, overdueEv, '2026-05-01');
+    expect(resActive.updated).toBe(true);
+    const updatedActiveEvents = collectDeadlineEvents(resActive.state, { todayIso: '2026-05-01' });
+    const refreshedOverdue = updatedActiveEvents.find((e) => e.rowId === 'r_overdue')!;
+    expect(refreshedOverdue.evaluation.actualDate).toBe('2026-05-01');
+    expect(refreshedOverdue.evaluation.effectiveNextDate).toBe('2027-05-01');
+    expect(refreshedOverdue.evaluation.status).toBe('scheduled');
+
+    // Mark event on INACTIVE entity (ent_beta) as completed today -> clears stale manualNextDate
+    const betaEv = events.find((e) => e.entityId === 'ent_beta')!;
+    const resInactive = applyDeadlineCompletedTodayInState(resActive.state, betaEv, '2026-05-01');
+    expect(resInactive.updated).toBe(true);
+    const updatedAll = collectDeadlineEvents(resInactive.state, { todayIso: '2026-05-01' });
+    const refreshedBeta = updatedAll.find((e) => e.entityId === 'ent_beta')!;
+    expect(refreshedBeta.evaluation.actualDate).toBe('2026-05-01');
+    expect(refreshedBeta.evaluation.manualNextDate).toBeUndefined();
+    expect(refreshedBeta.evaluation.effectiveNextDate).toBe('2029-05-01');
+    expect(refreshedBeta.evaluation.status).toBe('scheduled');
+  });
+
+  it('handles databases without any deadline_control columns cleanly', () => {
+    const cleanDb: DatabaseState = JSON.parse(JSON.stringify(INITIAL_DATABASE_STATE));
+    expect(hasAnyDeadlineControlColumn(cleanDb)).toBe(false);
+    expect(collectDeadlineEvents(cleanDb, { todayIso: '2026-05-01' })).toEqual([]);
+  });
+});
+
 

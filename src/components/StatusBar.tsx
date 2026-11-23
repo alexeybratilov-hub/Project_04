@@ -4,7 +4,12 @@ import { LLMConfig, Tab } from '../types/database';
 import { StorageMode } from '../services/localApiClient';
 
 interface StatusBarProps {
-  currentTab: Tab;
+  currentTab?: Tab;
+  systemTabSummary?: {
+    label: string;
+    totalEvents: number;
+    attentionCount: number;
+  } | null;
   entityName?: string;
   storageMode: StorageMode;
   usbDisconnected?: boolean;
@@ -16,6 +21,7 @@ interface StatusBarProps {
 
 export const StatusBar: React.FC<StatusBarProps> = ({
   currentTab,
+  systemTabSummary,
   storageMode,
   usbDisconnected,
   databaseDirectory,
@@ -25,18 +31,40 @@ export const StatusBar: React.FC<StatusBarProps> = ({
     <footer className="h-6 bg-slate-900 text-slate-400 text-[11px] select-none flex items-center justify-between gap-3 px-3 border-t border-slate-800 shrink-0 z-20">
       {/* Left: Active Tab Metrics */}
       <div className="flex items-center gap-2.5 min-w-0">
-        <span className="flex items-center gap-1 text-slate-300 truncate max-w-[240px]">
-          <span className="text-slate-500">Таблица:</span>
-          <span className="text-white truncate">«{currentTab.name}»</span>
-        </span>
-        <span className="text-slate-700" aria-hidden="true">|</span>
-        <span className="font-mono tabular-nums text-slate-300 shrink-0">
-          Строк: <strong className="text-white">{currentTab.rows.length}</strong>
-        </span>
-        <span className="text-slate-700" aria-hidden="true">|</span>
-        <span className="font-mono tabular-nums text-slate-300 shrink-0">
-          Столбцов: <strong className="text-white">{currentTab.columns.length}</strong>
-        </span>
+        {systemTabSummary ? (
+          <>
+            <span className="flex items-center gap-1 text-slate-300 truncate max-w-[260px]">
+              <span className="text-slate-500">Раздел:</span>
+              <span className="text-white truncate">«{systemTabSummary.label}»</span>
+            </span>
+            <span className="text-slate-700" aria-hidden="true">|</span>
+            <span className="font-mono tabular-nums text-slate-300 shrink-0">
+              Мероприятий: <strong className="text-white">{systemTabSummary.totalEvents}</strong>
+            </span>
+            <span className="text-slate-700" aria-hidden="true">|</span>
+            <span className="font-mono tabular-nums text-slate-300 shrink-0">
+              Требуют внимания:{' '}
+              <strong className={systemTabSummary.attentionCount > 0 ? 'text-amber-300' : 'text-emerald-300'}>
+                {systemTabSummary.attentionCount}
+              </strong>
+            </span>
+          </>
+        ) : currentTab ? (
+          <>
+            <span className="flex items-center gap-1 text-slate-300 truncate max-w-[240px]">
+              <span className="text-slate-500">Таблица:</span>
+              <span className="text-white truncate">«{currentTab.name}»</span>
+            </span>
+            <span className="text-slate-700" aria-hidden="true">|</span>
+            <span className="font-mono tabular-nums text-slate-300 shrink-0">
+              Строк: <strong className="text-white">{currentTab.rows.length}</strong>
+            </span>
+            <span className="text-slate-700" aria-hidden="true">|</span>
+            <span className="font-mono tabular-nums text-slate-300 shrink-0">
+              Столбцов: <strong className="text-white">{currentTab.columns.length}</strong>
+            </span>
+          </>
+        ) : null}
       </div>
 
       {/* Right: Storage Path / Portable Trigger */}

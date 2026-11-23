@@ -7,6 +7,7 @@ import {
   DeadlineColumnConfig,
   DeadlinePeriodicityUnit,
   DeadlineWarningDayType,
+  LegalEntity,
   Row,
   Tab
 } from '../types/database';
@@ -78,6 +79,7 @@ export interface DeadlineEventItem {
 export interface DeadlineEventFilter {
   entityId?: string;
   tabId?: string;
+  rowIdentifier?: string;
   status?: DeadlineStatus | 'all' | 'actionable' | 'closed_or_missing';
   search?: string;
 }
@@ -1126,6 +1128,13 @@ export function filterDeadlineEvents(
     if (filter.tabId && filter.tabId !== 'all' && ev.tabId !== filter.tabId) {
       return false;
     }
+    if (
+      filter.rowIdentifier &&
+      filter.rowIdentifier !== 'all' &&
+      ev.rowIdentifier !== filter.rowIdentifier
+    ) {
+      return false;
+    }
     if (filter.status && filter.status !== 'all') {
       if (filter.status === 'actionable') {
         if (ev.evaluation.status !== 'overdue' && ev.evaluation.status !== 'due_soon') return false;
@@ -2007,6 +2016,286 @@ export function applyScalarColumnTypeConversion(
   return {
     tab: { ...tab, columns: nextColumns, rows: nextRows },
     preview
+  };
+}
+
+// ==================== T-48: System Tab Aggregation, Filters & Navigation ====================
+
+export interface DeadlineEventsSummary {
+  total: number;
+  overdue: number;
+  dueSoon: number;
+  scheduled: number;
+  completed: number;
+  missingData: number;
+  actionable: number;
+  closedOrMissing: number;
+}
+
+export function summarizeDeadlineEvents(events: DeadlineEventItem[]): DeadlineEventsSummary {
+  let overdue = 0;
+  let dueSoon = 0;
+  let scheduled = 0;
+  let completed = 0;
+  let missingData = 0;
+
+  for (const ev of events) {
+    switch (ev.evaluation.status) {
+      case 'overdue':
+        overdue += 1;
+        break;
+      case 'due_soon':
+        dueSoon += 1;
+        break;
+      case 'scheduled':
+        scheduled += 1;
+        break;
+      case 'completed':
+        completed += 1;
+        break;
+      case 'missing_data':
+        missingData += 1;
+        break;
+    }
+  }
+
+  return {
+    total: events.length,
+    overdue,
+    dueSoon,
+    scheduled,
+    completed,
+    missingData,
+    actionable: overdue + dueSoon,
+    closedOrMissing: completed + missingData
+  };
+}
+
+export interface DeadlineFilterOptions {
+  entities: Array<{ id: string; name: string }>;
+  tabs: Array<{ id: string; name: string }>;
+  rowIdentifiers: string[];
+}
+
+export function getDeadlineFilterOptions(
+  events: DeadlineEventItem[],
+  filter?: Pick<DeadlineEventFilter, 'entityId' | 'tabId'>
+): DeadlineFilterOptions {
+  const entitiesMap = new Map<string, string>();
+  const tabsMap = new Map<string, string>();
+  const rowIdentifiersSet = new Set<string>();
+
+  for (const ev of events) {
+    if (!entitiesMap.has(ev.entityId)) {
+      entitiesMap.set(ev.entityId, ev.entityName);
+    }
+
+    const matchesEntity =
+      !filter?.entityId || filter.entityId === 'all' || ev.entityId === filter.entityId;
+    if (matchesEntity && !tabsMap.has(ev.tabId)) {
+      tabsMap.set(ev.tabId, ev.tabName);
+    }
+
+    const matchesTab = !filter?.tabId || filter.tabId === 'all' || ev.tabId === filter.tabId;
+    if (matchesEntity && matchesTab && ev.rowIdentifier) {
+      rowIdentifiersSet.add(ev.rowIdentifier);
+    }
+  }
+
+  const entities = Array.from(entitiesMap.entries())
+    .map(([id, name]) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+
+  const tabs = Array.from(tabsMap.entries())
+    .map(([id, name]) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+
+  const rowIdentifiers = Array.from(rowIdentifiersSet).sort((a, b) => a.localeCompare(b, 'ru'));
+
+  return { entities, tabs, rowIdentifiers };
+}
+
+export function hasAnyDeadlineControlColumn(dbState: DatabaseState): boolean {
+  const entities = Array.isArray(dbState.entities) ? dbState.entities : [];
+  for (const entity of entities) {
+    const entityTabs =
+      entity.id === dbState.activeEntityId && Array.isArray(dbState.tabs)
+        ? dbState.tabs
+        : Array.isArray(entity.tabs)
+          ? entity.tabs
+          : [];
+    for (const tab of entityTabs) {
+      if ((tab.columns || []).some((c) => c.type === 'deadline_control')) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+export function formatDeadlinePeriodicityOnly(
+  rawConfig?: Partial<DeadlineColumnConfig> | null
+): string {
+  const cfg = normalizeDeadlineColumnConfig(rawConfig);
+  const presetId = detectPeriodicityPreset(cfg.periodicityValue, cfg.periodicityUnit);
+  const preset = DEADLINE_PERIODICITY_PRESETS.find((p) => p.id === presetId);
+  if (preset) return preset.label;
+  if (cfg.periodicityValue === 0) return 'Разовое';
+  const unitText =
+    cfg.periodicityUnit === 'days'
+      ? 'дн.'
+      : cfg.periodicityUnit === 'years'
+        ? 'г./лет'
+        : 'мес.';
+  return `Раз в ${cfg.periodicityValue} ${unitText}`;
+}
+
+export type DeadlineEventTargetResolution =
+  | {
+      ok: true;
+      entity: LegalEntity;
+      tab: Tab;
+      row: Row;
+      rowIndex: number;
+      rowIdentifier: string;
+      column?: Column;
+    }
+  | {
+      ok: false;
+      reason: 'entity_missing' | 'tab_missing' | 'row_missing' | 'column_missing';
+      message: string;
+    };
+
+export function resolveDeadlineEventTarget(
+  dbState: DatabaseState,
+  target: {
+    entityId: string;
+    tabId: string;
+    rowId: string;
+    columnId?: string;
+    tabName?: string;
+    rowIdentifier?: string;
+    columnName?: string;
+  }
+): DeadlineEventTargetResolution {
+  const entity = (dbState.entities || []).find((e) => e.id === target.entityId);
+  if (!entity) {
+    return {
+      ok: false,
+      reason: 'entity_missing',
+      message: 'Исходная организация больше не найдена в базе данных.'
+    };
+  }
+
+  const entityTabs =
+    entity.id === dbState.activeEntityId && Array.isArray(dbState.tabs)
+      ? dbState.tabs
+      : Array.isArray(entity.tabs)
+        ? entity.tabs
+        : [];
+
+  const tab = entityTabs.find((t) => t.id === target.tabId);
+  if (!tab) {
+    return {
+      ok: false,
+      reason: 'tab_missing',
+      message: `Исходная таблица «${target.tabName || target.tabId}» больше не существует.`
+    };
+  }
+
+  const rowIndex = (tab.rows || []).findIndex((r) => r.id === target.rowId);
+  if (rowIndex === -1) {
+    return {
+      ok: false,
+      reason: 'row_missing',
+      message: `Исходная запись «${target.rowIdentifier || target.rowId}» не найдена (возможно, строка была удалена).`
+    };
+  }
+
+  const row = tab.rows[rowIndex];
+  let column: Column | undefined;
+  if (target.columnId) {
+    column = (tab.columns || []).find(
+      (c) => c.id === target.columnId && c.type === 'deadline_control'
+    );
+    if (!column) {
+      return {
+        ok: false,
+        reason: 'column_missing',
+        message: `Контролируемый столбец «${target.columnName || target.columnId}» был удалён или изменил тип.`
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    entity,
+    tab,
+    row,
+    rowIndex,
+    rowIdentifier: resolveSafeRowIdentifier(row, tab, rowIndex + 1),
+    column
+  };
+}
+
+export function applyDeadlineCompletedTodayInState(
+  state: DatabaseState,
+  target: {
+    entityId: string;
+    tabId: string;
+    rowId: string;
+    columnId: string;
+  },
+  todayIso: string = getTodayIso()
+): { state: DatabaseState; updated: boolean } {
+  const validToday = parseFlexibleDateToIso(todayIso) || getTodayIso();
+  const resolution = resolveDeadlineEventTarget(state, target);
+  if (!resolution.ok) {
+    return { state, updated: false };
+  }
+
+  const updateTabs = (tabs: Tab[]): Tab[] =>
+    tabs.map((tab) => {
+      if (tab.id !== target.tabId) return tab;
+      return {
+        ...tab,
+        rows: tab.rows.map((row) => {
+          if (row.id !== target.rowId) return row;
+          return {
+            ...row,
+            [target.columnId]: markDeadlineCompletedToday(row[target.columnId], validToday)
+          };
+        })
+      };
+    });
+
+  if (target.entityId === state.activeEntityId) {
+    const nextTabs = updateTabs(state.tabs);
+    return {
+      state: {
+        ...state,
+        tabs: nextTabs
+      },
+      updated: true
+    };
+  }
+
+  const nextEntities = (state.entities || []).map((ent) =>
+    ent.id === target.entityId
+      ? {
+          ...ent,
+          tabs: updateTabs(ent.tabs || []),
+          updatedAt: new Date().toISOString()
+        }
+      : ent
+  );
+
+  return {
+    state: {
+      ...state,
+      entities: nextEntities
+    },
+    updated: true
   };
 }
 

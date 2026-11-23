@@ -9,6 +9,7 @@ import { TitleBar } from './components/TitleBar';
 import { MenuBar } from './components/MenuBar';
 import { TabBar } from './components/TabBar';
 import { DataGrid } from './components/DataGrid';
+import { DeadlineControlView } from './components/DeadlineControlView';
 import { StatusBar } from './components/StatusBar';
 import { MasterJumpDialog } from './components/MasterJumpDialog';
 import { ExcelImportModal } from './components/ExcelImportModal';
@@ -57,6 +58,15 @@ import {
   StorageMode
 } from './services/localApiClient';
 import { createUniqueId, integrityService } from './services/integrityService';
+import {
+  applyDeadlineCompletedTodayInState,
+  collectDeadlineEvents,
+  DeadlineEventItem,
+  normalizeHolidaysList,
+  resolveDeadlineEventTarget,
+  summarizeDeadlineEvents,
+  SYSTEM_DEADLINE_TAB_ID
+} from './services/deadlineService';
 import { excelService } from './services/excelService';
 import { documentGenerator } from './services/documentGenerator';
 import {
@@ -79,6 +89,7 @@ export default function App() {
   // Selection & Grid action signals (used by MenuBar & Ctrl+F)
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
   const [focusSearchSignal, setFocusSearchSignal] = useState(0);
+  const [focusDeadlineSearchSignal, setFocusDeadlineSearchSignal] = useState(0);
   const [deleteSelectedSignal, setDeleteSelectedSignal] = useState(0);
 
   // Disk persistence tracking & recovery banner state
@@ -315,7 +326,9 @@ export default function App() {
     setDbState(res.state);
     latestDbRef.current = res.state;
     setActiveTabId((prev) =>
-      res.state.tabs.some((t) => t.id === prev) ? prev : res.state.tabs[0]?.id || 'tab_positions'
+      prev === SYSTEM_DEADLINE_TAB_ID || res.state.tabs.some((t) => t.id === prev)
+        ? prev
+        : res.state.tabs[0]?.id || 'tab_positions'
     );
     setSelectedRowIds(new Set());
     clearRowHighlight();
@@ -390,7 +403,9 @@ export default function App() {
         setDbState(res.state);
         latestDbRef.current = res.state;
         setActiveTabId((prev) =>
-          res.state.tabs.some((t) => t.id === prev) ? prev : res.state.tabs[0]?.id || 'tab_positions'
+          prev === SYSTEM_DEADLINE_TAB_ID || res.state.tabs.some((t) => t.id === prev)
+            ? prev
+            : res.state.tabs[0]?.id || 'tab_positions'
         );
         initialLoadFailedRef.current = false;
         setInitialLoadFailed(false);
@@ -548,12 +563,19 @@ export default function App() {
     }
   }, [dbState.settings.theme]);
 
+  const isSystemDeadlineTab = activeTabId === SYSTEM_DEADLINE_TAB_ID;
   const currentTab = dbState.tabs.find((t) => t.id === activeTabId) || dbState.tabs[0];
+
+  const deadlineEvents = React.useMemo(() => collectDeadlineEvents(dbState), [dbState]);
+  const deadlineSummary = React.useMemo(
+    () => summarizeDeadlineEvents(deadlineEvents),
+    [deadlineEvents]
+  );
 
   // ===================== CRUD OPERATIONS =====================
 
   const handleAddRow = useCallback(() => {
-    if (!currentTab) return;
+    if (isSystemDeadlineTab || !currentTab) return;
     const newRowId = createUniqueId('row');
     const newRow: Row = { id: newRowId };
 
@@ -569,7 +591,7 @@ export default function App() {
       ...prev,
       tabs: prev.tabs.map((t) => (t.id === currentTab.id ? { ...t, rows: [newRow, ...t.rows] } : t))
     }));
-  }, [currentTab, updateDbState]);
+  }, [currentTab, isSystemDeadlineTab, updateDbState]);
 
   // Global Keyboard Shortcuts (Ctrl+S, Ctrl+N, Ctrl+F)
   useEffect(() => {
@@ -584,12 +606,16 @@ export default function App() {
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
         e.preventDefault();
-        setFocusSearchSignal((n) => n + 1);
+        if (activeTabId === SYSTEM_DEADLINE_TAB_ID) {
+          setFocusDeadlineSearchSignal((n) => n + 1);
+        } else {
+          setFocusSearchSignal((n) => n + 1);
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleAddRow, handleRetrySave]);
+  }, [activeTabId, handleAddRow, handleRetrySave]);
 
   // Global guard: prevent browser from opening/navigating to files dropped outside modal dropzones
   useEffect(() => {
@@ -801,8 +827,9 @@ export default function App() {
     }));
   };
 
-  // Request delete tab
+  // Request delete tab (system tab cannot be deleted)
   const handleDeleteTab = (tabId: string) => {
+    if (tabId === SYSTEM_DEADLINE_TAB_ID) return;
     if (dbState.tabs.length <= 1) {
       showToast('В базе должна оставаться хотя бы одна вкладка.', 'warning');
       return;
@@ -1093,11 +1120,77 @@ export default function App() {
       { persist: false, touchTimestamp: false }
     );
 
-    setActiveTabId(target.tabs[0]?.id || '');
+    if (activeTabId !== SYSTEM_DEADLINE_TAB_ID) {
+      setActiveTabId(target.tabs[0]?.id || '');
+    }
     clearRowHighlight();
     setPendingDeleteTabId(null);
     setMasterDepsTabId(null);
     setSelectedRowIds(new Set());
+  };
+
+  // ===================== DEADLINE CONTROL SYSTEM TAB HANDLERS =====================
+
+  const handleJumpToDeadlineEvent = (event: DeadlineEventItem) => {
+    const resolution = resolveDeadlineEventTarget(latestDbRef.current, event);
+    if (!resolution.ok) {
+      showToast(resolution.message, 'warning');
+      return;
+    }
+
+    if (resolution.entity.id !== latestDbRef.current.activeEntityId) {
+      const targetEntityId = resolution.entity.id;
+      updateDbState(
+        (prev) => {
+          const nextTarget = prev.entities.find((e) => e.id === targetEntityId);
+          if (!nextTarget) return prev;
+          return {
+            ...prev,
+            activeEntityId: nextTarget.id,
+            tabs: nextTarget.tabs,
+            tags: nextTarget.tags,
+            templates: nextTarget.templates,
+            generatedDocs: nextTarget.generatedDocs || [],
+            llmLogs: nextTarget.llmLogs || []
+          };
+        },
+        { persist: false, touchTimestamp: false }
+      );
+      setPendingDeleteTabId(null);
+      setMasterDepsTabId(null);
+    }
+
+    setActiveTabId(resolution.tab.id);
+    setSelectedRowIds(new Set());
+    highlightRowTemporarily(resolution.row.id);
+  };
+
+  const handleMarkDeadlineEventCompletedToday = (event: DeadlineEventItem) => {
+    const resolution = resolveDeadlineEventTarget(latestDbRef.current, event);
+    if (!resolution.ok) {
+      showToast(resolution.message, 'warning');
+      return;
+    }
+
+    updateDbState((prev) => applyDeadlineCompletedTodayInState(prev, event).state);
+    showToast(
+      `Мероприятие «${event.columnName}» (${resolution.rowIdentifier}) отмечено выполненным сегодня.`,
+      'success'
+    );
+  };
+
+  const handleUpdateDeadlineHolidays = (nextHolidays: string[]) => {
+    const normalized = normalizeHolidaysList(nextHolidays);
+    updateDbState((prev) => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        deadlineSettings: {
+          ...prev.settings.deadlineSettings,
+          holidays: normalized
+        }
+      }
+    }));
   };
 
   const handleSaveLegalEntity = ({
@@ -1367,20 +1460,45 @@ export default function App() {
       {/* 2. Menu Bar */}
       <MenuBar
         onSave={() => void handleRetrySave()}
-        onExportExcel={() =>
+        onExportExcel={() => {
+          if (isSystemDeadlineTab) {
+            showToast('Для экспорта таблицы в Excel откройте нужную пользовательскую вкладку.', 'info');
+            return;
+          }
           excelService.exportTabToXlsx(currentTab, dbState.tabs, undefined, {
             holidays: dbState.settings.deadlineSettings?.holidays
-          })
-        }
+          });
+        }}
         onFullBackup={() => setIsBackupOpen(true)}
         onRestore={() => setIsBackupOpen(true)}
         onOpenPortableModal={() => setIsWindowsPortableOpen(true)}
-        onAddRow={handleAddRow}
-        onDeleteSelectedRows={() => setDeleteSelectedSignal((n) => n + 1)}
-        selectedRowsCount={selectedRowIds.size}
-        onFocusSearch={() => setFocusSearchSignal((n) => n + 1)}
+        onAddRow={() => {
+          if (isSystemDeadlineTab) {
+            showToast('Для добавления строки откройте пользовательскую вкладку таблицы.', 'info');
+            return;
+          }
+          handleAddRow();
+        }}
+        onDeleteSelectedRows={() => {
+          if (isSystemDeadlineTab) return;
+          setDeleteSelectedSignal((n) => n + 1);
+        }}
+        selectedRowsCount={isSystemDeadlineTab ? 0 : selectedRowIds.size}
+        onFocusSearch={() => {
+          if (isSystemDeadlineTab) {
+            setFocusDeadlineSearchSignal((n) => n + 1);
+          } else {
+            setFocusSearchSignal((n) => n + 1);
+          }
+        }}
         onAddTab={handleAddTab}
-        onOpenColumnEditor={() => setIsColumnEditorOpen(true)}
+        onOpenColumnEditor={() => {
+          if (isSystemDeadlineTab) {
+            showToast('Для настройки столбцов откройте пользовательскую вкладку таблицы.', 'info');
+            return;
+          }
+          setIsColumnEditorOpen(true);
+        }}
         onOpenRelationsSchema={() => {
           setIsRelationsAuditMode(false);
           setIsRelationsSchemaOpen(true);
@@ -1512,75 +1630,96 @@ export default function App() {
         }}
         onConfigureMasterDeps={(tabId) => setMasterDepsTabId(tabId)}
         onOpenColumnEditor={() => setIsColumnEditorOpen(true)}
+        deadlineOverdueCount={deadlineSummary.overdue}
+        deadlineDueSoonCount={deadlineSummary.dueSoon}
       />
 
-      {/* 4. Active Data Grid View */}
-      {currentTab && (
-        <DataGrid
-          currentTab={currentTab}
-          allTabs={dbState.tabs}
-          sharedNormativeCount={dbState.normativeDocs.length}
-          tabTemplatesCount={
-            dbState.templates.filter((tpl) => !tpl.isArchived && tpl.tabId === currentTab.id).length
-          }
-          selectedRowIds={selectedRowIds}
-          onSelectedRowIdsChange={setSelectedRowIds}
-          focusSearchSignal={focusSearchSignal}
-          deleteSelectedSignal={deleteSelectedSignal}
-          rowDensity={dbState.settings.rowDensity || 'compact'}
-          onChangeRowDensity={(rowDensity) =>
-            updateDbState((p) => ({
-              ...p,
-              settings: { ...p.settings, rowDensity }
-            }))
-          }
-          pageSize={dbState.settings.pageSize || 100}
-          onChangePageSize={(pageSize) =>
-            updateDbState((p) => ({
-              ...p,
-              settings: { ...p.settings, pageSize }
-            }))
-          }
-          onAddRow={handleAddRow}
-          onInsertBulkRows={handleInsertBulkRows}
-          onUpdateCell={handleUpdateCell}
-          onUpdateRowMulti={handleUpdateRowMulti}
-          onDeleteRows={handleDeleteRows}
-          onOpenExcelImport={() => setIsExcelImportOpen(true)}
-          onExportExcel={() =>
-            excelService.exportTabToXlsx(currentTab, dbState.tabs, undefined, {
-              holidays: dbState.settings.deadlineSettings?.holidays
-            })
-          }
-          onOpenColumnEditor={() => setIsColumnEditorOpen(true)}
-          onOpenNormativeDocs={() => setIsNormativeDocsOpen(true)}
-          onOpenTemplates={(ids) => {
-            setTemplateSelectedRowIds(ids);
-            setTemplatesModalScope('tab');
-            setIsTemplatesModalOpen(true);
-          }}
-          onOpenLLMStudio={(rowId) => {
-            setLlmTargetRowId(rowId);
-            setLlmInitialSubTab('generate');
-            setIsLLMStudioOpen(true);
-          }}
-          onAttemptEditRelation={handleAttemptEditRelation}
-          onAddColumn={(newCol) => handleAddColumnToTab(currentTab.id, newCol)}
-          onUpdateColumn={(colId, patch) => handleUpdateColumn(currentTab.id, colId, patch)}
-          onReorderColumns={(fromIndex, toIndex) =>
-            handleReorderColumns(currentTab.id, fromIndex, toIndex)
-          }
-          tags={dbState.tags}
-          templates={dbState.templates}
-          highlightedRowId={highlightedRowId}
-          holidays={dbState.settings.deadlineSettings?.holidays}
+      {/* 4. Active Workspace: System Tab «Контроль сроков» OR User DataGrid */}
+      {isSystemDeadlineTab ? (
+        <DeadlineControlView
+          dbState={dbState}
+          focusSearchSignal={focusDeadlineSearchSignal}
+          onJumpToEvent={handleJumpToDeadlineEvent}
+          onMarkCompletedToday={handleMarkDeadlineEventCompletedToday}
+          onUpdateHolidays={handleUpdateDeadlineHolidays}
         />
+      ) : (
+        currentTab && (
+          <DataGrid
+            currentTab={currentTab}
+            allTabs={dbState.tabs}
+            sharedNormativeCount={dbState.normativeDocs.length}
+            tabTemplatesCount={
+              dbState.templates.filter((tpl) => !tpl.isArchived && tpl.tabId === currentTab.id).length
+            }
+            selectedRowIds={selectedRowIds}
+            onSelectedRowIdsChange={setSelectedRowIds}
+            focusSearchSignal={focusSearchSignal}
+            deleteSelectedSignal={deleteSelectedSignal}
+            rowDensity={dbState.settings.rowDensity || 'compact'}
+            onChangeRowDensity={(rowDensity) =>
+              updateDbState((p) => ({
+                ...p,
+                settings: { ...p.settings, rowDensity }
+              }))
+            }
+            pageSize={dbState.settings.pageSize || 100}
+            onChangePageSize={(pageSize) =>
+              updateDbState((p) => ({
+                ...p,
+                settings: { ...p.settings, pageSize }
+              }))
+            }
+            onAddRow={handleAddRow}
+            onInsertBulkRows={handleInsertBulkRows}
+            onUpdateCell={handleUpdateCell}
+            onUpdateRowMulti={handleUpdateRowMulti}
+            onDeleteRows={handleDeleteRows}
+            onOpenExcelImport={() => setIsExcelImportOpen(true)}
+            onExportExcel={() =>
+              excelService.exportTabToXlsx(currentTab, dbState.tabs, undefined, {
+                holidays: dbState.settings.deadlineSettings?.holidays
+              })
+            }
+            onOpenColumnEditor={() => setIsColumnEditorOpen(true)}
+            onOpenNormativeDocs={() => setIsNormativeDocsOpen(true)}
+            onOpenTemplates={(ids) => {
+              setTemplateSelectedRowIds(ids);
+              setTemplatesModalScope('tab');
+              setIsTemplatesModalOpen(true);
+            }}
+            onOpenLLMStudio={(rowId) => {
+              setLlmTargetRowId(rowId);
+              setLlmInitialSubTab('generate');
+              setIsLLMStudioOpen(true);
+            }}
+            onAttemptEditRelation={handleAttemptEditRelation}
+            onAddColumn={(newCol) => handleAddColumnToTab(currentTab.id, newCol)}
+            onUpdateColumn={(colId, patch) => handleUpdateColumn(currentTab.id, colId, patch)}
+            onReorderColumns={(fromIndex, toIndex) =>
+              handleReorderColumns(currentTab.id, fromIndex, toIndex)
+            }
+            tags={dbState.tags}
+            templates={dbState.templates}
+            highlightedRowId={highlightedRowId}
+            holidays={dbState.settings.deadlineSettings?.holidays}
+          />
+        )
       )}
 
       {/* 5. Desktop Status Bar */}
-      {currentTab && (
+      {(isSystemDeadlineTab || currentTab) && (
         <StatusBar
           currentTab={currentTab}
+          systemTabSummary={
+            isSystemDeadlineTab
+              ? {
+                  label: 'Контроль сроков',
+                  totalEvents: deadlineSummary.total,
+                  attentionCount: deadlineSummary.actionable
+                }
+              : null
+          }
           entityName={activeEntity.profile.shortName || activeEntity.profile.fullName}
           storageMode={storageMode}
           usbDisconnected={usbDisconnected}
