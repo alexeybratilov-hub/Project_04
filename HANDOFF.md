@@ -4,11 +4,12 @@
 Репозиторий / рабочая папка: `/app/applet` (в контейнере отсутствует `.git`)
 
 ## 1. Документация для начала работы следующего агента (читать в таком порядке)
-1. `AGENTS.md` — **обязательный регламент работы** мультидисциплинарной команды (7 ролей, запрет на правку кода до завершения первичного аудита и согласования плана, правила таблиц, целостности данных, форм, UI и финального отчёта).
-2. `AGENT_HANDOFF_PROMPT.md` — стартовый промпт и чёткий чек-лист входа в проект.
-3. `PROJECT_CONTEXT.md` — фактическая карта архитектуры, файлов, типов данных, сервисов и команд сборки.
-4. `DECISIONS.md` — согласованные архитектурные решения по P0/P1 (`OT-Baza.exe` на `127.0.0.1`, целостность связей, кириллица в PDF, Этап 5, Этап 6).
-5. `ROADMAP.md` и `TASKS.md` — история выполненных этапов (Этапы 0–10, задачи `T-01`–`T-35`; отложенная доработка `T-36`).
+> **Для экономии контекста и токенов** при переходе к этапам **D-2 — D-6** не перечитывайте весь репозиторий заново — достаточно:
+1. `HANDOFF.md` (этот файл — актуальная точка входа, ограничения и точный объём следующего этапа).
+2. `DESIGN_SYSTEM.md` и `UX_CONCEPT.md` (утверждённая дизайн-система Liquid Glass, архитектура Dashboard и гибридной навигации).
+3. `UI_ACCEPTANCE.md` (критерии приёмки и матрица проверок 18 комбинаций разрешений/DPI/тем).
+4. `AGENTS.md` и `AGENT_HANDOFF_PROMPT.md` (правила команды и запреты на ломку бизнес-логики; `MASTER_PROMPT.md` / `AGENT_GUIDE.md` в репозитории отсутствуют — их роль выполняют эти два файла).
+5. `PROJECT_CONTEXT.md`, `DECISIONS.md`, `ROADMAP.md`, `TASKS.md` — открывать точечно при изменении смежных модулей (`T-01`–`T-49`, `D-1`–`D-6`).
 
 ---
 
@@ -73,3 +74,32 @@
 3. **Нативная запись, чтение и удаление DOCX в `./templates/` через `OT-Baza.exe`** *(перенесено по итогам приёмки `T-44`)*.
 4. **Проверка сформированных DOCX в Microsoft Word / LibreOffice на Windows** *(перенесено по итогам приёмки `T-44`)*.
 5. Контрольные точки Git: в текущей рабочей папке `/app/applet` каталог `.git` отсутствует, поэтому коммит внутри контейнера не создавался.
+
+---
+
+## 6. Трек UX/UI Redesign — итоги этапа `D-1` и переход к `D-2`
+
+### Статус этапа `D-1` («Исследование и концепция»): **Выполнено, ожидает утверждения пользователем**
+- **Что изучено (без правки рабочего кода):** `PROJECT_CONTEXT.md`, `DECISIONS.md`, `ROADMAP.md`, `TASKS.md`, `HANDOFF.md`, `AGENTS.md`, `AGENT_HANDOFF_PROMPT.md`, а также целевые файлы интерфейса (`src/index.css`, `src/types/database.ts`, `src/data/initialDatabase.ts`, `src/components/TitleBar.tsx`, `MenuBar.tsx`, `TabBar.tsx`, `StatusBar.tsx`, `DeadlineControlView.tsx`, `DataGrid.tsx`, `src/components/ui/*`, `src/App.tsx`).
+- **Созданные/обновлённые документы и макеты:**
+  - `DESIGN_SYSTEM.md` — трёхслойная модель **Liquid Glass** (`Canvas` -> `Liquid Glass Chrome` -> `Crisp Data Surface`), палитры и токены Light/Dark, типографика `Manrope` + `JetBrains Mono tabular-nums`, режим `visualEffects: 'glass' | 'reduced'`, шкала `zIndex.tabPreview: z-[75]`, правила доступности и полной офлайн-автономности.
+  - `UX_CONCEPT.md` — аудит CRM/ERP-восприятия, гибридная навигация (единая стеклянная шапка `44px` + сворачиваемый левый сайдбар `236px`/`60px`), архитектура главного экрана **Dashboard** (`SYSTEM_DASHBOARD_TAB_ID`, единый источник данных `deadlineService.ts`), матрица и эргономика **TabPreviewPopover** (`280ms` открытие, `180ms` закрытие + pointer-bridge, `Escape`/scroll/drag, viewport clamping).
+  - `UI_ACCEPTANCE.md` — контрольный чек-лист приёмки этапов `D-1`–`D-6` и обязательная матрица 18 комбинаций (`1920×1080`, `1600×900`, `1366×768` × `100%/125%/150%` × `light/dark`).
+  - `docs/d1_liquid_glass_prototype.html` — самодостаточный статический интерактивный HTML-прототип (вне `src/` и `public/`) с переключением Light/Dark, Glass/Reduced, Dashboard/DataGrid и живым ховер-превью вкладок + сгенерированные концепт-рендеры.
+  - Актуализированы `ROADMAP.md`, `TASKS.md`, `PROJECT_CONTEXT.md`, `AGENTS.md`, `AGENT_HANDOFF_PROMPT.md`, `HANDOFF.md`.
+- **Рабочий код приложения (`src/*`, `launcher.c`, `package.json`, `index.html`, `public/*`) на этапе `D-1` не изменялся.**
+
+### Неизменные ограничения для этапов `D-2` — `D-6`
+1. 100% обратная совместимость `DatabaseState`, `LegalEntity`, `Tab` (до 20 вкладок), связей `relation`, каскадов `integrityService.ts`.
+2. Бизнес-логика `deadlineService.ts` (`T-45`–`T-49`), сессионная дедупликация toast (`shownToastKeysRef`), `snoozedNotificationKeys` и системная вкладка `SYSTEM_DEADLINE_TAB_ID` не меняются.
+3. Сохраняются `native-fs` (`launcher.c` / `./data/ot_database.json`), `web-preview`, Excel импорт/экспорт/`Ctrl+V`, DOCX/PDF (в т.ч. готовые `.docx`-шаблоны `T-44`), LLM-студия и запрет внешних CDN/платных сервисов.
+4. Ячейки `DataGrid` и `DeadlineControlView` остаются на непрозрачной высококонтрастной плоскостью Layer 2 без `backdrop-filter` внутри строк/ячеек.
+
+### Следующий шаг после одобрения пользователем — **Этап `D-2` («Дизайн-система»)**
+- **Точный объём `D-2`:**
+  1. Добавить в `src/index.css` CSS custom properties Liquid Glass для тем Light/Dark (`--lg-canvas-bg`, `--lg-glass-*`, `--lg-data-*`, `--lg-specular-border`, `--lg-hairline-border`, `--lg-inner-highlight`, семантические токены и `[data-visual-effects="reduced"]` + `@media prefers-reduced-transparency/motion`).
+  2. Добавить опциональное поле `visualEffects?: 'glass' | 'reduced'` в `AppSettings` (`src/types/database.ts` и нормализация в `src/services/storageService.ts`) с применением `data-visual-effects` на корневом элементе (без ломки старых БД).
+  3. Обновить базовые примитивы `src/components/ui/` (`AppButton.tsx`, `AppModal.tsx`, `AppInput.tsx`, `FormField.tsx`, `StatusBanner.tsx`, `InlineConfirm.tsx`, `ConfirmDialog.tsx`, `ToastProvider.tsx`, `zIndex.ts` с `tabPreview`) без поломки их текущих prop-контрактов.
+  4. Провести проверку `D-2`: `npx vitest run`, `npm run lint`, `npm run build`, проверка контраста Light/Dark (`>= 4.5:1`), `reduced`-режима и существующих модалок.
+- **Минимальный список файлов для чтения при старте `D-2`:** `HANDOFF.md`, `DESIGN_SYSTEM.md`, `UI_ACCEPTANCE.md` (разделы 1 и D-2), `src/index.css`, `src/types/database.ts`, `src/services/storageService.ts`, `src/components/ui/*`.
+

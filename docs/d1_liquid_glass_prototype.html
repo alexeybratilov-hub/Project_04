@@ -1,0 +1,1560 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ОТ-База — Прототип UX/UI Liquid Glass (Этап D-1)</title>
+  <style>
+    :root {
+      --lg-canvas-bg: linear-gradient(145deg, #EEF3F9 0%, #E7EFF8 52%, #EDF2F7 100%);
+      --lg-canvas-glow: radial-gradient(ellipse at 18% 8%, rgba(59, 130, 246, 0.11), transparent 52%),
+                        radial-gradient(ellipse at 86% 88%, rgba(14, 165, 233, 0.08), transparent 48%);
+      --lg-glass-surface: rgba(255, 255, 255, 0.72);
+      --lg-glass-elevated: rgba(255, 255, 255, 0.88);
+      --lg-glass-hover: rgba(255, 255, 255, 0.90);
+      --lg-data-surface: rgba(255, 255, 255, 0.95);
+      --lg-data-subtle: rgba(241, 245, 249, 0.92);
+      --lg-specular-border: rgba(255, 255, 255, 0.80);
+      --lg-hairline-border: rgba(15, 23, 42, 0.09);
+      --lg-inner-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+      --lg-shadow-panel: 0 4px 24px -4px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04), var(--lg-inner-highlight);
+      --lg-shadow-float: 0 18px 42px -8px rgba(15, 23, 42, 0.18), 0 4px 12px rgba(15, 23, 42, 0.06), var(--lg-inner-highlight);
+
+      --lg-text-primary: #0F172A;
+      --lg-text-secondary: #334155;
+      --lg-text-muted: #5B6B82;
+      --lg-accent: #2563EB;
+      --lg-accent-hover: #1D4ED8;
+      --lg-accent-soft: rgba(37, 99, 235, 0.11);
+
+      --st-overdue-text: #B91C1C;
+      --st-overdue-bg: rgba(239, 68, 68, 0.12);
+      --st-overdue-border: rgba(220, 38, 38, 0.28);
+
+      --st-soon-text: #92400E;
+      --st-soon-bg: rgba(245, 158, 11, 0.14);
+      --st-soon-border: rgba(217, 119, 6, 0.30);
+
+      --st-sched-text: #075985;
+      --st-sched-bg: rgba(14, 165, 233, 0.10);
+      --st-sched-border: rgba(2, 132, 199, 0.24);
+
+      --st-ok-text: #065F46;
+      --st-ok-bg: rgba(16, 185, 129, 0.12);
+      --st-ok-border: rgba(5, 150, 105, 0.26);
+
+      --blur-chrome: blur(18px) saturate(155%);
+      --blur-float: blur(22px) saturate(170%);
+      --blur-card: blur(14px) saturate(140%);
+
+      --font-ui: 'Manrope', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+
+    html.dark {
+      --lg-canvas-bg: linear-gradient(145deg, #080D18 0%, #0D1526 55%, #0A1120 100%);
+      --lg-canvas-glow: radial-gradient(ellipse at 18% 8%, rgba(56, 189, 248, 0.12), transparent 52%),
+                        radial-gradient(ellipse at 85% 90%, rgba(59, 130, 246, 0.08), transparent 48%);
+      --lg-glass-surface: rgba(17, 25, 42, 0.74);
+      --lg-glass-elevated: rgba(20, 29, 48, 0.90);
+      --lg-glass-hover: rgba(36, 49, 76, 0.80);
+      --lg-data-surface: rgba(15, 23, 42, 0.94);
+      --lg-data-subtle: rgba(30, 41, 59, 0.92);
+      --lg-specular-border: rgba(255, 255, 255, 0.13);
+      --lg-hairline-border: rgba(148, 163, 184, 0.16);
+      --lg-inner-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+      --lg-shadow-panel: 0 8px 28px -4px rgba(2, 6, 23, 0.45), var(--lg-inner-highlight);
+      --lg-shadow-float: 0 22px 48px -8px rgba(2, 6, 23, 0.74), var(--lg-inner-highlight);
+
+      --lg-text-primary: #F1F5F9;
+      --lg-text-secondary: #CBD5E1;
+      --lg-text-muted: #94A3B8;
+      --lg-accent: #60A5FA;
+      --lg-accent-hover: #3B82F6;
+      --lg-accent-soft: rgba(59, 130, 246, 0.20);
+
+      --st-overdue-text: #FCA5A5;
+      --st-overdue-bg: rgba(127, 29, 29, 0.52);
+      --st-overdue-border: rgba(248, 113, 113, 0.35);
+
+      --st-soon-text: #FCD34D;
+      --st-soon-bg: rgba(120, 53, 15, 0.52);
+      --st-soon-border: rgba(251, 191, 36, 0.34);
+
+      --st-sched-text: #7DD3FC;
+      --st-sched-bg: rgba(12, 74, 110, 0.48);
+      --st-sched-border: rgba(56, 189, 248, 0.30);
+
+      --st-ok-text: #6EE7B7;
+      --st-ok-bg: rgba(6, 78, 59, 0.50);
+      --st-ok-border: rgba(52, 211, 153, 0.32);
+    }
+
+    html[data-visual-effects="reduced"] {
+      --blur-chrome: none;
+      --blur-float: none;
+      --blur-card: none;
+      --lg-glass-surface: #F5F8FC;
+      --lg-glass-elevated: #FFFFFF;
+      --lg-glass-hover: #EAF0F7;
+      --lg-data-surface: #FFFFFF;
+      --lg-data-subtle: #F1F5F9;
+    }
+    html.dark[data-visual-effects="reduced"] {
+      --lg-glass-surface: #11192A;
+      --lg-glass-elevated: #162033;
+      --lg-glass-hover: #1E293B;
+      --lg-data-surface: #0F172A;
+      --lg-data-subtle: #1E293B;
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      font-family: var(--font-ui);
+      font-size: 13px;
+      line-height: 1.45;
+      color: var(--lg-text-primary);
+      background: var(--lg-canvas-bg);
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+    html.dark body { letter-spacing: 0.005em; }
+
+    .mono {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .app-shell {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      width: 100vw;
+      background: var(--lg-canvas-glow), var(--lg-canvas-bg);
+    }
+
+    /* Unified Topbar 44px */
+    .topbar {
+      height: 44px;
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 0 12px;
+      background: var(--lg-glass-surface);
+      backdrop-filter: var(--blur-chrome);
+      -webkit-backdrop-filter: var(--blur-chrome);
+      border-bottom: 1px solid var(--lg-hairline-border);
+      box-shadow: var(--lg-inner-highlight);
+      z-index: 50;
+    }
+    .topbar-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .brand-mark {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 700;
+      font-size: 14px;
+      letter-spacing: -0.01em;
+      white-space: nowrap;
+      padding: 4px 8px 4px 4px;
+      border-radius: 9px;
+    }
+    .brand-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 7px;
+      background: linear-gradient(135deg, #2563EB, #0EA5E9);
+      color: #fff;
+      display: grid;
+      place-items: center;
+      font-size: 11px;
+      font-weight: 800;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.35), 0 2px 6px rgba(37,99,235,0.35);
+    }
+
+    .glass-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 30px;
+      padding: 0 10px;
+      border-radius: 9px;
+      border: 1px solid var(--lg-hairline-border);
+      background: rgba(255,255,255,0.42);
+      color: var(--lg-text-primary);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 140ms cubic-bezier(0.16, 1, 0.3, 1), transform 120ms ease, border-color 140ms ease;
+    }
+    html.dark .glass-btn {
+      background: rgba(255,255,255,0.06);
+    }
+    .glass-btn:hover {
+      background: var(--lg-glass-hover);
+      border-color: rgba(37, 99, 235, 0.25);
+    }
+    .glass-btn:active { transform: scale(0.985); }
+    .glass-btn:focus-visible { outline: 2px solid var(--lg-accent); outline-offset: 1px; }
+    .glass-btn.primary {
+      background: var(--lg-accent);
+      color: #fff;
+      border-color: transparent;
+      font-weight: 600;
+    }
+    .glass-btn.primary:hover { background: var(--lg-accent-hover); }
+    .glass-btn.active {
+      background: var(--lg-accent-soft);
+      color: var(--lg-accent);
+      border-color: rgba(37, 99, 235, 0.28);
+      font-weight: 600;
+    }
+    .glass-btn.xs { height: 26px; padding: 0 8px; border-radius: 7px; font-size: 11.5px; }
+
+    .cmd-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      height: 30px;
+      width: 240px;
+      padding: 0 10px;
+      border-radius: 9px;
+      border: 1px solid var(--lg-hairline-border);
+      background: rgba(255,255,255,0.52);
+      color: var(--lg-text-muted);
+      font-size: 12px;
+      cursor: pointer;
+      justify-content: space-between;
+    }
+    html.dark .cmd-pill { background: rgba(15,23,42,0.45); }
+    .kbd {
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      padding: 1px 5px;
+      border-radius: 5px;
+      border: 1px solid var(--lg-hairline-border);
+      color: var(--lg-text-muted);
+    }
+
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 28px;
+      padding: 0 9px;
+      border-radius: 8px;
+      font-size: 11.5px;
+      font-weight: 600;
+      border: 1px solid var(--lg-hairline-border);
+      white-space: nowrap;
+      cursor: pointer;
+      background: rgba(255,255,255,0.45);
+      color: var(--lg-text-secondary);
+    }
+    html.dark .status-chip { background: rgba(255,255,255,0.06); }
+    .status-chip.alert {
+      background: var(--st-overdue-bg);
+      border-color: var(--st-overdue-border);
+      color: var(--st-overdue-text);
+    }
+    .status-chip.ok {
+      background: var(--st-ok-bg);
+      border-color: var(--st-ok-border);
+      color: var(--st-ok-text);
+    }
+
+    /* Main Layout */
+    .workspace-body {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      gap: 12px;
+      padding: 12px 14px 10px;
+    }
+
+    /* Collapsible Left Glass Sidebar */
+    .sidebar {
+      width: 236px;
+      min-width: 236px;
+      display: flex;
+      flex-direction: column;
+      border-radius: 16px;
+      background: var(--lg-glass-surface);
+      backdrop-filter: var(--blur-chrome);
+      -webkit-backdrop-filter: var(--blur-chrome);
+      border: 1px solid var(--lg-specular-border);
+      box-shadow: var(--lg-shadow-panel);
+      padding: 10px;
+      transition: width 190ms cubic-bezier(0.16, 1, 0.3, 1), min-width 190ms cubic-bezier(0.16, 1, 0.3, 1);
+      overflow: hidden;
+    }
+    .sidebar.collapsed {
+      width: 60px;
+      min-width: 60px;
+      padding: 10px 7px;
+      align-items: center;
+    }
+    .sidebar.collapsed .hide-when-collapsed { display: none; }
+    .sidebar.collapsed .nav-item { justify-content: center; padding: 0; width: 42px; height: 36px; }
+
+    .sidebar-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+    .sidebar-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--lg-text-muted);
+      padding: 0 6px;
+    }
+    .sidebar-search {
+      width: 100%;
+      height: 29px;
+      padding: 0 10px;
+      margin-bottom: 8px;
+      border-radius: 9px;
+      border: 1px solid var(--lg-hairline-border);
+      background: rgba(255,255,255,0.52);
+      color: var(--lg-text-primary);
+      font-family: inherit;
+      font-size: 12px;
+      outline: none;
+    }
+    html.dark .sidebar-search { background: rgba(15,23,42,0.50); }
+    .sidebar-search:focus { border-color: var(--lg-accent); }
+
+    .sidebar-scroll {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding-right: 2px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .sidebar-group-title {
+      font-size: 10.5px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--lg-text-muted);
+      padding: 10px 8px 4px;
+    }
+
+    .nav-item {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      height: 33px;
+      padding: 0 9px;
+      border-radius: 10px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--lg-text-secondary);
+      font-family: inherit;
+      font-size: 12.5px;
+      font-weight: 500;
+      cursor: pointer;
+      text-align: left;
+      width: 100%;
+      transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+    }
+    .nav-item:hover {
+      background: var(--lg-glass-hover);
+      color: var(--lg-text-primary);
+      border-color: var(--lg-hairline-border);
+    }
+    .nav-item.active {
+      background: var(--lg-accent-soft);
+      color: var(--lg-accent);
+      border-color: rgba(37, 99, 235, 0.24);
+      font-weight: 600;
+    }
+    .nav-item-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex: 1;
+    }
+    .nav-item-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .nav-count {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+      font-size: 11px;
+      color: var(--lg-text-muted);
+      padding: 1px 6px;
+      border-radius: 6px;
+      background: rgba(15, 23, 42, 0.05);
+    }
+    html.dark .nav-count { background: rgba(255, 255, 255, 0.07); }
+    .nav-count.warn {
+      background: var(--st-overdue-bg);
+      color: var(--st-overdue-text);
+      font-weight: 700;
+    }
+
+    .sidebar-divider {
+      height: 1px;
+      background: var(--lg-hairline-border);
+      margin: 8px 4px;
+    }
+
+    /* Main Content Stage */
+    .stage {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      overflow-y: auto;
+      padding-right: 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .dash-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 2px 2px 0;
+    }
+    .dash-title {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.25;
+    }
+    .dash-sub {
+      margin: 2px 0 0;
+      font-size: 12.5px;
+      color: var(--lg-text-muted);
+    }
+    .filter-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+    .segmented {
+      display: inline-flex;
+      padding: 3px;
+      border-radius: 10px;
+      background: var(--lg-glass-surface);
+      backdrop-filter: var(--blur-card);
+      border: 1px solid var(--lg-hairline-border);
+      gap: 2px;
+    }
+    .seg-btn {
+      border: none;
+      background: transparent;
+      color: var(--lg-text-secondary);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 5px 10px;
+      border-radius: 7px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .seg-btn.active {
+      background: var(--lg-glass-elevated);
+      color: var(--lg-accent);
+      font-weight: 600;
+      box-shadow: 0 1px 3px rgba(15,23,42,0.08);
+    }
+
+    /* 4 KPI Cards */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .glass-card {
+      border-radius: 16px;
+      background: var(--lg-glass-surface);
+      backdrop-filter: var(--blur-card);
+      -webkit-backdrop-filter: var(--blur-card);
+      border: 1px solid var(--lg-specular-border);
+      box-shadow: var(--lg-shadow-panel);
+      padding: 14px 16px;
+    }
+    .kpi-card {
+      text-align: left;
+      cursor: pointer;
+      transition: transform 140ms ease, background 140ms ease, border-color 140ms ease;
+    }
+    .kpi-card:hover {
+      background: var(--lg-glass-hover);
+      transform: translateY(-1px);
+      border-color: rgba(37, 99, 235, 0.26);
+    }
+    .kpi-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--lg-text-secondary);
+      margin-bottom: 6px;
+    }
+    .kpi-num {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+      font-size: 27px;
+      font-weight: 700;
+      line-height: 1.1;
+      margin-bottom: 4px;
+    }
+    .kpi-meta {
+      font-size: 11.5px;
+      color: var(--lg-text-muted);
+    }
+
+    /* Dashboard 2-column grid */
+    .dash-columns {
+      display: grid;
+      grid-template-columns: minmax(0, 1.65fr) minmax(300px, 1fr);
+      gap: 14px;
+      align-items: start;
+    }
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .section-title {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .alert-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .alert-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 11px 12px;
+      border-radius: 12px;
+      background: var(--lg-data-surface);
+      border: 1px solid var(--lg-hairline-border);
+      transition: border-color 140ms ease;
+    }
+    .alert-row:hover { border-color: rgba(37, 99, 235, 0.30); }
+    .alert-main { min-width: 0; flex: 1; }
+    .alert-top {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 3px;
+    }
+    .alert-event { font-weight: 600; font-size: 13px; }
+    .severity-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 7px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      border: 1px solid transparent;
+    }
+    .severity-tag.overdue { background: var(--st-overdue-bg); color: var(--st-overdue-text); border-color: var(--st-overdue-border); }
+    .severity-tag.due_soon { background: var(--st-soon-bg); color: var(--st-soon-text); border-color: var(--st-soon-border); }
+    .severity-tag.scheduled { background: var(--st-sched-bg); color: var(--st-sched-text); border-color: var(--st-sched-border); }
+    .severity-tag.completed { background: var(--st-ok-bg); color: var(--st-ok-text); border-color: var(--st-ok-border); }
+
+    .alert-meta {
+      font-size: 12px;
+      color: var(--lg-text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .alert-dates {
+      margin-top: 3px;
+      font-size: 11px;
+      color: var(--lg-text-muted);
+    }
+    .alert-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    /* Right widgets */
+    .widgets-stack { display: flex; flex-direction: column; gap: 12px; }
+    .bar-item { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; }
+    .bar-item:last-child { margin-bottom: 0; }
+    .bar-row-head { display: flex; justify-content: space-between; font-size: 12px; font-weight: 500; }
+    .bar-track {
+      height: 7px;
+      border-radius: 99px;
+      background: rgba(15, 23, 42, 0.08);
+      overflow: hidden;
+      display: flex;
+    }
+    html.dark .bar-track { background: rgba(255,255,255,0.09); }
+    .bar-seg-over { background: #DC2626; }
+    .bar-seg-soon { background: #D97706; }
+
+    .quick-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .quick-btn {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 10px;
+      border-radius: 10px;
+      border: 1px solid var(--lg-hairline-border);
+      background: var(--lg-data-surface);
+      color: var(--lg-text-primary);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 140ms ease, transform 120ms ease;
+    }
+    .quick-btn:hover { border-color: var(--lg-accent); transform: translateY(-1px); }
+
+    .recent-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 7px 0;
+      border-bottom: 1px solid var(--lg-hairline-border);
+      font-size: 12px;
+    }
+    .recent-row:last-child { border-bottom: none; padding-bottom: 0; }
+
+    /* Layer 2 Crisp DataGrid Demo */
+    .datagrid-shell {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      border-radius: 16px;
+      background: var(--lg-data-surface);
+      border: 1px solid var(--lg-hairline-border);
+      box-shadow: var(--lg-shadow-panel);
+      overflow: hidden;
+    }
+    .dg-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 14px;
+      background: var(--lg-data-subtle);
+      border-bottom: 1px solid var(--lg-hairline-border);
+    }
+    .dg-table-wrap { flex: 1; overflow: auto; }
+    table.dg-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12.5px;
+    }
+    table.dg-table thead th {
+      position: sticky;
+      top: 0;
+      background: var(--lg-data-subtle);
+      color: var(--lg-text-secondary);
+      font-size: 11px;
+      font-weight: 700;
+      text-align: left;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--lg-hairline-border);
+      border-right: 1px solid var(--lg-hairline-border);
+      z-index: 2;
+    }
+    table.dg-table tbody td {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--lg-hairline-border);
+      border-right: 1px solid var(--lg-hairline-border);
+      vertical-align: middle;
+    }
+    table.dg-table tbody tr:hover { background: rgba(37, 99, 235, 0.04); }
+    table.dg-table tbody tr.highlighted {
+      background: rgba(37, 99, 235, 0.14);
+      outline: 2px solid var(--lg-accent);
+      outline-offset: -2px;
+    }
+
+    /* StatusBar 24px */
+    .statusbar {
+      height: 24px;
+      min-height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 14px;
+      font-size: 11px;
+      color: var(--lg-text-muted);
+      background: var(--lg-glass-surface);
+      backdrop-filter: var(--blur-chrome);
+      border-top: 1px solid var(--lg-hairline-border);
+    }
+
+    /* Floating TabPreviewPopover */
+    .tab-preview-popover {
+      position: fixed;
+      width: 316px;
+      border-radius: 14px;
+      background: var(--lg-glass-elevated);
+      backdrop-filter: var(--blur-float);
+      -webkit-backdrop-filter: var(--blur-float);
+      border: 1px solid var(--lg-specular-border);
+      box-shadow: var(--lg-shadow-float);
+      padding: 14px;
+      z-index: 75;
+      pointer-events: auto;
+      opacity: 0;
+      transform: translateX(6px) scale(0.985);
+      transition: opacity 160ms cubic-bezier(0.16, 1, 0.3, 1), transform 160ms cubic-bezier(0.16, 1, 0.3, 1);
+      display: none;
+    }
+    .tab-preview-popover.visible {
+      display: block;
+      opacity: 1;
+      transform: translateX(0) scale(1);
+    }
+    /* Pointer bridge on the left of popover */
+    .tab-preview-popover::before {
+      content: "";
+      position: absolute;
+      left: -14px;
+      top: 0;
+      bottom: 0;
+      width: 14px;
+    }
+    .preview-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .preview-title { margin: 0; font-size: 13.5px; font-weight: 700; }
+    .preview-role { font-size: 11px; color: var(--lg-text-muted); margin-top: 2px; }
+    .preview-metrics {
+      font-size: 11.5px;
+      color: var(--lg-text-secondary);
+      padding: 7px 9px;
+      border-radius: 8px;
+      background: rgba(15,23,42,0.04);
+      border: 1px solid var(--lg-hairline-border);
+      margin-bottom: 10px;
+    }
+    html.dark .preview-metrics { background: rgba(255,255,255,0.05); }
+    .preview-item {
+      padding: 6px 8px;
+      border-radius: 8px;
+      background: var(--lg-data-surface);
+      border: 1px solid var(--lg-hairline-border);
+      margin-bottom: 6px;
+      font-size: 11.5px;
+    }
+    .preview-mini-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+      background: var(--lg-data-surface);
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid var(--lg-hairline-border);
+      margin-bottom: 10px;
+    }
+    .preview-mini-table th, .preview-mini-table td {
+      padding: 4px 7px;
+      border-bottom: 1px solid var(--lg-hairline-border);
+      text-align: left;
+      max-width: 120px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .preview-mini-table th { background: var(--lg-data-subtle); color: var(--lg-text-muted); font-weight: 600; }
+
+    /* Bell Popover */
+    .bell-popover {
+      position: fixed;
+      top: 48px;
+      right: 16px;
+      width: 340px;
+      border-radius: 14px;
+      background: var(--lg-glass-elevated);
+      backdrop-filter: var(--blur-float);
+      border: 1px solid var(--lg-specular-border);
+      box-shadow: var(--lg-shadow-float);
+      padding: 14px;
+      z-index: 80;
+      display: none;
+    }
+    .bell-popover.visible { display: block; }
+
+    @media (max-width: 1120px) {
+      .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .dash-columns { grid-template-columns: 1fr; }
+      .cmd-pill { width: 170px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { transition-duration: 0.01ms !important; }
+    }
+  </style>
+</head>
+<body>
+<div class="app-shell">
+  <!-- Unified Glass Topbar (44px) -->
+  <header class="topbar">
+    <div class="topbar-group">
+      <div class="brand-mark">
+        <span class="brand-icon">ОТ</span>
+        <span>ОТ-База</span>
+      </div>
+      <button class="glass-btn" id="entitySwitchBtn" title="Переключение организации">
+        <span>🏢 ООО «Катания-Сервис»</span>
+        <span class="mono" style="color:var(--lg-text-muted)">· 7704123456</span>
+      </button>
+      <button class="glass-btn xs" id="menuDemoBtn" title="Все команды старого MenuBar (Файл, Правка, Вкладки, Связи, Документы, LLM, Справка)">
+        Меню ▾
+      </button>
+    </div>
+
+    <button class="cmd-pill" id="cmdBtn" title="Быстрый переход по таблицам и командам">
+      <span>🔍 Поиск раздела или команды...</span>
+      <span class="kbd">Ctrl+K</span>
+    </button>
+
+    <div class="topbar-group">
+      <button class="status-chip alert" id="bellBtn" title="Ближайшие и просроченные события (T-49)">
+        <span>🔔 Сроки</span>
+        <span class="mono">13</span>
+      </button>
+      <button class="status-chip" title="Статус подключения LLM-провайдера">
+        <span>● Ollama</span>
+      </button>
+      <button class="status-chip ok" title="Состояние локального сохранения">
+        <span>💾 Записано</span>
+      </button>
+      <button class="glass-btn xs" id="effectsToggleBtn" title="Переключить режим прозрачности (Liquid Glass / Сниженные эффекты)">
+        Стекло: Вкл
+      </button>
+      <button class="glass-btn xs" id="themeToggleBtn" title="Переключить светлую и тёмную тему">
+        ☀ Светлая
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Workspace -->
+  <div class="workspace-body">
+    <!-- Left Glass Sidebar (236px / 60px) -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <span class="sidebar-label hide-when-collapsed">Навигация</span>
+        <button class="glass-btn xs" id="sidebarToggleBtn" title="Свернуть/развернуть боковую панель">⇄</button>
+      </div>
+
+      <input class="sidebar-search hide-when-collapsed" id="tabFilterInput" placeholder="Фильтр таблиц..." />
+
+      <div class="sidebar-scroll" id="sidebarScroll">
+        <button class="nav-item active" data-view="dashboard" data-preview="none">
+          <span class="nav-item-left">
+            <span>🏠</span>
+            <span class="nav-item-title hide-when-collapsed">Главная</span>
+          </span>
+        </button>
+
+        <button class="nav-item" data-view="deadlines" data-preview="deadlines">
+          <span class="nav-item-left">
+            <span>⏱</span>
+            <span class="nav-item-title hide-when-collapsed">Контроль сроков</span>
+          </span>
+          <span class="nav-count warn hide-when-collapsed">13</span>
+        </button>
+
+        <div class="sidebar-group-title hide-when-collapsed">Справочники (Мастер)</div>
+        <button class="nav-item" data-view="grid" data-tab="tab_staffing" data-preview="tab_staffing">
+          <span class="nav-item-left">
+            <span>📋</span>
+            <span class="nav-item-title hide-when-collapsed">Штатное расписание</span>
+          </span>
+          <span class="nav-count hide-when-collapsed">19</span>
+        </button>
+        <button class="nav-item" data-view="grid" data-tab="tab_employees" data-preview="tab_employees">
+          <span class="nav-item-left">
+            <span>👥</span>
+            <span class="nav-item-title hide-when-collapsed">Список работников</span>
+          </span>
+          <span class="nav-count hide-when-collapsed">28</span>
+        </button>
+
+        <div class="sidebar-group-title hide-when-collapsed">Журналы и учёт</div>
+        <button class="nav-item" data-view="grid" data-tab="tab_med" data-preview="tab_med">
+          <span class="nav-item-left">
+            <span>🩺</span>
+            <span class="nav-item-title hide-when-collapsed">Медосмотры и МО</span>
+          </span>
+          <span class="nav-count warn hide-when-collapsed">8</span>
+        </button>
+        <button class="nav-item" data-view="grid" data-tab="tab_briefing" data-preview="tab_briefing">
+          <span class="nav-item-left">
+            <span>📘</span>
+            <span class="nav-item-title hide-when-collapsed">Инструктажи по ОТ</span>
+          </span>
+          <span class="nav-count warn hide-when-collapsed">3</span>
+        </button>
+        <button class="nav-item" data-view="grid" data-tab="tab_siz" data-preview="tab_siz">
+          <span class="nav-item-left">
+            <span>🦺</span>
+            <span class="nav-item-title hide-when-collapsed">Выдача СИЗ</span>
+          </span>
+          <span class="nav-count warn hide-when-collapsed">2</span>
+        </button>
+
+        <div class="sidebar-divider"></div>
+        <div class="sidebar-group-title hide-when-collapsed">Инструменты</div>
+        <button class="nav-item" data-preview="docs">
+          <span class="nav-item-left">
+            <span>📄</span>
+            <span class="nav-item-title hide-when-collapsed">Документы (реестр)</span>
+          </span>
+          <span class="nav-count hide-when-collapsed">14</span>
+        </button>
+        <button class="nav-item" data-preview="normatives">
+          <span class="nav-item-left">
+            <span>⚖</span>
+            <span class="nav-item-title hide-when-collapsed">Нормативы и схемы</span>
+          </span>
+          <span class="nav-count hide-when-collapsed">9</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Stage -->
+    <main class="stage" id="mainStage">
+      <!-- DASHBOARD VIEW -->
+      <section id="viewDashboard" style="display:flex; flex-direction:column; gap:14px;">
+        <div class="dash-header">
+          <div>
+            <h1 class="dash-title">Сводка по охране труда</h1>
+            <p class="dash-sub">Наведите курсор на любую вкладку в боковой панели — откроется виджет предпросмотра</p>
+          </div>
+          <div class="filter-bar">
+            <div class="segmented" id="scopeSwitch">
+              <button class="seg-btn active" data-scope="all">Все организации (2)</button>
+              <button class="seg-btn" data-scope="current">ООО «Катания-Сервис»</button>
+            </div>
+            <div class="segmented" id="periodSwitch">
+              <button class="seg-btn active" data-period="all">Все срочные</button>
+              <button class="seg-btn" data-period="overdue">Просрочено</button>
+              <button class="seg-btn" data-period="7d">7 дней</button>
+              <button class="seg-btn" data-period="30d">30 дней</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4 Real KPI Cards -->
+        <div class="kpi-grid">
+          <button class="glass-card kpi-card" id="kpiOverdue">
+            <div class="kpi-top">
+              <span>Просрочено</span>
+              <span class="severity-tag overdue">Требует мер</span>
+            </div>
+            <div class="kpi-num" style="color:var(--st-overdue-text)" id="kpiOverdueVal">5</div>
+            <div class="kpi-meta">Клик — отфильтровать просрочки</div>
+          </button>
+
+          <button class="glass-card kpi-card" id="kpiSoon">
+            <div class="kpi-top">
+              <span>Приближаются сроки</span>
+              <span class="severity-tag due_soon">Внимание</span>
+            </div>
+            <div class="kpi-num" style="color:var(--st-soon-text)" id="kpiSoonVal">8</div>
+            <div class="kpi-meta">В ближайшем горизонте предупреждений</div>
+          </button>
+
+          <button class="glass-card kpi-card" id="kpiTotal">
+            <div class="kpi-top">
+              <span>Всего под контролем</span>
+              <span class="severity-tag scheduled">Активно</span>
+            </div>
+            <div class="kpi-num" id="kpiTotalVal">42</div>
+            <div class="kpi-meta mono">Запланировано: 21 · Выполнено: 8</div>
+          </button>
+
+          <div class="glass-card">
+            <div class="kpi-top">
+              <span>База и документы</span>
+              <span style="font-size:11px; color:var(--lg-text-muted)">Реальные данные</span>
+            </div>
+            <div class="kpi-num mono" style="font-size:22px; margin-top:4px;">2 · 14 · 9</div>
+            <div class="kpi-meta">Организаций · Сформированных док. · Нормативов</div>
+          </div>
+        </div>
+
+        <!-- Central Alerts + Right Widgets -->
+        <div class="dash-columns">
+          <div class="glass-card">
+            <div class="section-head">
+              <div>
+                <h2 class="section-title">Приоритетные предупреждения контроля сроков</h2>
+                <div style="font-size:11.5px; color:var(--lg-text-muted)">Источник: deadlineService.ts · отсортировано по срочности</div>
+              </div>
+              <button class="glass-btn xs" id="openDeadlinesBtn">Все события →</button>
+            </div>
+
+            <div class="alert-list" id="dashboardAlerts"></div>
+          </div>
+
+          <div class="widgets-stack">
+            <div class="glass-card">
+              <div class="section-head" style="margin-bottom:10px;">
+                <h2 class="section-title">Распределение рисков по разделам</h2>
+              </div>
+              <div class="bar-item">
+                <div class="bar-row-head"><span>Медосмотры и МО</span><span class="mono">3 проср. · 5 скоро</span></div>
+                <div class="bar-track"><div class="bar-seg-over" style="width:32%"></div><div class="bar-seg-soon" style="width:48%"></div></div>
+              </div>
+              <div class="bar-item">
+                <div class="bar-row-head"><span>Инструктажи по ОТ</span><span class="mono">1 проср. · 2 скоро</span></div>
+                <div class="bar-track"><div class="bar-seg-over" style="width:14%"></div><div class="bar-seg-soon" style="width:28%"></div></div>
+              </div>
+              <div class="bar-item">
+                <div class="bar-row-head"><span>Выдача СИЗ</span><span class="mono">1 проср. · 1 скоро</span></div>
+                <div class="bar-track"><div class="bar-seg-over" style="width:14%"></div><div class="bar-seg-soon" style="width:14%"></div></div>
+              </div>
+            </div>
+
+            <div class="glass-card">
+              <div class="section-head" style="margin-bottom:10px;">
+                <h2 class="section-title">Быстрые переходы</h2>
+              </div>
+              <div class="quick-grid">
+                <button class="quick-btn" data-jump-tab="tab_med">🩺 Медосмотры и МО</button>
+                <button class="quick-btn" data-jump-tab="tab_employees">👥 Список работников</button>
+                <button class="quick-btn" data-jump-tab="tab_siz">🦺 Выдача СИЗ</button>
+                <button class="quick-btn" data-jump-tab="tab_staffing">📋 Штатное расп.</button>
+                <button class="quick-btn">📄 Шаблоны док.</button>
+                <button class="quick-btn">⚖ Нормативная база</button>
+              </div>
+            </div>
+
+            <div class="glass-card">
+              <div class="section-head" style="margin-bottom:6px;">
+                <h2 class="section-title">Последние документы</h2>
+              </div>
+              <div class="recent-row">
+                <span>Направление_МО_Иванов.docx</span>
+                <span class="mono" style="color:var(--lg-text-muted)">Медосмотры · 22.11</span>
+              </div>
+              <div class="recent-row">
+                <span>Карточка_СИЗ_Петров.pdf</span>
+                <span class="mono" style="color:var(--lg-text-muted)">СИЗ · 21.11</span>
+              </div>
+              <div class="recent-row">
+                <span>Лист_инструктажа_Смирнова.docx</span>
+                <span class="mono" style="color:var(--lg-text-muted)">Инструктажи · 19.11</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- CRISP LAYER 2 DATAGRID DEMO VIEW -->
+      <section id="viewGrid" style="display:none; flex:1; min-height:0; flex-direction:column;">
+        <div class="datagrid-shell">
+          <div class="dg-toolbar">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <strong id="gridTitle" style="font-size:14px;">Медосмотры и МО</strong>
+              <span style="font-size:11.5px; color:var(--lg-text-muted)">Layer 2: Crisp Data Surface (без blur в ячейках, 60 FPS)</span>
+            </div>
+            <div style="display:flex; gap:6px;">
+              <button class="glass-btn xs" id="backToDashBtn">← На Главную</button>
+              <button class="glass-btn xs primary">+ Добавить запись</button>
+              <button class="glass-btn xs">📄 Шаблоны</button>
+            </div>
+          </div>
+          <div class="dg-table-wrap">
+            <table class="dg-table">
+              <thead>
+                <tr>
+                  <th style="width:48px">№</th>
+                  <th>ФИО сотрудника (связь)</th>
+                  <th>Подразделение</th>
+                  <th>Вид медосмотра</th>
+                  <th>Срок медосмотра (deadline_control)</th>
+                  <th>Результат</th>
+                </tr>
+              </thead>
+              <tbody id="gridBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Compact StatusBar (24px) -->
+  <footer class="statusbar">
+    <span id="statusLeft">Главная (Dashboard) · Все организации · 5 просрочено, 8 скоро</span>
+    <span class="mono">Режим: native-fs (./data/ot_database.json) · Этап D-1 Прототип</span>
+  </footer>
+
+  <!-- Floating Tab Hover Preview Popover (z-75) -->
+  <div class="tab-preview-popover" id="tabPreviewPopover" role="dialog" aria-label="Предпросмотр вкладки"></div>
+
+  <!-- Bell Notifications Popover (T-49 inside Liquid Glass) -->
+  <div class="bell-popover" id="bellPopover">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <strong style="font-size:13.5px;">Ближайшие и просроченные события</strong>
+      <button class="glass-btn xs" id="closeBellBtn">✕</button>
+    </div>
+    <div style="font-size:11.5px; color:var(--lg-text-secondary); margin-bottom:10px;">
+      Просрочено: <strong style="color:var(--st-overdue-text)">5</strong> · Скоро: <strong style="color:var(--st-soon-text)">8</strong> · Скрыто на сегодня: 0
+    </div>
+    <div class="preview-item">
+      <div style="font-weight:600;">Периодический медосмотр · Иванов А.П.</div>
+      <div style="color:var(--st-overdue-text); font-size:11px;">Просрочено на 12 дн. · План: 11.11.2026</div>
+    </div>
+    <div class="preview-item">
+      <div style="font-weight:600;">Повторный инструктаж · Сидоров В.Н.</div>
+      <div style="color:var(--st-overdue-text); font-size:11px;">Просрочено на 4 дн. · План: 19.11.2026</div>
+    </div>
+    <button class="glass-btn primary" style="width:100%; justify-content:center; margin-top:6px;" id="bellOpenAllBtn">
+      Открыть вкладку «Контроль сроков»
+    </button>
+  </div>
+</div>
+
+<script>
+  const ALERTS = [
+    { id: 'a1', entity: 'ООО «Катания-Сервис»', entityScope: 'current', tabId: 'tab_med', tabName: 'Медосмотры и МО', col: 'Периодический медосмотр', row: 'Иванов Алексей Петрович', fact: '11.11.2025', plan: '11.11.2026', manual: false, status: 'overdue', days: -12, daysLabel: 'Просрочено на 12 дн.' },
+    { id: 'a2', entity: 'ООО «Север-Логистик»', entityScope: 'other', tabId: 'tab_med', tabName: 'Медосмотры и МО', col: 'Психиатрическое освидетельствование', row: 'Кузнецов Дмитрий Сергеевич', fact: '15.11.2021', plan: '15.11.2026', manual: false, status: 'overdue', days: -8, daysLabel: 'Просрочено на 8 дн.' },
+    { id: 'a3', entity: 'ООО «Катания-Сервис»', entityScope: 'current', tabId: 'tab_briefing', tabName: 'Инструктажи по ОТ', col: 'Повторный инструктаж на рабочем месте', row: 'Сидоров Владимир Николаевич', fact: '19.05.2026', plan: '19.11.2026', manual: false, status: 'overdue', days: -4, daysLabel: 'Просрочено на 4 дн.' },
+    { id: 'a4', entity: 'ООО «Катания-Сервис»', entityScope: 'current', tabId: 'tab_siz', tabName: 'Выдача СИЗ', col: 'Замена диэлектрических перчаток', row: 'Петров Игорь Олегович', fact: '21.05.2026', plan: '21.11.2026', manual: true, status: 'overdue', days: -2, daysLabel: 'Просрочено на 2 дн.' },
+    { id: 'a5', entity: 'ООО «Катания-Сервис»', entityScope: 'current', tabId: 'tab_med', tabName: 'Медосмотры и МО', col: 'Периодический медосмотр', row: 'Смирнова Елена Викторовна', fact: '25.11.2025', plan: '25.11.2026', manual: false, status: 'due_soon', days: 2, daysLabel: 'Осталось 2 дн.' },
+    { id: 'a6', entity: 'ООО «Север-Логистик»', entityScope: 'other', tabId: 'tab_med', tabName: 'Медосмотры и МО', col: 'Периодический медосмотр', row: 'Морозов Артём Ильич', fact: '29.11.2025', plan: '29.11.2026', manual: false, status: 'due_soon', days: 6, daysLabel: 'Осталось 6 дн.' },
+    { id: 'a7', entity: 'ООО «Катания-Сервис»', entityScope: 'current', tabId: 'tab_briefing', tabName: 'Инструктажи по ОТ', col: 'Проверка знаний требований ОТ', row: 'Орлова Наталья Андреевна', fact: '10.12.2025', plan: '10.12.2026', manual: false, status: 'due_soon', days: 17, daysLabel: 'Осталось 17 дн.' }
+  ];
+
+  const PREVIEWS = {
+    deadlines: {
+      title: 'Контроль сроков',
+      role: 'Системный сводный раздел по всем юрлицам',
+      metrics: 'Просрочено: <strong>5</strong> · Скоро: <strong>8</strong> · Под контролем: <strong>42</strong>',
+      items: [
+        { name: 'Периодический МО · Иванов А.П.', sub: 'Просрочено на 12 дн. · 11.11.2026', cls: 'overdue' },
+        { name: 'Психиатрич. освид. · Кузнецов Д.С.', sub: 'Просрочено на 8 дн. · 15.11.2026', cls: 'overdue' },
+        { name: 'Повторный инструктаж · Сидоров В.Н.', sub: 'Просрочено на 4 дн. · 19.11.2026', cls: 'overdue' }
+      ],
+      cta: 'Открыть Контроль сроков'
+    },
+    tab_med: {
+      title: 'Медосмотры и МО',
+      role: 'Журнал учёта · есть столбцы контроля сроков',
+      metrics: 'Записей: <strong>28</strong> · Просрочено: <strong style="color:var(--st-overdue-text)">3</strong> · Скоро: <strong style="color:var(--st-soon-text)">5</strong>',
+      items: [
+        { name: 'Иванов Алексей Петрович', sub: 'Просрочено на 12 дн. · План 11.11.2026', cls: 'overdue' },
+        { name: 'Смирнова Елена Викторовна', sub: 'Осталось 2 дн. · План 25.11.2026', cls: 'due_soon' }
+      ],
+      table: {
+        cols: ['ФИО', 'Подразделение', 'План'],
+        rows: [
+          ['Иванов А.П.', 'Цех №1', '11.11.2026'],
+          ['Смирнова Е.В.', 'Склад', '25.11.2026']
+        ]
+      },
+      cta: 'Перейти в таблицу'
+    },
+    tab_staffing: {
+      title: 'Штатное расписание',
+      role: 'Мастер-таблица · без столбцов сроков',
+      metrics: 'Записей: <strong>19</strong> · Столбцов: <strong>6</strong> · Зависимых вкладок: <strong>3</strong>',
+      table: {
+        cols: ['Должность', 'Подразделение', 'Ставок'],
+        rows: [
+          ['Электромонтёр 4 р.', 'Энергослужба', '4'],
+          ['Кладовщик', 'Склад ГСМ', '2'],
+          ['Водитель погрузчика', 'Логистика', '3']
+        ]
+      },
+      cta: 'Открыть справочник'
+    },
+    tab_employees: {
+      title: 'Список работников',
+      role: 'Мастер-таблица · без столбцов сроков',
+      metrics: 'Записей: <strong>28</strong> · Столбцов: <strong>8</strong> · Связей: <strong>4 таблицы</strong>',
+      table: {
+        cols: ['ФИО', 'Должность', 'Участок'],
+        rows: [
+          ['Иванов А.П.', 'Электромонтёр', 'Цех №1'],
+          ['Петров И.О.', 'Электромонтёр', 'Цех №2'],
+          ['Смирнова Е.В.', 'Кладовщик', 'Склад']
+        ]
+      },
+      cta: 'Открыть список'
+    },
+    tab_briefing: {
+      title: 'Инструктажи по ОТ',
+      role: 'Журнал учёта · есть столбцы контроля сроков',
+      metrics: 'Записей: <strong>28</strong> · Просрочено: <strong>1</strong> · Скоро: <strong>2</strong>',
+      items: [
+        { name: 'Повторный инструктаж · Сидоров В.Н.', sub: 'Просрочено на 4 дн. · План 19.11.2026', cls: 'overdue' }
+      ],
+      cta: 'Перейти в таблицу'
+    },
+    tab_siz: {
+      title: 'Выдача СИЗ',
+      role: 'Журнал учёта · есть столбцы контроля сроков',
+      metrics: 'Записей: <strong>24</strong> · Просрочено: <strong>1</strong> · Скоро: <strong>1</strong>',
+      items: [
+        { name: 'Перчатки диэлектр. · Петров И.О.', sub: 'Просрочено на 2 дн. · План 21.11.2026', cls: 'overdue' }
+      ],
+      cta: 'Перейти в таблицу'
+    },
+    docs: {
+      title: 'Сгенерированные документы',
+      role: 'Реестр документов и версионный архив',
+      metrics: 'Актуальных: <strong>14</strong> · В АРХИВ/дд.мм.гггг: <strong>6</strong>',
+      items: [
+        { name: 'Направление_МО_Иванов.docx', sub: 'Медосмотры · 22.11.2026', cls: 'scheduled' },
+        { name: 'Карточка_СИЗ_Петров.pdf', sub: 'СИЗ · 21.11.2026', cls: 'scheduled' }
+      ],
+      cta: 'Открыть реестр'
+    },
+    normatives: {
+      title: 'Нормативные документы и связи',
+      role: 'Общая библиотека НПА и схема зависимостей',
+      metrics: 'Нормативных актов: <strong>9</strong> · Связей таблиц: <strong>7</strong>',
+      items: [
+        { name: 'Приказ Минздрава № 29н', sub: 'Порядок проведения медосмотров', cls: 'scheduled' },
+        { name: 'Постановление Правительства № 2464', sub: 'Обучение и проверка знаний по ОТ', cls: 'scheduled' }
+      ],
+      cta: 'Открыть нормативы'
+    }
+  };
+
+  let state = {
+    scope: 'all',
+    period: 'all',
+    view: 'dashboard',
+    highlightRow: null,
+    completedIds: new Set()
+  };
+
+  function renderDashboardAlerts() {
+    const container = document.getElementById('dashboardAlerts');
+    const filtered = ALERTS.filter(item => {
+      if (state.scope === 'current' && item.entityScope !== 'current') return false;
+      if (state.period === 'overdue' && item.status !== 'overdue') return false;
+      if (state.period === '7d' && item.days > 7) return false;
+      if (state.period === '30d' && item.days > 30) return false;
+      return true;
+    });
+
+    if (!filtered.length) {
+      container.innerHTML = `<div class="alert-row"><div class="alert-main"><strong>Нет событий по выбранным фильтрам</strong><div class="alert-meta">Все обязательные мероприятия под контролем</div></div></div>`;
+      return;
+    }
+
+    container.innerHTML = filtered.map(ev => {
+      const done = state.completedIds.has(ev.id);
+      const tagClass = done ? 'completed' : ev.status;
+      const tagText = done ? 'Выполнено сегодня' : ev.daysLabel;
+      return `
+        <div class="alert-row">
+          <div class="alert-main">
+            <div class="alert-top">
+              <span class="alert-event">${ev.col}</span>
+              <span class="severity-tag ${tagClass}">${tagText}</span>
+              ${ev.manual ? `<span class="kbd">ручн.</span>` : ''}
+            </div>
+            <div class="alert-meta">${ev.entity} · ${ev.tabName} · <strong>${ev.row}</strong></div>
+            <div class="alert-dates mono">Факт: ${done ? '23.11.2026' : ev.fact} &nbsp;|&nbsp; План: ${ev.plan}</div>
+          </div>
+          <div class="alert-actions">
+            ${done ? '' : `<button class="glass-btn xs" data-complete-id="${ev.id}" title="Отметить выполненным сегодня">✓ Выполнено</button>`}
+            <button class="glass-btn xs primary" data-jump-row="${ev.row}">Перейти к записи</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function renderGrid(tabName, highlightName) {
+    document.getElementById('gridTitle').textContent = tabName || 'Медосмотры и МО';
+    const rows = [
+      { n: 1, fio: 'Иванов Алексей Петрович', dept: 'Цех №1', kind: 'Периодический МО', fact: '11.11.2025', plan: '11.11.2026', badge: 'Просрочено 12 дн.', cls: 'overdue', res: 'Годен' },
+      { n: 2, fio: 'Смирнова Елена Викторовна', dept: 'Склад', kind: 'Периодический МО', fact: '25.11.2025', plan: '25.11.2026', badge: 'Осталось 2 дн.', cls: 'due_soon', res: 'Годен' },
+      { n: 3, fio: 'Петров Игорь Олегович', dept: 'Цех №2', kind: 'Периодический МО', fact: '14.04.2026', plan: '14.04.2027', badge: 'Запланировано', cls: 'scheduled', res: 'Годен' },
+      { n: 4, fio: 'Орлова Наталья Андреевна', dept: 'Офис', kind: 'Периодический МО', fact: '03.09.2026', plan: '03.09.2027', badge: 'Запланировано', cls: 'scheduled', res: 'Годен' }
+    ];
+    document.getElementById('gridBody').innerHTML = rows.map(r => `
+      <tr class="${highlightName && r.fio.includes(highlightName.split(' ')[0]) ? 'highlighted' : ''}">
+        <td class="mono">${r.n}</td>
+        <td><strong>${r.fio}</strong></td>
+        <td>${r.dept}</td>
+        <td>${r.kind}</td>
+        <td>
+          <div class="mono" style="font-weight:600;">${r.plan} <span class="severity-tag ${r.cls}" style="margin-left:6px;">${r.badge}</span></div>
+          <div class="mono" style="font-size:11px; color:var(--lg-text-muted)">Факт: ${r.fact}</div>
+        </td>
+        <td>${r.res}</td>
+      </tr>
+    `).join('');
+  }
+
+  function switchView(view, title, highlightName) {
+    state.view = view;
+    document.getElementById('viewDashboard').style.display = view === 'dashboard' ? 'flex' : 'none';
+    document.getElementById('viewGrid').style.display = view === 'grid' ? 'flex' : 'none';
+    if (view === 'grid') {
+      renderGrid(title, highlightName);
+      document.getElementById('statusLeft').textContent = `Таблица: ${title || 'Медосмотры и МО'} · Layer 2 Crisp Data Surface`;
+    } else {
+      document.getElementById('statusLeft').textContent = 'Главная (Dashboard) · Все организации · 5 просрочено, 8 скоро';
+    }
+  }
+
+  // Hover Preview Logic (280ms open, 180ms close + pointer bridge, viewport clamp)
+  const popoverEl = document.getElementById('tabPreviewPopover');
+  let openTimer = null;
+  let closeTimer = null;
+  let activePreviewKey = null;
+
+  function renderPreviewContent(key) {
+    const d = PREVIEWS[key];
+    if (!d) return '';
+    return `
+      <div class="preview-head">
+        <div>
+          <h3 class="preview-title">${d.title}</h3>
+          <div class="preview-role">${d.role}</div>
+        </div>
+      </div>
+      <div class="preview-metrics">${d.metrics}</div>
+      ${d.items ? d.items.map(it => `
+        <div class="preview-item">
+          <div style="font-weight:600;">${it.name}</div>
+          <div style="font-size:11px; margin-top:2px;" class="severity-tag ${it.cls}">${it.sub}</div>
+        </div>
+      `).join('') : ''}
+      ${d.table ? `
+        <table class="preview-mini-table">
+          <thead><tr>${d.table.cols.map(c => `<th>${c}</th>`).join('')}</tr></thead>
+          <tbody>${d.table.rows.map(r => `<tr>${r.map(v => `<td>${v}</td>`).join('')}</tr>`).join('')}</tbody>
+        </table>
+      ` : ''}
+      <button class="glass-btn xs primary" style="width:100%; justify-content:center;" id="previewActionBtn">${d.cta} →</button>
+    `;
+  }
+
+  function positionPopover(targetEl) {
+    const rect = targetEl.getBoundingClientRect();
+    const popWidth = 316;
+    let left = rect.right + 10;
+    if (left + popWidth > window.innerWidth - 12) {
+      left = Math.max(12, window.innerWidth - popWidth - 12);
+    }
+    popoverEl.style.left = left + 'px';
+    popoverEl.style.display = 'block';
+    const popHeight = popoverEl.offsetHeight || 240;
+    const clampedTop = Math.max(52, Math.min(rect.top - 8, window.innerHeight - popHeight - 12));
+    popoverEl.style.top = clampedTop + 'px';
+    requestAnimationFrame(() => popoverEl.classList.add('visible'));
+  }
+
+  function hidePreviewImmediate() {
+    clearTimeout(openTimer);
+    clearTimeout(closeTimer);
+    activePreviewKey = null;
+    popoverEl.classList.remove('visible');
+    popoverEl.style.display = 'none';
+  }
+
+  function scheduleClosePreview() {
+    clearTimeout(openTimer);
+    clearTimeout(closeTimer);
+    closeTimer = setTimeout(() => hidePreviewImmediate(), 180);
+  }
+
+  document.querySelectorAll('.nav-item[data-preview]').forEach(btn => {
+    const key = btn.dataset.preview;
+    btn.addEventListener('mouseenter', () => {
+      clearTimeout(closeTimer);
+      clearTimeout(openTimer);
+      if (key === 'none') {
+        scheduleClosePreview();
+        return;
+      }
+      const delay = activePreviewKey ? 160 : 280;
+      openTimer = setTimeout(() => {
+        activePreviewKey = key;
+        popoverEl.innerHTML = renderPreviewContent(key);
+        positionPopover(btn);
+        const cta = document.getElementById('previewActionBtn');
+        if (cta) {
+          cta.addEventListener('click', () => {
+            hidePreviewImmediate();
+            if (key.startsWith('tab_')) {
+              switchView('grid', PREVIEWS[key].title);
+            }
+          });
+        }
+      }, delay);
+    });
+    btn.addEventListener('mouseleave', scheduleClosePreview);
+    btn.addEventListener('click', () => {
+      hidePreviewImmediate();
+      document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+      btn.classList.add('active');
+      const v = btn.dataset.view;
+      if (v === 'dashboard') switchView('dashboard');
+      else if (v === 'grid') switchView('grid', btn.querySelector('.nav-item-title').textContent);
+    });
+  });
+
+  popoverEl.addEventListener('mouseenter', () => clearTimeout(closeTimer));
+  popoverEl.addEventListener('mouseleave', scheduleClosePreview);
+  document.getElementById('sidebarScroll').addEventListener('scroll', hidePreviewImmediate);
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      hidePreviewImmediate();
+      document.getElementById('bellPopover').classList.remove('visible');
+    }
+  });
+
+  // Topbar / Sidebar / Dashboard Controls
+  document.getElementById('sidebarToggleBtn').addEventListener('click', () => {
+    hidePreviewImmediate();
+    document.getElementById('sidebar').classList.toggle('collapsed');
+  });
+
+  document.getElementById('themeToggleBtn').addEventListener('click', e => {
+    const dark = document.documentElement.classList.toggle('dark');
+    e.currentTarget.textContent = dark ? '🌙 Тёмная' : '☀ Светлая';
+  });
+
+  document.getElementById('effectsToggleBtn').addEventListener('click', e => {
+    const current = document.documentElement.getAttribute('data-visual-effects');
+    const nextReduced = current !== 'reduced';
+    if (nextReduced) {
+      document.documentElement.setAttribute('data-visual-effects', 'reduced');
+      e.currentTarget.textContent = 'Стекло: Сниж.';
+    } else {
+      document.documentElement.removeAttribute('data-visual-effects');
+      e.currentTarget.textContent = 'Стекло: Вкл';
+    }
+  });
+
+  document.getElementById('bellBtn').addEventListener('click', () => {
+    document.getElementById('bellPopover').classList.toggle('visible');
+  });
+  document.getElementById('closeBellBtn').addEventListener('click', () => {
+    document.getElementById('bellPopover').classList.remove('visible');
+  });
+
+  document.getElementById('scopeSwitch').addEventListener('click', e => {
+    const b = e.target.closest('.seg-btn');
+    if (!b) return;
+    document.querySelectorAll('#scopeSwitch .seg-btn').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    state.scope = b.dataset.scope;
+    renderDashboardAlerts();
+  });
+
+  document.getElementById('periodSwitch').addEventListener('click', e => {
+    const b = e.target.closest('.seg-btn');
+    if (!b) return;
+    document.querySelectorAll('#periodSwitch .seg-btn').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    state.period = b.dataset.period;
+    renderDashboardAlerts();
+  });
+
+  document.getElementById('kpiOverdue').addEventListener('click', () => {
+    state.period = 'overdue';
+    document.querySelectorAll('#periodSwitch .seg-btn').forEach(x => x.classList.toggle('active', x.dataset.period === 'overdue'));
+    renderDashboardAlerts();
+  });
+  document.getElementById('kpiSoon').addEventListener('click', () => {
+    state.period = '30d';
+    document.querySelectorAll('#periodSwitch .seg-btn').forEach(x => x.classList.toggle('active', x.dataset.period === '30d'));
+    renderDashboardAlerts();
+  });
+
+  document.getElementById('dashboardAlerts').addEventListener('click', e => {
+    const comp = e.target.closest('[data-complete-id]');
+    if (comp) {
+      state.completedIds.add(comp.dataset.completeId);
+      renderDashboardAlerts();
+      return;
+    }
+    const jump = e.target.closest('[data-jump-row]');
+    if (jump) {
+      switchView('grid', 'Медосмотры и МО', jump.dataset.jumpRow);
+    }
+  });
+
+  document.querySelectorAll('[data-jump-tab]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.jumpTab;
+      switchView('grid', PREVIEWS[id]?.title || 'Таблица');
+    });
+  });
+
+  document.getElementById('backToDashBtn').addEventListener('click', () => switchView('dashboard'));
+
+  document.getElementById('tabFilterInput').addEventListener('input', e => {
+    const q = e.target.value.trim().toLowerCase();
+    document.querySelectorAll('.nav-item[data-tab]').forEach(el => {
+      const txt = el.textContent.toLowerCase();
+      el.style.display = !q || txt.includes(q) ? 'flex' : 'none';
+    });
+  });
+
+  renderDashboardAlerts();
+</script>
+</body>
+</html>
