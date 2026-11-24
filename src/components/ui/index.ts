@@ -10,7 +10,7 @@ export { StatusBanner } from './StatusBanner';
 export type { StatusBannerVariant } from './StatusBanner';
 export { ConfirmDialog } from './ConfirmDialog';
 export { ToastProvider, useToast } from './ToastProvider';
-export type { ToastVariant } from './ToastProvider';
+export type { ToastVariant, ToastAction, ShowToastOptions } from './ToastProvider';
 export { Z_INDEX } from './zIndex';
 export {
   useFileDropZone,

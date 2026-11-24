@@ -5,6 +5,8 @@ import {
   addCalendarYears,
   applyActualDateUpdate,
   applyDeadlineCompletedTodayInState,
+  applyDeadlineNotificationsEnabledInState,
+  applyDeadlineSnoozeInState,
   applyColumnTypeConversion,
   applyScalarColumnTypeConversion,
   buildDeadlineNotificationKey,
@@ -19,6 +21,7 @@ import {
   diffCalendarDays,
   diffWorkingDays,
   evaluateDeadlineCell,
+  evaluateSessionToastNotifications,
   filterDeadlineEvents,
   formatDeadlineCellDisplay,
   formatDeadlineConfigShortSummary,
@@ -29,19 +32,23 @@ import {
   isNotificationSnoozed,
   isStandardWarningPreset,
   markDeadlineCompletedToday,
+  MAX_POPOVER_DEADLINE_NOTIFICATIONS,
   normalizeDeadlineAppSettings,
   normalizeDeadlineCellValue,
   normalizeDeadlineColumnConfig,
+  normalizeSnoozedNotificationKeys,
   parseFlexibleDateToIso,
   previewConversionFromDeadline,
   previewConversionToDeadline,
   previewScalarConversion,
   resolveDeadlineEventTarget,
+  selectTopPopoverNotifications,
   summarizeDeadlineEvents,
   SYSTEM_DEADLINE_TAB_ID,
   updateDeadlineCellValue,
   validateDeadlinePeriodicityInput
 } from '../deadlineService';
+import { normalizeDatabaseState } from '../storageService';
 import { INITIAL_DATABASE_STATE } from '../../data/initialDatabase';
 import { DatabaseState, Tab } from '../../types/database';
 
@@ -1189,5 +1196,405 @@ describe('T-48: System Deadline Control aggregation, filtering, target resolutio
     expect(collectDeadlineEvents(cleanDb, { todayIso: '2026-05-01' })).toEqual([]);
   });
 });
+
+describe('T-49: Notification keys, top-10 popover selection, session deduplication & snooze lifecycle', () => {
+  function buildAlertRichDb(countOverdue = 7, countDueSoon = 6): DatabaseState {
+    const base: DatabaseState = JSON.parse(JSON.stringify(INITIAL_DATABASE_STATE));
+    base.settings = {
+      ...base.settings,
+      deadlineSettings: {
+        holidays: ['2026-05-01'],
+        notificationsEnabled: true,
+        snoozedNotificationKeys: {}
+      }
+    };
+
+    const e1 = base.entities[0];
+    e1.id = 'ent_1';
+    e1.profile.shortName = 'ООО «Север»';
+    const rows1: any[] = [];
+    for (let i = 0; i < countOverdue; i++) {
+      // Today = 2026-05-10 => 2025-04-01..2025-04-07 gives nextDate 2026-04-01..2026-04-07 (overdue -39..-33)
+      const day = String(1 + i).padStart(2, '0');
+      rows1.push({
+        id: `row_over_${i + 1}`,
+        emp_fio: `Просроченный ${i + 1}`,
+        dl_mo: { actualDate: `2025-04-${day}` }
+      });
+    }
+    // Non-alert statuses that MUST NOT trigger notifications
+    rows1.push({
+      id: 'row_sched_only',
+      emp_fio: 'Плановый Сотрудник',
+      dl_mo: { actualDate: '2025-12-15' }
+    });
+    rows1.push({
+      id: 'row_missing_only',
+      emp_fio: 'Пустой Сотрудник',
+      dl_mo: {}
+    });
+
+    e1.tabs = [
+      {
+        id: 'tab_mo',
+        name: 'Медосмотры',
+        columns: [
+          { id: 'emp_fio', name: 'ФИО работника', type: 'text' },
+          {
+            id: 'dl_mo',
+            name: 'Периодический МО',
+            type: 'deadline_control',
+            deadlineConfig: {
+              periodicityValue: 12,
+              periodicityUnit: 'months',
+              warningValue: 14,
+              warningDayType: 'calendar'
+            }
+          }
+        ],
+        rows: rows1,
+        attachedDocs: []
+      },
+      {
+        id: 'tab_once',
+        name: 'Вводный инструктаж',
+        columns: [
+          { id: 'emp_fio', name: 'ФИО работника', type: 'text' },
+          {
+            id: 'dl_once',
+            name: 'Инструктаж',
+            type: 'deadline_control',
+            deadlineConfig: {
+              periodicityValue: 0,
+              periodicityUnit: 'months',
+              warningValue: 14,
+              warningDayType: 'calendar'
+            }
+          }
+        ],
+        rows: [{ id: 'row_done_only', emp_fio: 'Закрытый Сотрудник', dl_once: { actualDate: '2026-03-01' } }],
+        attachedDocs: []
+      }
+    ];
+    base.activeEntityId = e1.id;
+    base.tabs = e1.tabs;
+
+    const e2 = JSON.parse(JSON.stringify(e1));
+    e2.id = 'ent_2';
+    e2.profile.shortName = 'АО «Юг»';
+    const rows2: any[] = [];
+    for (let i = 0; i < countDueSoon; i++) {
+      // Today = 2026-05-10 => 2025-05-11..2025-05-16 gives nextDate 2026-05-11..2026-05-16 (due_soon +1..+6)
+      const day = String(11 + i).padStart(2, '0');
+      rows2.push({
+        id: `row_soon_${i + 1}`,
+        emp_fio: `Ближайший ${i + 1}`,
+        dl_att: { actualDate: `2025-05-${day}` }
+      });
+    }
+    e2.tabs = [
+      {
+        id: 'tab_att',
+        name: 'Аттестация',
+        columns: [
+          { id: 'emp_fio', name: 'ФИО работника', type: 'text' },
+          {
+            id: 'dl_att',
+            name: 'Проверка знаний',
+            type: 'deadline_control',
+            deadlineConfig: {
+              periodicityValue: 12,
+              periodicityUnit: 'months',
+              warningValue: 14,
+              warningDayType: 'calendar'
+            }
+          }
+        ],
+        rows: rows2,
+        attachedDocs: []
+      }
+    ];
+    base.entities.push(e2);
+    return base;
+  }
+
+  it('1-2. builds distinct notificationKeys and emits alerts strictly for overdue & due_soon', () => {
+    const k1 = buildDeadlineNotificationKey({
+      entityId: 'ent_1',
+      tabId: 'tab_mo',
+      rowId: 'r1',
+      columnId: 'dl_mo',
+      effectiveNextDate: '2026-05-15',
+      status: 'due_soon'
+    });
+    const k2 = buildDeadlineNotificationKey({
+      entityId: 'ent_1',
+      tabId: 'tab_mo',
+      rowId: 'r1',
+      columnId: 'dl_mo',
+      effectiveNextDate: '2026-05-15',
+      status: 'overdue'
+    });
+    const k3 = buildDeadlineNotificationKey({
+      entityId: 'ent_2',
+      tabId: 'tab_mo',
+      rowId: 'r1',
+      columnId: 'dl_mo',
+      effectiveNextDate: '2026-05-15',
+      status: 'due_soon'
+    });
+    expect(k1).toBe('ent_1::tab_mo::r1::dl_mo::2026-05-15::due_soon');
+    expect(k2).not.toBe(k1);
+    expect(k3).not.toBe(k1);
+
+    const db = buildAlertRichDb(1, 1);
+    const events = collectDeadlineEvents(db, { todayIso: '2026-05-10' });
+    // Total events = 1 overdue + 1 due_soon + 1 scheduled + 1 missing_data + 1 completed = 5
+    expect(events).toHaveLength(5);
+
+    const active = getActiveAlertDeadlineEvents(events, db.settings.deadlineSettings, '2026-05-10');
+    expect(active.map((e) => e.evaluation.status)).toEqual(['overdue', 'due_soon']);
+  });
+
+  it('3. sorts by urgency and caps popover notifications at 10 while reporting total counts', () => {
+    const db = buildAlertRichDb(7, 6); // 13 actionable alerts
+    const events = collectDeadlineEvents(db, { todayIso: '2026-05-10' });
+
+    const popover = selectTopPopoverNotifications(events, db.settings.deadlineSettings, {
+      todayIso: '2026-05-10'
+    });
+    expect(MAX_POPOVER_DEADLINE_NOTIFICATIONS).toBe(10);
+    expect(popover.items).toHaveLength(10);
+    expect(popover.totalActiveCount).toBe(13);
+    expect(popover.overdueAlertCount).toBe(7);
+    expect(popover.dueSoonAlertCount).toBe(6);
+    expect(popover.snoozedAlertCount).toBe(0);
+
+    // First 7 must be overdue (oldest overdue first), next 3 must be nearest due_soon
+    expect(popover.items.slice(0, 7).every((i) => i.evaluation.status === 'overdue')).toBe(true);
+    expect(popover.items[0].rowId).toBe('row_over_1');
+    expect(popover.items[6].rowId).toBe('row_over_7');
+    expect(popover.items.slice(7).every((i) => i.evaluation.status === 'due_soon')).toBe(true);
+    expect(popover.items[7].rowId).toBe('row_soon_1');
+    expect(popover.items[9].rowId).toBe('row_soon_3');
+  });
+
+  it('4-5. deduplicates within a session across repeated checks, entity switches, and unrelated cell edits', () => {
+    const db = buildAlertRichDb(2, 1);
+    const shownKeys = new Set<string>();
+    const events1 = collectDeadlineEvents(db, { todayIso: '2026-05-10' });
+
+    const firstEval = evaluateSessionToastNotifications({
+      events: events1,
+      shownKeys,
+      deadlineSettings: db.settings.deadlineSettings,
+      todayIso: '2026-05-10'
+    });
+    expect(firstEval.shouldShowToast).toBe(true);
+    expect(firstEval.newKeys).toHaveLength(3);
+    expect(firstEval.overdueCount).toBe(2);
+    expect(firstEval.dueSoonCount).toBe(1);
+    expect(firstEval.variant).toBe('error');
+    firstEval.newKeys.forEach((k) => shownKeys.add(k));
+
+    // Re-evaluating with same keys -> NO toast
+    const secondEval = evaluateSessionToastNotifications({
+      events: events1,
+      shownKeys,
+      deadlineSettings: db.settings.deadlineSettings,
+      todayIso: '2026-05-10'
+    });
+    expect(secondEval.shouldShowToast).toBe(false);
+
+    // Switching active entity + editing an unrelated text cell -> still NO toast
+    const switchedDb: DatabaseState = JSON.parse(JSON.stringify(db));
+    switchedDb.activeEntityId = 'ent_2';
+    switchedDb.tabs = switchedDb.entities[1].tabs;
+    switchedDb.tabs[0].rows[0].emp_fio = 'Ближайший 1 (испр.)';
+    const eventsAfterSwitch = collectDeadlineEvents(switchedDb, { todayIso: '2026-05-10' });
+
+    const thirdEval = evaluateSessionToastNotifications({
+      events: eventsAfterSwitch,
+      shownKeys,
+      deadlineSettings: switchedDb.settings.deadlineSettings,
+      todayIso: '2026-05-10'
+    });
+    expect(thirdEval.shouldShowToast).toBe(false);
+  });
+
+  it('6-8. re-notifies on due_soon -> overdue escalation (even if snoozed), effectiveNextDate change, and fresh session', () => {
+    const db = buildAlertRichDb(0, 1);
+    // Single due_soon row: actualDate 2025-05-11 -> nextDate 2026-05-11
+    const eventsDay1 = collectDeadlineEvents(db, { todayIso: '2026-05-10' });
+    const dueSoonKey = eventsDay1[0].notificationKey;
+    expect(dueSoonKey).toContain('2026-05-11::due_soon');
+
+    // Snooze the due_soon key on 2026-05-10 (hideUntil = 2026-05-11)
+    const snoozedDb = applyDeadlineSnoozeInState(db, dueSoonKey, '2026-05-10');
+    expect(snoozedDb.settings.deadlineSettings?.snoozedNotificationKeys?.[dueSoonKey]).toBe('2026-05-11');
+
+    // Suppose on 2026-05-12 it escalated to overdue (or even if hideUntil were later, escalation changes key!)
+    const escalatedSnoozedDb: DatabaseState = JSON.parse(JSON.stringify(snoozedDb));
+    escalatedSnoozedDb.settings.deadlineSettings!.snoozedNotificationKeys![dueSoonKey] = '2026-05-20';
+    const eventsEscalated = collectDeadlineEvents(escalatedSnoozedDb, { todayIso: '2026-05-12' });
+    const escalatedKey = eventsEscalated[0].notificationKey;
+    expect(escalatedKey).toContain('2026-05-11::overdue');
+
+    const shownKeys = new Set<string>([dueSoonKey]);
+    const escalationEval = evaluateSessionToastNotifications({
+      events: eventsEscalated,
+      shownKeys,
+      deadlineSettings: escalatedSnoozedDb.settings.deadlineSettings,
+      todayIso: '2026-05-12'
+    });
+    expect(escalationEval.shouldShowToast).toBe(true);
+    expect(escalationEval.newKeys).toEqual([escalatedKey]);
+
+    // Changing effectiveNextDate (manual override to 2026-05-05 -> overdue) creates new key & re-notifies
+    shownKeys.add(escalatedKey);
+    const changedDateDb: DatabaseState = JSON.parse(JSON.stringify(escalatedSnoozedDb));
+    changedDateDb.entities[1].tabs[0].rows[0].dl_att = {
+      actualDate: '2025-05-11',
+      manualNextDate: '2026-05-05'
+    };
+    const eventsChangedDate = collectDeadlineEvents(changedDateDb, { todayIso: '2026-05-12' });
+    const dateChangedEval = evaluateSessionToastNotifications({
+      events: eventsChangedDate,
+      shownKeys,
+      deadlineSettings: changedDateDb.settings.deadlineSettings,
+      todayIso: '2026-05-12'
+    });
+    expect(dateChangedEval.shouldShowToast).toBe(true);
+    expect(dateChangedEval.newKeys[0]).toContain('2026-05-05::overdue');
+
+    // Fresh app session (empty Set) without active snooze notifies again
+    const freshSessionEval = evaluateSessionToastNotifications({
+      events: collectDeadlineEvents(db, { todayIso: '2026-05-10' }),
+      shownKeys: new Set<string>(),
+      deadlineSettings: db.settings.deadlineSettings,
+      todayIso: '2026-05-10'
+    });
+    expect(freshSessionEval.shouldShowToast).toBe(true);
+  });
+
+  it('9-12, 14-15. snoozes only targeted key until today+1, preserves source rows/holidays/other entities, and reactivates next day', () => {
+    const db = buildAlertRichDb(1, 1);
+    const snapshotRowsBefore = JSON.stringify(db.entities.map((e) => e.tabs));
+    const events = collectDeadlineEvents(db, { todayIso: '2026-05-10' });
+    const overdueEv = events.find((e) => e.evaluation.status === 'overdue')!;
+    const dueSoonEv = events.find((e) => e.evaluation.status === 'due_soon')!;
+
+    const snoozedDb = applyDeadlineSnoozeInState(db, overdueEv.notificationKey, '2026-05-10');
+
+    // 9. hideUntil = 2026-05-11; holidays & notificationsEnabled preserved
+    expect(snoozedDb.settings.deadlineSettings?.holidays).toEqual(['2026-05-01']);
+    expect(snoozedDb.settings.deadlineSettings?.notificationsEnabled).toBe(true);
+    expect(snoozedDb.settings.deadlineSettings?.snoozedNotificationKeys).toEqual({
+      [overdueEv.notificationKey]: '2026-05-11'
+    });
+
+    // 14-15. Source rows/cells are untouched and no session shownKeys are written to DB
+    expect(JSON.stringify(snoozedDb.entities.map((e) => e.tabs))).toBe(snapshotRowsBefore);
+    expect((snoozedDb.settings.deadlineSettings as Record<string, unknown>).shownToastKeys).toBeUndefined();
+
+    // 10 & 12. Same day (2026-05-10): overdueEv is hidden from active toast & popover, while dueSoonEv (ent_2) remains active; total summary still counts both!
+    expect(
+      isNotificationSnoozed(overdueEv.notificationKey, snoozedDb.settings.deadlineSettings, '2026-05-10')
+    ).toBe(true);
+    expect(
+      isNotificationSnoozed(dueSoonEv.notificationKey, snoozedDb.settings.deadlineSettings, '2026-05-10')
+    ).toBe(false);
+
+    const sameDayPopover = selectTopPopoverNotifications(
+      events,
+      snoozedDb.settings.deadlineSettings,
+      { todayIso: '2026-05-10' }
+    );
+    expect(sameDayPopover.items.map((i) => i.notificationKey)).toEqual([dueSoonEv.notificationKey]);
+    expect(sameDayPopover.snoozedAlertCount).toBe(1);
+    expect(sameDayPopover.overdueAlertCount).toBe(1);
+
+    const sameDayToast = evaluateSessionToastNotifications({
+      events,
+      shownKeys: new Set<string>(),
+      deadlineSettings: snoozedDb.settings.deadlineSettings,
+      todayIso: '2026-05-10'
+    });
+    expect(sameDayToast.shouldShowToast).toBe(true);
+    expect(sameDayToast.newKeys).toEqual([dueSoonEv.notificationKey]);
+
+    // 11. Next calendar day (2026-05-11 >= hideUntil): snoozed event reactivates & normalizeDatabaseState prunes expired snooze keys
+    const eventsNextDay = collectDeadlineEvents(snoozedDb, { todayIso: '2026-05-11' });
+    expect(
+      isNotificationSnoozed(overdueEv.notificationKey, snoozedDb.settings.deadlineSettings, '2026-05-11')
+    ).toBe(false);
+    const nextDayToast = evaluateSessionToastNotifications({
+      events: eventsNextDay,
+      shownKeys: new Set<string>(),
+      deadlineSettings: snoozedDb.settings.deadlineSettings,
+      todayIso: '2026-05-11'
+    });
+    expect(nextDayToast.shouldShowToast).toBe(true);
+    expect(nextDayToast.newKeys).toContain(overdueEv.notificationKey);
+
+    expect(
+      normalizeSnoozedNotificationKeys(
+        snoozedDb.settings.deadlineSettings?.snoozedNotificationKeys,
+        '2026-05-11'
+      )
+    ).toEqual({});
+
+    // Verify normalizeDatabaseState cleans expired keys automatically using controlled test today override
+    const prevGlobalToday = (globalThis as { __OT_BAZA_TEST_TODAY_ISO__?: string })
+      .__OT_BAZA_TEST_TODAY_ISO__;
+    try {
+      (globalThis as { __OT_BAZA_TEST_TODAY_ISO__?: string }).__OT_BAZA_TEST_TODAY_ISO__ =
+        '2026-05-11';
+      const normalizedNextDay = normalizeDatabaseState(snoozedDb);
+      expect(normalizedNextDay.settings.deadlineSettings?.snoozedNotificationKeys).toEqual({});
+    } finally {
+      if (prevGlobalToday === undefined) {
+        delete (globalThis as { __OT_BAZA_TEST_TODAY_ISO__?: string }).__OT_BAZA_TEST_TODAY_ISO__;
+      } else {
+        (globalThis as { __OT_BAZA_TEST_TODAY_ISO__?: string }).__OT_BAZA_TEST_TODAY_ISO__ =
+          prevGlobalToday;
+      }
+    }
+
+    // Also verify createSnoozeMapForNotification keeps non-expired keys
+    const twoSnoozed = createSnoozeMapForNotification(
+      { other_key: '2026-05-12', expired_key: '2026-05-10' },
+      'new_key',
+      '2026-05-10'
+    );
+    expect(twoSnoozed).toEqual({
+      other_key: '2026-05-12',
+      new_key: '2026-05-11'
+    });
+  });
+
+  it('17. suppresses toasts when notificationsEnabled is false while keeping popover and counts intact', () => {
+    const db = buildAlertRichDb(2, 1);
+    const disabledDb = applyDeadlineNotificationsEnabledInState(db, false, '2026-05-10');
+    expect(disabledDb.settings.deadlineSettings?.notificationsEnabled).toBe(false);
+
+    const events = collectDeadlineEvents(disabledDb, { todayIso: '2026-05-10' });
+    const toastEval = evaluateSessionToastNotifications({
+      events,
+      shownKeys: new Set<string>(),
+      deadlineSettings: disabledDb.settings.deadlineSettings,
+      todayIso: '2026-05-10'
+    });
+    expect(toastEval.shouldShowToast).toBe(false);
+
+    const popover = selectTopPopoverNotifications(events, disabledDb.settings.deadlineSettings, {
+      todayIso: '2026-05-10'
+    });
+    expect(popover.items).toHaveLength(3);
+    expect(popover.overdueAlertCount).toBe(2);
+    expect(popover.dueSoonAlertCount).toBe(1);
+  });
+});
+
 
 

@@ -60,10 +60,15 @@ import {
 import { createUniqueId, integrityService } from './services/integrityService';
 import {
   applyDeadlineCompletedTodayInState,
+  applyDeadlineNotificationsEnabledInState,
+  applyDeadlineSnoozeInState,
   collectDeadlineEvents,
   DeadlineEventItem,
+  evaluateSessionToastNotifications,
+  getTodayIso,
   normalizeHolidaysList,
   resolveDeadlineEventTarget,
+  selectTopPopoverNotifications,
   summarizeDeadlineEvents,
   SYSTEM_DEADLINE_TAB_ID
 } from './services/deadlineService';
@@ -113,10 +118,23 @@ export default function App() {
   const latestDbRef = useRef<DatabaseState>(dbState);
   latestDbRef.current = dbState;
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const deadlineSettingsQueueRef = useRef<Promise<void>>(Promise.resolve());
   const docRecordQueueRef = useRef<Promise<void>>(Promise.resolve());
   const highlightTimerRef = useRef<number | null>(null);
   const heartbeatBusyRef = useRef<boolean>(false);
   const lastErrorToastRef = useRef<{ message: string; at: number } | null>(null);
+  const shownToastKeysRef = useRef<Set<string>>(new Set());
+  const [todayIso, setTodayIso] = useState<string>(() => getTodayIso());
+
+  useEffect(() => {
+    const syncTestToday = () => {
+      setTodayIso(getTodayIso());
+    };
+    window.addEventListener('ot-baza-test-date-change', syncTestToday);
+    return () => {
+      window.removeEventListener('ot-baza-test-date-change', syncTestToday);
+    };
+  }, []);
 
   const clearRowHighlight = useCallback(() => {
     if (highlightTimerRef.current !== null) {
@@ -323,6 +341,7 @@ export default function App() {
       return;
     }
 
+    shownToastKeysRef.current.clear();
     setDbState(res.state);
     latestDbRef.current = res.state;
     setActiveTabId((prev) =>
@@ -566,11 +585,50 @@ export default function App() {
   const isSystemDeadlineTab = activeTabId === SYSTEM_DEADLINE_TAB_ID;
   const currentTab = dbState.tabs.find((t) => t.id === activeTabId) || dbState.tabs[0];
 
-  const deadlineEvents = React.useMemo(() => collectDeadlineEvents(dbState), [dbState]);
+  const deadlineEvents = React.useMemo(
+    () => collectDeadlineEvents(dbState, { todayIso }),
+    [dbState, todayIso]
+  );
   const deadlineSummary = React.useMemo(
     () => summarizeDeadlineEvents(deadlineEvents),
     [deadlineEvents]
   );
+  const popoverNotifications = React.useMemo(
+    () =>
+      selectTopPopoverNotifications(deadlineEvents, dbState.settings?.deadlineSettings, {
+        todayIso
+      }),
+    [deadlineEvents, dbState.settings?.deadlineSettings, todayIso]
+  );
+
+  // Session-deduplicated deadline notifications (one aggregated toast for newly unseen overdue/due_soon keys)
+  useEffect(() => {
+    if (isBootstrapping || initialLoadFailed) return;
+
+    const evalRes = evaluateSessionToastNotifications({
+      events: deadlineEvents,
+      shownKeys: shownToastKeysRef.current,
+      deadlineSettings: dbState.settings?.deadlineSettings,
+      todayIso
+    });
+    if (!evalRes.shouldShowToast) return;
+
+    evalRes.newKeys.forEach((key) => shownToastKeysRef.current.add(key));
+    showToast(evalRes.message, evalRes.variant, {
+      action: {
+        label: 'Открыть «Контроль сроков»',
+        onClick: () => setActiveTabId(SYSTEM_DEADLINE_TAB_ID)
+      },
+      durationMs: 7000
+    });
+  }, [
+    isBootstrapping,
+    initialLoadFailed,
+    deadlineEvents,
+    dbState.settings?.deadlineSettings,
+    todayIso,
+    showToast
+  ]);
 
   // ===================== CRUD OPERATIONS =====================
 
@@ -1172,7 +1230,7 @@ export default function App() {
       return;
     }
 
-    updateDbState((prev) => applyDeadlineCompletedTodayInState(prev, event).state);
+    updateDbState((prev) => applyDeadlineCompletedTodayInState(prev, event, todayIso).state);
     showToast(
       `Мероприятие «${event.columnName}» (${resolution.rowIdentifier}) отмечено выполненным сегодня.`,
       'success'
@@ -1192,6 +1250,86 @@ export default function App() {
       }
     }));
   };
+
+  const handleSnoozeDeadlineNotification = useCallback(
+    (notificationKey: string): Promise<{ ok: boolean; error?: string }> => {
+      const run = async (): Promise<{ ok: boolean; error?: string }> => {
+        const snapshotBefore = latestDbRef.current;
+        const nextState = applyDatabaseTransition(
+          snapshotBefore,
+          (prev) => applyDeadlineSnoozeInState(prev, notificationKey, todayIso),
+          { touchTimestamp: true }
+        );
+        if (nextState === snapshotBefore) {
+          return { ok: true };
+        }
+        const res = await persistState(nextState, false, { deferUnsavedFlag: true });
+        if (!res.ok) {
+          return {
+            ok: false,
+            error:
+              res.message ||
+              'Не удалось сохранить отложенное уведомление. Проверьте сохранение и повторите попытку.'
+          };
+        }
+        latestDbRef.current = nextState;
+        setDbState(nextState);
+        hasUnsavedChangesRef.current = false;
+        setHasUnsavedChanges(false);
+        showToast('Напоминание скрыто на сегодня.', 'info');
+        return { ok: true };
+      };
+
+      const task = deadlineSettingsQueueRef.current.then(run, run);
+      deadlineSettingsQueueRef.current = task.then(
+        () => undefined,
+        () => undefined
+      );
+      return task;
+    },
+    [persistState, showToast, todayIso]
+  );
+
+  const handleToggleDeadlineNotifications = useCallback(
+    (enabled: boolean): Promise<{ ok: boolean; error?: string }> => {
+      const run = async (): Promise<{ ok: boolean; error?: string }> => {
+        const snapshotBefore = latestDbRef.current;
+        const nextState = applyDatabaseTransition(
+          snapshotBefore,
+          (prev) => applyDeadlineNotificationsEnabledInState(prev, enabled, todayIso),
+          { touchTimestamp: true }
+        );
+        const res = await persistState(nextState, false, { deferUnsavedFlag: true });
+        if (!res.ok) {
+          return {
+            ok: false,
+            error:
+              res.message ||
+              'Не удалось сохранить настройку уведомлений. Повторите попытку.'
+          };
+        }
+        latestDbRef.current = nextState;
+        setDbState(nextState);
+        hasUnsavedChangesRef.current = false;
+        setHasUnsavedChanges(false);
+        showToast(
+          enabled
+            ? 'Всплывающие напоминания о сроках включены.'
+            : 'Всплывающие напоминания отключены (панель и вкладка «Контроль сроков» остаются активны).',
+          'info'
+        );
+        return { ok: true };
+      };
+
+      const task = deadlineSettingsQueueRef.current.then(run, run);
+      deadlineSettingsQueueRef.current = task.then(
+        () => undefined,
+        () => undefined
+      );
+      return task;
+    },
+    [persistState, showToast, todayIso]
+  );
 
   const handleSaveLegalEntity = ({
     mode,
@@ -1528,6 +1666,15 @@ export default function App() {
         }}
         llmConfig={dbState.llmConfig}
         onOpenHelp={() => setIsHelpOpen(true)}
+        deadlineSummary={deadlineSummary}
+        popoverNotifications={popoverNotifications}
+        deadlineNotificationsEnabled={
+          dbState.settings.deadlineSettings?.notificationsEnabled !== false
+        }
+        onJumpToDeadlineEvent={handleJumpToDeadlineEvent}
+        onSnoozeDeadlineNotification={handleSnoozeDeadlineNotification}
+        onToggleDeadlineNotifications={handleToggleDeadlineNotifications}
+        onOpenDeadlineControlTab={() => setActiveTabId(SYSTEM_DEADLINE_TAB_ID)}
       />
 
       {/* Persistent Recovery Banner for Connection Loss / USB Disconnect / Write Error / Revision Conflict */}
@@ -1638,6 +1785,7 @@ export default function App() {
       {isSystemDeadlineTab ? (
         <DeadlineControlView
           dbState={dbState}
+          todayIso={todayIso}
           focusSearchSignal={focusDeadlineSearchSignal}
           onJumpToEvent={handleJumpToDeadlineEvent}
           onMarkCompletedToday={handleMarkDeadlineEventCompletedToday}
@@ -1934,6 +2082,7 @@ export default function App() {
         onRestoreDatabase={async (nextState) => {
           const res = await storageService.restoreDatabaseSafely(latestDbRef.current, nextState);
           if (res.ok) {
+            shownToastKeysRef.current.clear();
             setDbState(res.state);
             latestDbRef.current = res.state;
             setActiveTabId(res.state.tabs[0]?.id || '');
@@ -1963,6 +2112,7 @@ export default function App() {
             latestDbRef.current
           );
           if (saveResult.ok) {
+            shownToastKeysRef.current.clear();
             setDbState(state);
             latestDbRef.current = state;
             if (state.tabs[0]) setActiveTabId(state.tabs[0].id);

@@ -4,14 +4,25 @@ import { Z_INDEX } from './zIndex';
 
 export type ToastVariant = 'success' | 'error' | 'info' | 'warning';
 
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
+export interface ShowToastOptions {
+  action?: ToastAction;
+  durationMs?: number;
+}
+
 interface ToastItem {
   id: string;
   message: string;
   variant: ToastVariant;
+  action?: ToastAction;
 }
 
 interface ToastContextValue {
-  showToast: (message: string, variant?: ToastVariant) => void;
+  showToast: (message: string, variant?: ToastVariant, options?: ShowToastOptions) => void;
 }
 
 const ToastContext = createContext<ToastContextValue>({
@@ -28,10 +39,11 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   const showToast = useCallback(
-    (message: string, variant: ToastVariant = 'info') => {
+    (message: string, variant: ToastVariant = 'info', options?: ShowToastOptions) => {
       const id = `toast_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      setToasts((prev) => [...prev.slice(-3), { id, message, variant }]);
-      setTimeout(() => dismiss(id), variant === 'error' ? 6000 : 3500);
+      setToasts((prev) => [...prev.slice(-3), { id, message, variant, action: options?.action }]);
+      const duration = options?.durationMs ?? (variant === 'error' ? 6000 : options?.action ? 6000 : 3500);
+      setTimeout(() => dismiss(id), duration);
     },
     [dismiss]
   );
@@ -41,7 +53,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       {children}
       {toasts.length > 0 && (
         <div
-          className={`fixed bottom-9 right-4 ${Z_INDEX.toast} flex flex-col gap-2 max-w-sm w-full pointer-events-none`}
+          className={`fixed bottom-9 right-4 ${Z_INDEX.toast} flex flex-col gap-2 max-w-[min(24rem,calc(100vw-2rem))] w-full pointer-events-none`}
           role="status"
           aria-live="polite"
         >
@@ -65,14 +77,32 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             return (
               <div
                 key={t.id}
+                data-testid="app-toast-item"
+                data-toast-variant={t.variant}
                 className={`pointer-events-auto flex items-start gap-2.5 px-3.5 py-2.5 rounded-xl border shadow-lg text-xs ${palette}`}
               >
                 <Icon className="w-4 h-4 shrink-0 mt-0.5" />
-                <span className="flex-1 leading-snug">{t.message}</span>
+                <div className="flex-1 min-w-0 leading-snug space-y-1.5">
+                  <div className="break-words">{t.message}</div>
+                  {t.action && (
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          t.action?.onClick();
+                          dismiss(t.id);
+                        }}
+                        className="inline-flex items-center px-2 py-1 rounded-md border border-current/25 bg-white/75 dark:bg-slate-900/75 hover:bg-white dark:hover:bg-slate-900 font-semibold text-[11px] transition-colors cursor-pointer"
+                      >
+                        {t.action.label}
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <button
                   type="button"
                   onClick={() => dismiss(t.id)}
-                  className="opacity-60 hover:opacity-100 p-0.5 rounded transition-opacity"
+                  className="opacity-60 hover:opacity-100 p-0.5 rounded transition-opacity cursor-pointer"
                   aria-label="Закрыть уведомление"
                 >
                   <X className="w-3.5 h-3.5" />

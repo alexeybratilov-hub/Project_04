@@ -243,9 +243,25 @@ export function formatIsoToDisplay(iso?: string): string {
 
 /**
  * Returns today's local calendar date as YYYY-MM-DD without UTC day-shift bugs.
+ * Supports an optional controlled test date override on globalThis when `now` is omitted.
  */
-export function getTodayIso(now: Date = new Date()): string {
-  return formatIsoDateParts(now.getFullYear(), now.getMonth() + 1, now.getDate());
+export function getTodayIso(now?: Date): string {
+  if (!now) {
+    const testOverride = (globalThis as { __OT_BAZA_TEST_TODAY_ISO__?: unknown })
+      .__OT_BAZA_TEST_TODAY_ISO__;
+    if (typeof testOverride === 'string') {
+      const parsed = parseIsoDateParts(testOverride);
+      if (parsed) {
+        return formatIsoDateParts(parsed.year, parsed.month, parsed.day);
+      }
+    }
+  }
+  const effectiveNow = now ?? new Date();
+  return formatIsoDateParts(
+    effectiveNow.getFullYear(),
+    effectiveNow.getMonth() + 1,
+    effectiveNow.getDate()
+  );
 }
 
 export function addCalendarDays(iso: string, days: number): string {
@@ -2298,4 +2314,213 @@ export function applyDeadlineCompletedTodayInState(
     updated: true
   };
 }
+
+// ==================== T-49: Notification Popover, Session Deduplication & Snooze ====================
+
+export const MAX_POPOVER_DEADLINE_NOTIFICATIONS = 10;
+
+export interface PopoverDeadlineNotificationsResult {
+  items: DeadlineEventItem[];
+  totalActiveCount: number;
+  snoozedAlertCount: number;
+  overdueAlertCount: number;
+  dueSoonAlertCount: number;
+}
+
+function compareUrgentDeadlineEvents(a: DeadlineEventItem, b: DeadlineEventItem): number {
+  const wa = STATUS_SORT_WEIGHT[a.evaluation.status];
+  const wb = STATUS_SORT_WEIGHT[b.evaluation.status];
+  if (wa !== wb) return wa - wb;
+
+  const da = a.evaluation.daysRemaining ?? a.evaluation.calendarDaysRemaining;
+  const db = b.evaluation.daysRemaining ?? b.evaluation.calendarDaysRemaining;
+  if (da !== undefined && db !== undefined && da !== db) {
+    return da - db;
+  }
+
+  const calA = a.evaluation.calendarDaysRemaining;
+  const calB = b.evaluation.calendarDaysRemaining;
+  if (calA !== undefined && calB !== undefined && calA !== calB) {
+    return calA - calB;
+  }
+
+  return a.rowIdentifier.localeCompare(b.rowIdentifier, 'ru');
+}
+
+/**
+ * Selects up to `limit` (default 10) most urgent active (`overdue` / `due_soon`, non-snoozed)
+ * notifications while also reporting total active and snoozed alert counts.
+ */
+export function selectTopPopoverNotifications(
+  events: DeadlineEventItem[],
+  deadlineSettings?: DeadlineAppSettings | null,
+  options?: { todayIso?: string; limit?: number }
+): PopoverDeadlineNotificationsResult {
+  const validToday =
+    (options?.todayIso ? parseFlexibleDateToIso(options.todayIso) : undefined) || getTodayIso();
+  const limit = Math.max(1, options?.limit ?? MAX_POPOVER_DEADLINE_NOTIFICATIONS);
+
+  const allAlerts = events.filter(
+    (ev) => ev.evaluation.status === 'overdue' || ev.evaluation.status === 'due_soon'
+  );
+  const activeAlerts = getActiveAlertDeadlineEvents(allAlerts, deadlineSettings, validToday).sort(
+    compareUrgentDeadlineEvents
+  );
+
+  let overdueAlertCount = 0;
+  let dueSoonAlertCount = 0;
+  for (const ev of allAlerts) {
+    if (ev.evaluation.status === 'overdue') overdueAlertCount += 1;
+    else if (ev.evaluation.status === 'due_soon') dueSoonAlertCount += 1;
+  }
+
+  return {
+    items: activeAlerts.slice(0, limit),
+    totalActiveCount: activeAlerts.length,
+    snoozedAlertCount: Math.max(0, allAlerts.length - activeAlerts.length),
+    overdueAlertCount,
+    dueSoonAlertCount
+  };
+}
+
+export interface SessionToastEvaluation {
+  shouldShowToast: boolean;
+  newKeys: string[];
+  unseenEvents: DeadlineEventItem[];
+  overdueCount: number;
+  dueSoonCount: number;
+  variant: 'error' | 'warning';
+  message: string;
+}
+
+/**
+ * Evaluates which active (`overdue` / `due_soon`, non-snoozed) events have not yet
+ * been shown in the current session (`shownKeys`). Produces at most one aggregated toast payload.
+ */
+export function evaluateSessionToastNotifications(params: {
+  events: DeadlineEventItem[];
+  shownKeys: ReadonlySet<string>;
+  deadlineSettings?: DeadlineAppSettings | null;
+  todayIso?: string;
+}): SessionToastEvaluation {
+  const { events, shownKeys, deadlineSettings, todayIso } = params;
+
+  if (deadlineSettings?.notificationsEnabled === false) {
+    return {
+      shouldShowToast: false,
+      newKeys: [],
+      unseenEvents: [],
+      overdueCount: 0,
+      dueSoonCount: 0,
+      variant: 'warning',
+      message: ''
+    };
+  }
+
+  const validToday = (todayIso ? parseFlexibleDateToIso(todayIso) : undefined) || getTodayIso();
+  const activeAlerts = getActiveAlertDeadlineEvents(events, deadlineSettings, validToday).sort(
+    compareUrgentDeadlineEvents
+  );
+  const unseenEvents = activeAlerts.filter((ev) => !shownKeys.has(ev.notificationKey));
+
+  if (unseenEvents.length === 0) {
+    return {
+      shouldShowToast: false,
+      newKeys: [],
+      unseenEvents: [],
+      overdueCount: 0,
+      dueSoonCount: 0,
+      variant: 'warning',
+      message: ''
+    };
+  }
+
+  const overdueCount = unseenEvents.filter((ev) => ev.evaluation.status === 'overdue').length;
+  const dueSoonCount = unseenEvents.filter((ev) => ev.evaluation.status === 'due_soon').length;
+  const variant: 'error' | 'warning' = overdueCount > 0 ? 'error' : 'warning';
+
+  let message: string;
+  if (unseenEvents.length === 1) {
+    const single = unseenEvents[0];
+    const prefix = single.evaluation.status === 'overdue' ? 'Просрочен срок' : 'Приближается срок';
+    message = `${prefix}: «${single.columnName}» (${single.rowIdentifier}, ${single.entityName}).`;
+  } else {
+    const summaryParts: string[] = [];
+    if (overdueCount > 0) summaryParts.push(`просрочено: ${overdueCount}`);
+    if (dueSoonCount > 0) summaryParts.push(`скоро: ${dueSoonCount}`);
+    message = `Контроль сроков — ${summaryParts.join(', ')} (всего ${unseenEvents.length}).`;
+  }
+
+  return {
+    shouldShowToast: true,
+    newKeys: unseenEvents.map((ev) => ev.notificationKey),
+    unseenEvents,
+    overdueCount,
+    dueSoonCount,
+    variant,
+    message
+  };
+}
+
+/**
+ * Pure transition that snoozes a single notificationKey until the next calendar day
+ * (`today + 1`), preserving holidays, notificationsEnabled, and other active snoozes.
+ */
+export function applyDeadlineSnoozeInState(
+  state: DatabaseState,
+  notificationKey: string,
+  todayIso: string = getTodayIso()
+): DatabaseState {
+  const cleanKey = String(notificationKey || '').trim();
+  if (!cleanKey) return state;
+
+  const validToday = parseFlexibleDateToIso(todayIso) || getTodayIso();
+  const prevDeadlineSettings = state.settings?.deadlineSettings;
+  const nextSnoozedMap = createSnoozeMapForNotification(
+    prevDeadlineSettings?.snoozedNotificationKeys,
+    cleanKey,
+    validToday
+  );
+
+  return {
+    ...state,
+    settings: {
+      ...state.settings,
+      deadlineSettings: {
+        holidays: normalizeHolidaysList(prevDeadlineSettings?.holidays),
+        snoozedNotificationKeys: nextSnoozedMap,
+        notificationsEnabled: prevDeadlineSettings?.notificationsEnabled === false ? false : true
+      }
+    }
+  };
+}
+
+/**
+ * Pure transition that updates `settings.deadlineSettings.notificationsEnabled`,
+ * preserving holidays and snoozedNotificationKeys.
+ */
+export function applyDeadlineNotificationsEnabledInState(
+  state: DatabaseState,
+  enabled: boolean,
+  todayIso: string = getTodayIso()
+): DatabaseState {
+  const validToday = parseFlexibleDateToIso(todayIso) || getTodayIso();
+  const prevDeadlineSettings = state.settings?.deadlineSettings;
+
+  return {
+    ...state,
+    settings: {
+      ...state.settings,
+      deadlineSettings: {
+        holidays: normalizeHolidaysList(prevDeadlineSettings?.holidays),
+        snoozedNotificationKeys: normalizeSnoozedNotificationKeys(
+          prevDeadlineSettings?.snoozedNotificationKeys,
+          validToday
+        ),
+        notificationsEnabled: enabled
+      }
+    }
+  };
+}
+
 
