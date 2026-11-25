@@ -16,7 +16,7 @@ import { EmployeeCardModal } from './components/EmployeeCardModal';
 import { ModulesModal } from './components/ModulesModal';
 import { SYSTEM_DASHBOARD_TAB_ID } from './services/systemTabs';
 import { moduleService } from './services/moduleService';
-import { MODULE_DEFINITIONS } from './data/modules';
+import { MODULE_DEFINITIONS, EMPLOYEE_EVENT_LABELS } from './data/modules';
 import { obligationService } from './services/obligationService';
 import { StatusBar } from './components/StatusBar';
 import { MasterJumpDialog } from './components/MasterJumpDialog';
@@ -45,7 +45,7 @@ import {
   useToast
 } from './components/ui';
 
-import { Column, DatabaseState, LegalEntity, LegalEntityProfile, Row, Tab } from './types/database';
+import { Column, DatabaseState, EmployeeEvent, EmployeeEventType, LegalEntity, LegalEntityProfile, Row, Tab } from './types/database';
 import {
   CloneEntityMode,
   DatabaseTransitionOptions,
@@ -73,6 +73,7 @@ import {
   collectDeadlineEvents,
   DeadlineEventItem,
   evaluateSessionToastNotifications,
+  formatIsoToDisplay,
   getTodayIso,
   normalizeHolidaysList,
   resolveDeadlineEventTarget,
@@ -624,6 +625,7 @@ export default function App() {
     [dbState.tabs]
   );
   const employeeObligations = dbState.employeeObligations || [];
+  const employeeEvents = dbState.employeeEvents || [];
   const isEmployeesModuleTab = Boolean(
     currentTab && currentTab.moduleId === 'employees' && currentTab.id !== SYSTEM_DEADLINE_TAB_ID
   );
@@ -1541,6 +1543,21 @@ export default function App() {
         regResult.newRecord.relativePath
       );
 
+      // Рабочая папка подключена: дублируем документ на диск (documents/<Категория>/<файл>)
+      if (workspaceFolderService.isConnected()) {
+        const relativeSegments = regResult.newRecord.relativePath.split('/').filter(Boolean);
+        const writeRes = await workspaceFolderService.writeBinaryFile(
+          ['documents', ...relativeSegments],
+          payload.blob
+        );
+        if (!writeRes.ok) {
+          showToast(
+            `Документ сформирован, но не сохранён в рабочую папку: ${writeRes.error}`,
+            'warning'
+          );
+        }
+      }
+
       updateDbState((prev) => {
         // Merge by id instead of replacing the whole registry: the snapshot used to
         // compute regResult is stale after the awaited file operations.
@@ -1750,9 +1767,11 @@ export default function App() {
       if (!tab || !row) return prev;
       const hireDate = obligationService.getEmployeeHireDate(row);
       if (!hireDate) return prev;
+      const context = obligationService.resolveEmployeeContext(prev.tabs, row);
       const next = obligationService.ensureHireObligations(prev.employeeObligations || [], {
         employeeRowId,
-        hireDateIso: hireDate
+        hireDateIso: hireDate,
+        context
       });
       if (next === prev.employeeObligations) return prev;
       return { ...prev, employeeObligations: next };
@@ -1775,9 +1794,11 @@ export default function App() {
       if (updatedRow) {
         const hireDate = obligationService.getEmployeeHireDate(updatedRow);
         if (hireDate) {
+          const context = obligationService.resolveEmployeeContext(tabs, updatedRow);
           const ensured = obligationService.ensureHireObligations(employeeObligations, {
             employeeRowId,
-            hireDateIso: hireDate
+            hireDateIso: hireDate,
+            context
           });
           employeeObligations = obligationService.rescheduleObligationsForHireDate(
             ensured,
@@ -1799,9 +1820,11 @@ export default function App() {
       tab.rows.forEach((row) => {
         const hireDate = obligationService.getEmployeeHireDate(row);
         if (!hireDate) return;
+        const context = obligationService.resolveEmployeeContext(prev.tabs, row);
         obligations = obligationService.ensureHireObligations(obligations, {
           employeeRowId: row.id,
-          hireDateIso: hireDate
+          hireDateIso: hireDate,
+          context
         });
       });
       if (obligations === prev.employeeObligations) return prev;
@@ -1828,7 +1851,8 @@ export default function App() {
 
     const nextObligations = obligationService.ensureHireObligations(dbState.employeeObligations || [], {
       employeeRowId: newRow.id,
-      hireDateIso: todayIso
+      hireDateIso: todayIso,
+      context: {}
     });
 
     updateDbState((prev) => ({
@@ -1841,6 +1865,54 @@ export default function App() {
 
     setEmployeeCardRowId(newRow.id);
     showToast('Сотрудник добавлен: пакет документов и сроки рассчитаны', 'success');
+  };
+
+  const handleRegisterEmployeeEvent = (
+    employeeRowId: string,
+    type: EmployeeEventType,
+    dateIso: string,
+    note?: string
+  ) => {
+    const event: EmployeeEvent = {
+      id: createUniqueId('evt'),
+      employeeRowId,
+      type,
+      date: dateIso,
+      note,
+      createdAt: new Date().toISOString()
+    };
+
+    updateDbState((prev) => {
+      const employeesTabRef = prev.tabs.find((item) => item.moduleId === 'employees');
+      const row = employeesTabRef?.rows.find((candidate) => candidate.id === employeeRowId);
+      if (!row) return prev;
+      const context = obligationService.resolveEmployeeContext(prev.tabs, row);
+      let obligations = prev.employeeObligations || [];
+      if (type === 'hire') {
+        obligations = obligationService.ensureHireObligations(obligations, {
+          employeeRowId,
+          hireDateIso: dateIso,
+          context,
+          event
+        });
+      } else {
+        obligations = obligationService.ensureEventObligations(obligations, {
+          employeeRowId,
+          event,
+          context
+        });
+      }
+      return {
+        ...prev,
+        employeeEvents: [...(prev.employeeEvents || []), event],
+        employeeObligations: obligations
+      };
+    });
+
+    showToast(
+      `Событие «${EMPLOYEE_EVENT_LABELS[type]}» зарегистрировано: требования и сроки добавлены`,
+      'success'
+    );
   };
 
   const handleCompleteObligation = (obligationId: string) => {
@@ -1906,6 +1978,9 @@ export default function App() {
     const rowForGeneration = targetRow ?? employeeRow;
     const employeeName = obligationService.getEmployeeDisplayName(employeeRow, employeesTabRef);
 
+    const eventDate = obligation.eventId
+      ? (state.employeeEvents || []).find((item) => item.id === obligation.eventId)?.date
+      : undefined;
     const resolved = documentGenerator.resolveTemplateTagsDetailed(
       template.contentTemplate,
       rowForGeneration,
@@ -1913,11 +1988,19 @@ export default function App() {
       state.tabs,
       state.tags,
       activeEntity.profile,
-      { holidays: state.settings.deadlineSettings?.holidays, todayIso }
+      {
+        holidays: state.settings.deadlineSettings?.holidays,
+        todayIso,
+        eventDateIso: eventDate || obligation.dueDate
+      }
+    );
+    const resolvedText = resolved.text.replace(
+      /\{Дата_события\}/g,
+      formatIsoToDisplay(eventDate || obligation.dueDate || todayIso)
     );
     const safeName =
       `${template.name} — ${employeeName}`.replace(/[\\/:*?"<>|]+/g, '_').slice(0, 120) || template.name;
-    const blob = await documentGenerator.generateDocx(template.name, resolved.text);
+    const blob = await documentGenerator.generateDocx(template.name, resolvedText);
     const docId = await handleRecordGeneratedDoc({
       title: template.name,
       fileName: `${safeName}.docx`,
@@ -2200,6 +2283,7 @@ export default function App() {
           workspaceFolderName={workspaceFolderName}
           todayIso={todayIso}
           employeeObligations={employeeObligations}
+          employeeEvents={employeeEvents}
           employeesTab={employeesTab}
           onOpenEmployees={() =>
             setActiveTabId(employeesTab?.id ?? SYSTEM_DASHBOARD_TAB_ID)
@@ -2235,6 +2319,7 @@ export default function App() {
           onAddEmployee={handleAddEmployee}
           onGeneratePackage={(rowId) => void handleGenerateEmployeePackage(rowId)}
           onEnsureAllPackages={handleEnsureAllEmployeePackages}
+          employeeEvents={employeeEvents}
         />
       ) : (
         currentTab && (
@@ -2478,6 +2563,8 @@ export default function App() {
         onCompleteObligation={handleCompleteObligation}
         onReopenObligation={handleReopenObligation}
         onUpdateEmployee={handleUpdateEmployee}
+        employeeEvents={employeeEvents}
+        onRegisterEvent={handleRegisterEmployeeEvent}
       />
 
       <WorkspaceFolderModal

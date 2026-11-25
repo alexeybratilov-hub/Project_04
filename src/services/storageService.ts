@@ -3,7 +3,8 @@ import {
   DatabaseState,
   LegalEntity,
   LegalEntityProfile,
-  Tab
+  Tab,
+  Tag
 } from '../types/database';
 import {
   DEFAULT_LEGAL_ENTITY_PROFILE,
@@ -238,6 +239,7 @@ export function applyDatabaseTransition(
               templates: updated.templates,
               generatedDocs: updated.generatedDocs,
               employeeObligations: updated.employeeObligations || [],
+              employeeEvents: updated.employeeEvents || [],
               llmLogs: updated.llmLogs,
               ...(now ? { updatedAt: now } : {})
             }
@@ -506,6 +508,37 @@ export function normalizeDatabaseState(raw: any): DatabaseState {
 
   let entities: LegalEntity[] = Array.isArray(raw.entities) ? raw.entities : [];
 
+  // Теги, которые нужны новым встроенным шаблонам (приказы о приёме/переводе/увольнении).
+  // Добавляются только если во вкладке «Сотрудники» есть соответствующие столбцы —
+  // иначе аудит целостности справедливо посчитал бы их битыми.
+  const ensureRequiredEmployeeTags = (tags: Tag[] | undefined, tabs: Tab[] | undefined): Tag[] => {
+    const list = Array.isArray(tags) ? [...tags] : [];
+    const employeesTab = Array.isArray(tabs) ? tabs.find((tab) => tab.id === 'tab_employees') : undefined;
+    if (!employeesTab) return list;
+    const names = new Set(list.map((tag) => tag.name));
+    const candidates: Tag[] = [
+      {
+        id: 'tag_builtin_hire_date',
+        name: '{Дата_приёма}',
+        tabId: 'tab_employees',
+        columnId: 'emp_hire_date',
+        description: 'Дата приёма на работу'
+      },
+      {
+        id: 'tag_builtin_snils',
+        name: '{СНИЛС}',
+        tabId: 'tab_employees',
+        columnId: 'emp_snils',
+        description: 'СНИЛС работника'
+      }
+    ];
+    candidates.forEach((tag) => {
+      const hasColumn = employeesTab.columns.some((column) => column.id === tag.columnId);
+      if (hasColumn && !names.has(tag.name)) list.push(tag);
+    });
+    return list;
+  };
+
   if (entities.length === 0) {
     const legacyTabs: Tab[] = normalizeTabsDeadlineColumns(
       Array.isArray(raw.tabs) && raw.tabs.length > 0
@@ -543,8 +576,10 @@ export function normalizeDatabaseState(raw: any): DatabaseState {
       return {
         ...ent,
         tabs: normalizedTabs,
+        tags: ensureRequiredEmployeeTags(ent.tags, normalizedTabs),
         generatedDocs: Array.isArray(ent.generatedDocs) ? ent.generatedDocs : [],
-        employeeObligations: Array.isArray(ent.employeeObligations) ? ent.employeeObligations : []
+        employeeObligations: Array.isArray(ent.employeeObligations) ? ent.employeeObligations : [],
+        employeeEvents: Array.isArray(ent.employeeEvents) ? ent.employeeEvents : []
       };
     });
     if (sharedNormatives.length === 0) {
@@ -590,6 +625,9 @@ export function normalizeDatabaseState(raw: any): DatabaseState {
     employeeObligations: Array.isArray(raw.employeeObligations)
       ? raw.employeeObligations
       : activeEntity.employeeObligations || [],
+    employeeEvents: Array.isArray(raw.employeeEvents)
+      ? raw.employeeEvents
+      : activeEntity.employeeEvents || [],
     llmConfig: normalizeLLMConfig(raw.llmConfig || INITIAL_DATABASE_STATE.llmConfig),
     llmLogs: activeEntity.llmLogs || [],
     settings: {

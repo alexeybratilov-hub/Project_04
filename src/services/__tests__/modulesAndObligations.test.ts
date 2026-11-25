@@ -11,7 +11,9 @@ import {
   buildLinkedRow,
   completeObligation,
   detectControlViolations,
+  ensureEventObligations,
   ensureHireObligations,
+  resolveEmployeeContext,
   rescheduleObligationsForHireDate,
   summarizeObligations
 } from '../obligationService';
@@ -91,10 +93,11 @@ describe('Движок обязательств', () => {
       createdAt: '2026-02-01T00:00:00.000Z'
     });
 
-    // briefings: вводный, первичный, проверка знаний, повторный; medical: направление, периодический; ppe: карточка
-    expect(obligations).toHaveLength(7);
+    // employees: приказ; briefings: вводный, первичный, проверка знаний, повторный;
+    // medical: направление, периодический; ppe: карточка
+    expect(obligations).toHaveLength(8);
     expect(new Set(obligations.map((item) => item.moduleId))).toEqual(
-      new Set(['briefings', 'medical', 'ppe'])
+      new Set(['employees', 'briefings', 'medical', 'ppe'])
     );
     const intro = obligations.find((item) => item.requirementId === 'briefing_intro');
     expect(intro?.dueDate).toBe('2026-02-01');
@@ -195,5 +198,119 @@ describe('Движок обязательств', () => {
     if (dateColumn) {
       expect(linked[dateColumn.id]).toBe('2026-02-01');
     }
+  });
+});
+
+describe('События жизненного цикла', () => {
+  const makeEvent = (type: any, date: string, id = 'evt_1') => ({
+    id,
+    employeeRowId: 'row_test_1',
+    type,
+    date,
+    createdAt: '2026-02-01T00:00:00.000Z'
+  });
+
+  it('перевод создаёт приказ, внеплановый инструктаж и проверку знаний', () => {
+    const obligations = ensureEventObligations([], {
+      employeeRowId: 'row_test_1',
+      event: makeEvent('transfer', '2026-05-10')
+    });
+    expect(obligations).toHaveLength(3);
+    const ids = obligations.map((item) => item.requirementId).sort();
+    expect(ids).toEqual(['transfer_briefing', 'transfer_knowledge', 'transfer_order']);
+    const order = obligations.find((item) => item.requirementId === 'transfer_order');
+    expect(order?.dueDate).toBe('2026-05-10');
+    expect(order?.eventId).toBe('evt_1');
+    expect(order?.eventType).toBe('transfer');
+  });
+
+  it('увольнение создаёт приказ, возврат СИЗ и закрытие карточки', () => {
+    const obligations = ensureEventObligations([], {
+      employeeRowId: 'row_test_1',
+      event: makeEvent('dismissal', '2026-06-01', 'evt_2')
+    });
+    expect(obligations.map((item) => item.requirementId).sort()).toEqual([
+      'dismissal_order',
+      'personal_card_close',
+      'ppe_return'
+    ]);
+  });
+
+  it('несчастный случай даёт акт, расследование и внеплановый инструктаж', () => {
+    const obligations = ensureEventObligations([], {
+      employeeRowId: 'row_test_1',
+      event: makeEvent('incident', '2026-07-01', 'evt_3')
+    });
+    expect(obligations.map((item) => item.requirementId).sort()).toEqual([
+      'incident_act',
+      'incident_briefing',
+      'incident_investigation'
+    ]);
+    const act = obligations.find((item) => item.requirementId === 'incident_act');
+    expect(act?.dueDate).toBe('2026-07-02');
+  });
+
+  it('повторное событие того же типа не дублирует требования в рамках события, но создаёт новый пакет', () => {
+    const first = ensureEventObligations([], {
+      employeeRowId: 'row_test_1',
+      event: makeEvent('transfer', '2026-05-10', 'evt_1')
+    });
+    const sameAgain = ensureEventObligations(first, {
+      employeeRowId: 'row_test_1',
+      event: makeEvent('transfer', '2026-05-10', 'evt_1')
+    });
+    expect(sameAgain).toHaveLength(first.length);
+
+    const second = ensureEventObligations(sameAgain, {
+      employeeRowId: 'row_test_1',
+      event: makeEvent('transfer', '2026-09-01', 'evt_4')
+    });
+    expect(second.length).toBe(first.length * 2);
+  });
+});
+
+describe('Матрица требований: должность и класс условий труда', () => {
+  it('обучение руководителей добавляется только для руководящих должностей', () => {
+    const worker = ensureHireObligations([], {
+      employeeRowId: 'row_worker',
+      hireDateIso: '2026-02-01',
+      context: { positionTitle: 'Слесарь-ремонтник', soutClass: '3.1' }
+    });
+    expect(worker.some((item) => item.requirementId === 'manager_training')).toBe(false);
+
+    const manager = ensureHireObligations([], {
+      employeeRowId: 'row_manager',
+      hireDateIso: '2026-02-01',
+      context: { positionTitle: 'Начальник участка', soutClass: '2.0' }
+    });
+    const training = manager.find((item) => item.requirementId === 'manager_training');
+    expect(training).toBeTruthy();
+    expect(training?.periodicityMonths).toBe(36);
+  });
+
+  it('периодичность медосмотра зависит от класса условий труда', () => {
+    const office = ensureHireObligations([], {
+      employeeRowId: 'row_office',
+      hireDateIso: '2026-02-01',
+      context: { positionTitle: 'Менеджер', soutClass: '2.0' }
+    });
+    const hazardous = ensureHireObligations([], {
+      employeeRowId: 'row_hazard',
+      hireDateIso: '2026-02-01',
+      context: { positionTitle: 'Сварщик', soutClass: '3.2' }
+    });
+
+    expect(office.find((item) => item.requirementId === 'med_referral')?.periodicityMonths).toBe(24);
+    expect(
+      hazardous.find((item) => item.requirementId === 'med_referral')?.periodicityMonths
+    ).toBe(12);
+  });
+
+  it('класс условий труда берётся из штатного расписания по должности работника', () => {
+    const state = baseState();
+    const row = { ...employeeRow(), emp_position: 'Электрогазосварщик 5 разряда' };
+    const context = resolveEmployeeContext(state.tabs, row);
+    expect(context.positionTitle).toBe('Электрогазосварщик 5 разряда');
+    expect(context.soutClass).toBe('3.2');
   });
 });

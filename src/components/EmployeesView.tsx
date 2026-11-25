@@ -1,9 +1,11 @@
 import React, { useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle2, ClipboardCheck, Clock3, FileText, Search, UserPlus, Users } from 'lucide-react';
-import { EmployeeObligation, Row, Tab } from '../types/database';
+import { EmployeeEvent, EmployeeObligation, Row, Tab } from '../types/database';
 import {
   getEmployeeDisplayName,
   getEmployeeHireDate,
+  getLatestEvent,
+  isEmployeeDismissed,
   summarizeObligations
 } from '../services/obligationService';
 import { formatIsoToDisplay } from '../services/deadlineService';
@@ -16,6 +18,7 @@ interface EmployeesViewProps {
   onAddEmployee: () => void;
   onGeneratePackage: (rowId: string) => void;
   onEnsureAllPackages: () => void;
+  employeeEvents: EmployeeEvent[];
 }
 
 interface EmployeeRowInfo {
@@ -29,6 +32,8 @@ interface EmployeeRowInfo {
   overdue: number;
   dueSoon: number;
   nextDue?: string;
+  dismissed: boolean;
+  dismissalDate?: string;
 }
 
 function columnValue(row: Row, tab: Tab, candidates: string[], namePattern?: RegExp): string {
@@ -57,7 +62,8 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
   onOpenCard,
   onAddEmployee,
   onGeneratePackage,
-  onEnsureAllPackages
+  onEnsureAllPackages,
+  employeeEvents
 }) => {
   const [query, setQuery] = useState('');
 
@@ -75,10 +81,12 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
         done: summary.done,
         overdue: summary.overdue,
         dueSoon: summary.dueSoon,
-        nextDue: summary.nearestDueDate
+        nextDue: summary.nearestDueDate,
+        dismissed: isEmployeeDismissed(employeeEvents, row.id),
+        dismissalDate: getLatestEvent(employeeEvents, row.id, 'dismissal')?.date
       };
     });
-  }, [employeesTab, obligations, todayIso]);
+  }, [employeesTab, obligations, todayIso, employeeEvents]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -92,10 +100,11 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
   }, [rows, query]);
 
   const totals = useMemo(() => {
-    const withPackage = rows.filter((item) => item.total > 0).length;
-    const overdue = rows.filter((item) => item.overdue > 0).length;
-    const complete = rows.filter((item) => item.total > 0 && item.done === item.total).length;
-    return { total: rows.length, withPackage, overdue, complete };
+    const active = rows.filter((item) => !item.dismissed);
+    const withPackage = active.filter((item) => item.total > 0).length;
+    const overdue = active.filter((item) => item.overdue > 0).length;
+    const complete = active.filter((item) => item.total > 0 && item.done === item.total).length;
+    return { total: rows.length, active: active.length, withPackage, overdue, complete };
   }, [rows]);
 
   return (
@@ -111,8 +120,8 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
               Работники и их пакеты документов
             </h1>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Всего: {totals.total} · с пакетом: {totals.withPackage} · есть просрочки: {totals.overdue} ·
-              полностью закрыто: {totals.complete}
+              Всего: {totals.total} · работают: {totals.active} · с пакетом: {totals.withPackage} · есть
+              просрочки: {totals.overdue} · полностью закрыто: {totals.complete}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -180,10 +189,20 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                         <button
                           type="button"
                           onClick={() => onOpenCard(item.row.id)}
-                          className="font-semibold text-slate-800 dark:text-slate-100 hover:text-blue-600 dark:hover:text-blue-400 text-left"
+                          className={`font-semibold text-left hover:text-blue-600 dark:hover:text-blue-400 ${
+                            item.dismissed
+                              ? 'text-slate-400 dark:text-slate-500 line-through'
+                              : 'text-slate-800 dark:text-slate-100'
+                          }`}
                         >
                           {item.name}
                         </button>
+                        {item.dismissed && (
+                          <span className="ml-2 rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                            уволен
+                            {item.dismissalDate ? ` ${formatIsoToDisplay(item.dismissalDate)}` : ''}
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">
                         {item.position || '—'}

@@ -17,7 +17,7 @@ import {
   Sparkles,
   Users
 } from 'lucide-react';
-import { DatabaseState, EmployeeObligation, LegalEntity, Row, Tab } from '../types/database';
+import { DatabaseState, EmployeeEvent, EmployeeObligation, LegalEntity, Row, Tab } from '../types/database';
 import {
   DeadlineEventItem,
   DeadlineEventsSummary,
@@ -25,7 +25,7 @@ import {
   type DeadlineStatus
 } from '../services/deadlineService';
 import type { StorageMode } from '../services/localApiClient';
-import { getEmployeeDisplayName, summarizeObligations } from '../services/obligationService';
+import { getEmployeeDisplayName, isEmployeeDismissed, summarizeObligations } from '../services/obligationService';
 
 interface DashboardViewProps {
   state: DatabaseState;
@@ -36,6 +36,7 @@ interface DashboardViewProps {
   workspaceFolderName?: string | null;
   todayIso: string;
   employeeObligations: EmployeeObligation[];
+  employeeEvents: EmployeeEvent[];
   employeesTab: Tab | null;
   onSelectTab: (tabId: string) => void;
   onSelectEntity: (entityId: string) => void;
@@ -124,6 +125,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   workspaceFolderName,
   todayIso,
   employeeObligations,
+  employeeEvents,
   employeesTab,
   onSelectTab,
   onSelectEntity,
@@ -138,9 +140,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 }) => {
   const totalRows = useMemo(() => countRows(state.tabs), [state.tabs]);
 
+  const activeEmployees = useMemo(
+    () => (employeesTab ? employeesTab.rows.filter((row) => !isEmployeeDismissed(employeeEvents, row.id)) : []),
+    [employeesTab, employeeEvents]
+  );
+
   const packageIssues = useMemo(() => {
     if (!employeesTab) return [];
-    return employeesTab.rows
+    return activeEmployees
       .map((row: Row) => {
         const own = employeeObligations.filter((item) => item.employeeRowId === row.id);
         const summary = summarizeObligations(own, todayIso);
@@ -157,19 +164,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       .filter((item) => item.total === 0 || item.overdue > 0)
       .sort((a, b) => b.overdue - a.overdue || (a.nextDue || '').localeCompare(b.nextDue || ''))
       .slice(0, 6);
-  }, [employeesTab, employeeObligations, todayIso]);
+  }, [activeEmployees, employeeObligations, todayIso]);
 
   const packageStats = useMemo(() => {
     if (!employeesTab) return { total: 0, withoutPackage: 0, overdue: 0 };
     let withoutPackage = 0;
     let overdue = 0;
-    employeesTab.rows.forEach((row) => {
+    activeEmployees.forEach((row) => {
       const own = employeeObligations.filter((item) => item.employeeRowId === row.id);
       if (own.length === 0) withoutPackage += 1;
       if (summarizeObligations(own, todayIso).overdue > 0) overdue += 1;
     });
-    return { total: employeesTab.rows.length, withoutPackage, overdue };
-  }, [employeesTab, employeeObligations, todayIso]);
+    return { total: activeEmployees.length, withoutPackage, overdue };
+  }, [activeEmployees, employeeObligations, todayIso]);
 
   const entities = useMemo(
     () =>

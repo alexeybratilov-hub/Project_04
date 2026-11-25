@@ -102,3 +102,8 @@
 | M-04 | P1 | **Экран модуля «Сотрудники»**: таблица с прогрессом пакета, поиск, массовый расчёт, переход в карточку | `src/components/EmployeesView.tsx`, `src/App.tsx` | Выполнено |
 | M-05 | P1 | **Экран «Модули этапов»**: включение/отключение этапов с сохранением данных и счётчиками записей | `src/components/ModulesModal.tsx`, `src/components/TabBar.tsx`, `src/App.tsx` | Выполнено |
 | M-06 | P1 | **Главная**: блок «Пакеты документов» (без пакета / просрочено), быстрые действия «Сотрудники» и «Модули», контрольные точки | `src/components/DashboardView.tsx` | Выполнено |
+
+| M-07 | P0 | **События жизненного цикла**: приём/перевод/увольнение/несчастный случай, правила событий, идемпотентность, статус «уволен», исключение из расчёта пакетов | `src/types/database.ts`, `src/data/modules.ts`, `src/services/obligationService.ts`, `src/components/EmployeeCardModal.tsx`, `EmployeesView.tsx`, `DashboardView.tsx`, `src/App.tsx` | Выполнено |
+| M-08 | P0 | **Матрица по должности и классу условий труда**: условия применимости, обучение руководителей (36 мес.), периодичность медосмотра 24/12 мес., резолв класса из штатного расписания | `src/data/modules.ts`, `src/services/obligationService.ts` | Выполнено |
+| M-09 | P1 | **Новые встроенные шаблоны**: приказ о приёме, приказ о переводе, приказ об увольнении, акт о несчастном случае; системный тег `{Дата_события}`, теги `{Дата_приёма}` и `{СНИЛС}` | `src/data/builtInTemplates.ts`, `src/services/documentGenerator.ts`, `src/data/initialDatabase.ts`, `public/initial_db.json` | Выполнено |
+| M-10 | P1 | **Автосохранение документов в рабочую папку**: `documents/<Категория>/<файл>.docx` при подключённой File System Access папке | `src/App.tsx`, `src/services/workspaceFolderService.ts` | Выполнено |

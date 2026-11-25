@@ -195,6 +195,7 @@ export interface LegalEntity {
   llmLogs: LLMGenerationLog[];
   generatedDocs: GeneratedDocRecord[];
   employeeObligations?: EmployeeObligation[];
+  employeeEvents?: EmployeeEvent[];
   createdAt: string;
   updatedAt: string;
 }
@@ -212,10 +213,26 @@ export interface DeadlineAppSettings {
 export type ObligationStatus = 'pending' | 'done' | 'skipped';
 export type ObligationKind = 'document' | 'deadline' | 'control';
 
+/** Событие жизненного цикла работника: приём, перевод, увольнение, несчастный случай. */
+export type EmployeeEventType = 'hire' | 'transfer' | 'dismissal' | 'incident';
+
+export interface EmployeeEvent {
+  id: string;
+  employeeRowId: string;
+  type: EmployeeEventType;
+  /** Дата события (ISO YYYY-MM-DD). */
+  date: string;
+  note?: string;
+  createdAt: string;
+}
+
 export interface EmployeeObligation {
   id: string;
   /** Строка работника во вкладке «Сотрудники» (Row.id). */
   employeeRowId: string;
+  /** Событие, из которого возникло обязательство (приём, перевод, увольнение…). */
+  eventId?: string;
+  eventType?: EmployeeEventType;
   moduleId: string;
   /** Стабильный ключ требования внутри модуля. */
   requirementId: string;
@@ -263,6 +280,7 @@ export interface DatabaseState {
   templates: DocumentTemplate[];
   generatedDocs: GeneratedDocRecord[];
   employeeObligations?: EmployeeObligation[];
+  employeeEvents?: EmployeeEvent[];
   llmConfig: LLMConfig;
   llmLogs: LLMGenerationLog[];
   settings: AppSettings;

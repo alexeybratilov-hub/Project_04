@@ -10,12 +10,14 @@ import {
   Save,
   UserRound
 } from 'lucide-react';
-import { EmployeeObligation, Row, Tab } from '../types/database';
+import { EmployeeEvent, EmployeeEventType, EmployeeObligation, Row, Tab } from '../types/database';
 import { AppModal, AppButton, StatusBanner } from './ui';
-import { MODULE_BY_ID } from '../data/modules';
+import { EMPLOYEE_EVENT_LABELS, MODULE_BY_ID } from '../data/modules';
 import {
   getEmployeeDisplayName,
+  getEmployeeEvents,
   getEmployeeHireDate,
+  isEmployeeDismissed,
   summarizeObligations
 } from '../services/obligationService';
 import { formatIsoToDisplay } from '../services/deadlineService';
@@ -34,6 +36,13 @@ interface EmployeeCardModalProps {
   onCompleteObligation: (obligationId: string) => void;
   onReopenObligation: (obligationId: string) => void;
   onUpdateEmployee: (employeeRowId: string, patch: Record<string, any>) => void;
+  employeeEvents: EmployeeEvent[];
+  onRegisterEvent: (
+    employeeRowId: string,
+    type: EmployeeEventType,
+    dateIso: string,
+    note?: string
+  ) => void;
 }
 
 type Tone = 'overdue' | 'soon' | 'pending' | 'done';
@@ -82,10 +91,15 @@ export const EmployeeCardModal: React.FC<EmployeeCardModalProps> = ({
   onGeneratePackage,
   onCompleteObligation,
   onReopenObligation,
-  onUpdateEmployee
+  onUpdateEmployee,
+  employeeEvents,
+  onRegisterEvent
 }) => {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Record<string, string>>({ fio: '', tabNum: '', hireDate: '', snils: '' });
+  const [eventType, setEventType] = useState<EmployeeEventType>('transfer');
+  const [eventDate, setEventDate] = useState<string>(todayIso);
+  const [eventNote, setEventNote] = useState('');
 
   useEffect(() => {
     if (!employeeRow) return;
@@ -119,6 +133,8 @@ export const EmployeeCardModal: React.FC<EmployeeCardModalProps> = ({
 
   const name = getEmployeeDisplayName(employeeRow, employeesTab);
   const hireDate = getEmployeeHireDate(employeeRow);
+  const events = getEmployeeEvents(employeeEvents, employeeRow.id);
+  const dismissed = isEmployeeDismissed(employeeEvents, employeeRow.id);
   const dirty =
     String(employeeRow[FIELD_IDS.fio] ?? '') !== draft.fio ||
     String(employeeRow[FIELD_IDS.tabNum] ?? '') !== draft.tabNum ||
@@ -247,6 +263,95 @@ export const EmployeeCardModal: React.FC<EmployeeCardModalProps> = ({
             </div>
           ))}
         </div>
+
+        {dismissed && (
+          <StatusBanner variant="warning" role="status" compact>
+            <span className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              Работник уволен. Новые требования по нему не создаются.
+            </span>
+          </StatusBanner>
+        )}
+
+        {/* События жизненного цикла */}
+        <section className="rounded-xl border border-slate-200 dark:border-slate-800 p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              События
+            </h3>
+            <span className="text-[10.5px] text-slate-500 dark:text-slate-400">
+              {events.length ? `записей: ${events.length}` : 'нет событий'}
+            </span>
+          </div>
+
+          {events.length > 0 && (
+            <ul className="space-y-1">
+              {events.map((event) => (
+                <li
+                  key={event.id}
+                  className="flex items-center justify-between gap-2 text-[11.5px] text-slate-700 dark:text-slate-200"
+                >
+                  <span className="font-medium">{EMPLOYEE_EVENT_LABELS[event.type]}</span>
+                  <span className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                    {formatIsoToDisplay(event.date)}
+                    {event.note ? ` · ${event.note}` : ''}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div className="flex flex-wrap items-end gap-2 pt-1">
+            <label className="block">
+              <span className="block text-[10px] font-medium text-slate-600 dark:text-slate-300 mb-0.5">
+                Событие
+              </span>
+              <select
+                value={eventType}
+                onChange={(event) => setEventType(event.target.value as EmployeeEventType)}
+                className="h-8 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 text-xs"
+              >
+                <option value="transfer">Перевод</option>
+                <option value="dismissal">Увольнение</option>
+                <option value="incident">Несчастный случай</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="block text-[10px] font-medium text-slate-600 dark:text-slate-300 mb-0.5">
+                Дата
+              </span>
+              <input
+                type="date"
+                value={eventDate}
+                onChange={(event) => setEventDate(event.target.value)}
+                className="h-8 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 text-xs font-mono"
+              />
+            </label>
+            <label className="block flex-1 min-w-[140px]">
+              <span className="block text-[10px] font-medium text-slate-600 dark:text-slate-300 mb-0.5">
+                Примечание
+              </span>
+              <input
+                type="text"
+                value={eventNote}
+                onChange={(event) => setEventNote(event.target.value)}
+                placeholder="Например: перевод в цех №2"
+                className="h-8 w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 text-xs"
+              />
+            </label>
+            <AppButton
+              variant="secondary"
+              size="sm"
+              disabled={!eventDate}
+              onClick={() => {
+                onRegisterEvent(employeeRow.id, eventType, eventDate, eventNote.trim() || undefined);
+                setEventNote('');
+              }}
+            >
+              Зарегистрировать
+            </AppButton>
+          </div>
+        </section>
 
         {!hireDate && (
           <StatusBanner variant="warning" role="status" compact>

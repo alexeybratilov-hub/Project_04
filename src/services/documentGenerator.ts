@@ -1,5 +1,5 @@
-import { Column, DocumentTemplate, LegalEntityProfile, Row, Tab, Tag } from '../types/database';
-import { formatDeadlineCellDisplay, resolveSafeRowIdentifier } from './deadlineService';
+﻿import { Column, DocumentTemplate, LegalEntityProfile, Row, Tab, Tag } from '../types/database';
+import { formatDeadlineCellDisplay, formatIsoToDisplay, resolveSafeRowIdentifier } from './deadlineService';
 import { localApiClient } from './localApiClient';
 import { BUILT_IN_ENTITY_AND_SYSTEM_TAGS } from './integrityService';
 import {
@@ -96,7 +96,7 @@ export function getRowDisplayIdentifier(row: Row, tabRef: Tab, fallbackRowNumber
 function formatRowCellForTemplate(
   rawVal: unknown,
   col?: Column,
-  options?: { holidays?: string[]; todayIso?: string }
+  options?: { holidays?: string[]; todayIso?: string; eventDateIso?: string }
 ): string {
   if (rawVal === undefined || rawVal === null) return '';
   if (col?.type === 'deadline_control') {
@@ -204,7 +204,7 @@ export function createRowTagResolver(
   allTabs: Tab[],
   tags: Tag[],
   entityProfile?: LegalEntityProfile,
-  options?: { holidays?: string[]; todayIso?: string }
+  options?: { holidays?: string[]; todayIso?: string; eventDateIso?: string }
 ): RowTagContextResolver {
   const lookupCache = new Map<string, MasterRowMatchResult>();
   const issues: TemplateResolutionIssue[] = [];
@@ -234,6 +234,11 @@ export function createRowTagResolver(
   const resolveTag = (
     tagName: string
   ): DocxTagResolveOutcome & { isProfileEmpty?: boolean } => {
+    // 0. Системный тег даты события (перевод, увольнение, несчастный случай)
+    if (tagName === '{Дата_события}') {
+      return { known: true, value: formatIsoToDisplay(options?.eventDateIso || options?.todayIso) };
+    }
+
     // 1. User-bound Tag pool
     const boundTag = tagMap.get(tagName);
     if (boundTag) {
@@ -389,7 +394,7 @@ export const documentGenerator = {
     allTabs: Tab[],
     tags: Tag[],
     entityProfile?: LegalEntityProfile,
-    options?: { holidays?: string[]; todayIso?: string }
+    options?: { holidays?: string[]; todayIso?: string; eventDateIso?: string }
   ): DetailedTemplateResolutionResult {
     const resolver = createRowTagResolver(row, currentTab, allTabs, tags, entityProfile, options);
     const resolved = templateContent.replace(PLACEHOLDER_REGEX, (fullMatch, inner) => {
@@ -417,7 +422,7 @@ export const documentGenerator = {
     allTabs: Tab[],
     tags: Tag[],
     entityProfile?: LegalEntityProfile,
-    options?: { holidays?: string[]; todayIso?: string }
+    options?: { holidays?: string[]; todayIso?: string; eventDateIso?: string }
   ): TemplateResolutionResult {
     const detailed = documentGenerator.resolveTemplateTagsDetailed(
       templateContent,
@@ -441,7 +446,7 @@ export const documentGenerator = {
     allTabs: Tab[],
     tags: Tag[],
     entityProfile?: LegalEntityProfile,
-    options?: { holidays?: string[]; todayIso?: string }
+    options?: { holidays?: string[]; todayIso?: string; eventDateIso?: string }
   ): string {
     return documentGenerator.resolveTemplateTagsWithReport(
       templateContent,
@@ -465,7 +470,7 @@ export const documentGenerator = {
     tags: Tag[],
     extension: 'docx' | 'pdf',
     entityProfile?: LegalEntityProfile,
-    options?: { holidays?: string[]; todayIso?: string }
+    options?: { holidays?: string[]; todayIso?: string; eventDateIso?: string }
   ): string {
     let base = pattern || 'Документ_{id}.docx';
     base = documentGenerator.resolveTemplateTags(
@@ -495,7 +500,7 @@ export const documentGenerator = {
     allTabs: Tab[],
     tags: Tag[],
     entityProfile?: LegalEntityProfile,
-    options?: { holidays?: string[]; todayIso?: string }
+    options?: { holidays?: string[]; todayIso?: string; eventDateIso?: string }
   ): {
     blob: Blob;
     previewText: string;

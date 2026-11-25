@@ -1,4 +1,4 @@
-﻿import { AttachedDoc, DatabaseState, LegalEntity, LegalEntityProfile, Tab, Tag } from '../types/database';
+import { AttachedDoc, DatabaseState, LegalEntity, LegalEntityProfile, Tab, Tag } from '../types/database';
 import { BUILT_IN_TEMPLATES } from './builtInTemplates';
 import { BUILT_IN_NORMATIVE_DOCS } from './builtInNormativeDocs';
 
@@ -256,7 +256,9 @@ export const INITIAL_TAGS: Tag[] = [
   { id: 'tag_20', name: '{ФИО_инструктора}', tabId: 'tab_instructions', columnId: 'inst_instructor', description: 'ФИО ответственного инструктора' },
   { id: 'tag_21', name: '{Номер_записи}', tabId: 'tab_instructions', columnId: 'inst_doc_number', description: 'Номер записи в журнале' },
   { id: 'tag_22', name: '{ФИО_работника}', tabId: 'tab_employees', columnId: 'emp_fio', description: 'Синоним тега ФИО' },
-  { id: 'tag_23', name: '{ФИО_инструктируемого}', tabId: 'tab_employees', columnId: 'emp_fio', description: 'Синоним тега ФИО для инструктажей' }
+  { id: 'tag_23', name: '{ФИО_инструктируемого}', tabId: 'tab_employees', columnId: 'emp_fio', description: 'Синоним тега ФИО для инструктажей' },
+  { id: 'tag_24', name: '{Дата_приёма}', tabId: 'tab_employees', columnId: 'emp_hire_date', description: 'Дата приёма на работу' },
+  { id: 'tag_25', name: '{СНИЛС}', tabId: 'tab_employees', columnId: 'emp_snils', description: 'СНИЛС работника' }
 ];
 
 export const DEFAULT_LEGAL_ENTITY_PROFILE: LegalEntityProfile = {

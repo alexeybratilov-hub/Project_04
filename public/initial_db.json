@@ -1015,6 +1015,20 @@
           "tabId": "tab_employees",
           "columnId": "emp_fio",
           "description": "Синоним тега ФИО для инструктажей"
+        },
+        {
+          "id": "tag_24",
+          "name": "{Дата_приёма}",
+          "tabId": "tab_employees",
+          "columnId": "emp_hire_date",
+          "description": "Дата приёма на работу"
+        },
+        {
+          "id": "tag_25",
+          "name": "{СНИЛС}",
+          "tabId": "tab_employees",
+          "columnId": "emp_snils",
+          "description": "СНИЛС работника"
         }
       ],
       "templates": [
@@ -1075,7 +1089,8 @@
       "generatedDocs": [],
       "createdAt": "2026-03-01T09:00:00.000Z",
       "updatedAt": "2026-03-01T09:00:00.000Z",
-      "employeeObligations": []
+      "employeeObligations": [],
+      "employeeEvents": []
     }
   ],
   "normativeDocs": [
@@ -2120,6 +2135,20 @@
       "tabId": "tab_employees",
       "columnId": "emp_fio",
       "description": "Синоним тега ФИО для инструктажей"
+    },
+    {
+      "id": "tag_24",
+      "name": "{Дата_приёма}",
+      "tabId": "tab_employees",
+      "columnId": "emp_hire_date",
+      "description": "Дата приёма на работу"
+    },
+    {
+      "id": "tag_25",
+      "name": "{СНИЛС}",
+      "tabId": "tab_employees",
+      "columnId": "emp_snils",
+      "description": "СНИЛС работника"
     }
   ],
   "templates": [
@@ -2208,5 +2237,6 @@
       "employees"
     ]
   },
-  "employeeObligations": []
+  "employeeObligations": [],
+  "employeeEvents": []
 }

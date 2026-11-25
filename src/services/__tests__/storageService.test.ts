@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+﻿import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   applyDatabaseTransition,
   cloneLegalEntity,
@@ -491,7 +491,7 @@ describe('storageService', () => {
       const normalized = normalizeDatabaseState(legacySnapshot);
       // Нормализация добавляет пустой реестр обязательств — остальная структура не меняется
       expect(
-        normalized.entities.map(({ employeeObligations: _obligations, ...rest }) => rest)
+        normalized.entities.map(({ employeeObligations: _obligations, employeeEvents: _events, ...rest }) => rest)
       ).toEqual(legacySnapshot.entities);
       expect(normalized.tabs).toEqual(legacySnapshot.tabs);
       expect(normalized.settings.deadlineSettings).toEqual({
