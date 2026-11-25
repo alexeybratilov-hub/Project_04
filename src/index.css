@@ -14,24 +14,120 @@
 
 @layer base {
   :root {
-    --surface-canvas: #f8fafc;
+    --surface-canvas: #eef2f8;
     --text-primary: #0f172a;
+
+    /* Liquid Glass: трёхслойная модель Canvas → Glass Chrome → Crisp Data */
+    --lg-canvas-bg:
+      radial-gradient(1100px 620px at 10% -12%, rgba(99, 102, 241, 0.34), transparent 58%),
+      radial-gradient(900px 560px at 94% 2%, rgba(56, 189, 248, 0.32), transparent 60%),
+      radial-gradient(820px 560px at 48% 110%, rgba(45, 212, 191, 0.24), transparent 58%),
+      linear-gradient(158deg, #e9eefb 0%, #e6ecf8 46%, #eaf2fa 100%);
+    --lg-surface: rgba(255, 255, 255, 0.58);
+    --lg-surface-strong: rgba(255, 255, 255, 0.84);
+    --lg-border: rgba(255, 255, 255, 0.9);
+    --lg-hairline: rgba(15, 23, 42, 0.08);
+    --lg-inner-highlight: rgba(255, 255, 255, 0.75);
+    --lg-shadow-soft: 0 1px 2px rgba(15, 23, 42, 0.05), 0 14px 34px -14px rgba(15, 23, 42, 0.24);
+    --lg-shadow-card: 0 1px 2px rgba(15, 23, 42, 0.06), 0 24px 48px -26px rgba(15, 23, 42, 0.34);
+    --lg-blur: 22px;
+    --lg-radius-chrome: 16px;
+    --lg-radius-card: 22px;
   }
 
   .dark {
-    --surface-canvas: #0f172a;
+    --surface-canvas: #0b1220;
     --text-primary: #f1f5f9;
+
+    --lg-canvas-bg:
+      radial-gradient(1100px 620px at 12% -10%, rgba(79, 70, 229, 0.28), transparent 60%),
+      radial-gradient(900px 560px at 92% 4%, rgba(14, 165, 233, 0.22), transparent 62%),
+      radial-gradient(760px 540px at 50% 108%, rgba(13, 148, 136, 0.18), transparent 60%),
+      linear-gradient(160deg, #0b1220 0%, #0e1628 52%, #0b1322 100%);
+    --lg-surface: rgba(20, 30, 48, 0.62);
+    --lg-surface-strong: rgba(18, 27, 44, 0.86);
+    --lg-border: rgba(148, 163, 184, 0.16);
+    --lg-hairline: rgba(148, 163, 184, 0.16);
+    --lg-inner-highlight: rgba(255, 255, 255, 0.06);
+    --lg-shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.35), 0 16px 40px -18px rgba(0, 0, 0, 0.65);
+    --lg-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 26px 50px -26px rgba(0, 0, 0, 0.72);
   }
 
   body {
     font-family: 'Manrope Variable', 'Manrope', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
     background-color: var(--surface-canvas);
+    background-image: var(--lg-canvas-bg);
+    background-attachment: fixed;
     color: var(--text-primary);
   }
 
   code, pre, .font-mono {
     font-family: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     font-variant-numeric: tabular-nums;
+  }
+}
+
+/* ---------- Liquid Glass + Bento primitives ---------- */
+
+@layer components {
+  /* Стеклянная «хромовая» панель: шапка, меню, вкладки, статус-бар */
+  .lg-chrome {
+    background-color: var(--lg-surface);
+    border-color: var(--lg-border);
+    -webkit-backdrop-filter: blur(var(--lg-blur)) saturate(150%);
+    backdrop-filter: blur(var(--lg-blur)) saturate(150%);
+    box-shadow: var(--lg-shadow-soft), inset 0 1px 0 var(--lg-inner-highlight);
+  }
+
+  /* Стеклянная карточка bento-сетки */
+  .lg-card {
+    position: relative;
+    border-radius: var(--lg-radius-card);
+    background-color: var(--lg-surface);
+    background-image: linear-gradient(180deg, var(--lg-inner-highlight), transparent 42%);
+    border: 1px solid var(--lg-border);
+    -webkit-backdrop-filter: blur(var(--lg-blur)) saturate(160%);
+    backdrop-filter: blur(var(--lg-blur)) saturate(160%);
+    box-shadow: var(--lg-shadow-card), inset 0 1px 0 var(--lg-inner-highlight);
+    overflow: hidden;
+    transition: transform 180ms ease, box-shadow 220ms ease, background-color 220ms ease;
+  }
+
+  .lg-card-interactive:hover {
+    transform: translateY(-2px);
+    background-color: var(--lg-surface-strong);
+  }
+
+  /* Непрозрачная «кристально чёткая» поверхность для данных и таблиц */
+  .lg-data-surface {
+    background-color: #ffffff;
+    border: 1px solid var(--lg-hairline);
+    box-shadow: var(--lg-shadow-soft);
+  }
+
+  .dark .lg-data-surface {
+    background-color: #0f172a;
+    border-color: rgba(148, 163, 184, 0.18);
+  }
+}
+
+/* Уважаем системные настройки: без «стекла» и лишнего движения */
+@media (prefers-reduced-transparency: reduce) {
+  .lg-chrome,
+  .lg-card {
+    background-color: var(--lg-surface-strong);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lg-card,
+  .lg-card-interactive {
+    transition: none;
+  }
+  .lg-card-interactive:hover {
+    transform: none;
   }
 }
 

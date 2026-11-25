@@ -90,7 +90,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   })();
 
   return (
-    <header className={`h-9 bg-slate-900 text-slate-200 select-none flex items-center justify-between gap-2 sm:gap-3 px-3 border-b border-slate-800 text-xs shrink-0 ${Z_INDEX.topbar} relative`}>
+    <header className={`h-9 bg-slate-900/85 text-slate-200 select-none flex items-center justify-between gap-2 sm:gap-3 px-3 border-b border-slate-700/60 backdrop-blur-xl text-xs shrink-0 ${Z_INDEX.topbar} relative`}>
       {/* Left Zone: Brand + Legal Entity Switcher */}
       <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
         <div className="flex items-center gap-1.5 shrink-0">

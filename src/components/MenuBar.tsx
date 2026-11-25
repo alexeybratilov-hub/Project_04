@@ -353,7 +353,7 @@ export const MenuBar: React.FC<MenuBarProps> = ({
   return (
     <div
       ref={barRef}
-      className="h-7 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs border-b border-slate-200 dark:border-slate-700/80 flex items-center px-2 select-none relative shrink-0 z-40"
+      className="h-7 bg-white/55 dark:bg-slate-900/55 text-slate-700 dark:text-slate-300 text-xs border-b border-white/60 dark:border-slate-700/60 backdrop-blur-xl flex items-center px-2 select-none relative shrink-0 z-40"
     >
       <div role="menubar" aria-label="Главное меню" className="flex items-center">
         {/* Файл */}

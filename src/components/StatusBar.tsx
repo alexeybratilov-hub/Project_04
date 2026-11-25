@@ -9,6 +9,7 @@ interface StatusBarProps {
     label: string;
     totalEvents: number;
     attentionCount: number;
+    metricLabel?: string;
   } | null;
   entityName?: string;
   storageMode: StorageMode;
@@ -32,7 +33,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   workspaceFolderName
 }) => {
   return (
-    <footer className="h-6 bg-slate-900 text-slate-400 text-[11px] select-none flex items-center justify-between gap-3 px-3 border-t border-slate-800 shrink-0 z-20">
+    <footer className="h-6 bg-slate-900/85 text-slate-400 text-[11px] select-none flex items-center justify-between gap-3 px-3 border-t border-slate-700/60 backdrop-blur-xl shrink-0 z-20">
       {/* Left: Active Tab Metrics */}
       <div className="flex items-center gap-2.5 min-w-0">
         {systemTabSummary ? (
@@ -43,7 +44,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
             </span>
             <span className="text-slate-700" aria-hidden="true">|</span>
             <span className="font-mono tabular-nums text-slate-300 shrink-0">
-              Мероприятий: <strong className="text-white">{systemTabSummary.totalEvents}</strong>
+              {systemTabSummary.metricLabel || 'Мероприятий'}: <strong className="text-white">{systemTabSummary.totalEvents}</strong>
             </span>
             <span className="text-slate-700" aria-hidden="true">|</span>
             <span className="font-mono tabular-nums text-slate-300 shrink-0">

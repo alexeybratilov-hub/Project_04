@@ -10,6 +10,8 @@ import { MenuBar } from './components/MenuBar';
 import { TabBar } from './components/TabBar';
 import { DataGrid } from './components/DataGrid';
 import { DeadlineControlView } from './components/DeadlineControlView';
+import { DashboardView } from './components/DashboardView';
+import { SYSTEM_DASHBOARD_TAB_ID } from './services/systemTabs';
 import { StatusBar } from './components/StatusBar';
 import { MasterJumpDialog } from './components/MasterJumpDialog';
 import { ExcelImportModal } from './components/ExcelImportModal';
@@ -96,7 +98,9 @@ export default function App() {
   const [isWorkspaceModalOpen, setIsWorkspaceModalOpen] = useState<boolean>(false);
   const [isBootstrapping, setIsBootstrapping] = useState<boolean>(() => localApiClient.isNative());
   const [dbState, setDbState] = useState<DatabaseState>(() => storageService.loadDatabase());
-  const [activeTabId, setActiveTabId] = useState<string>(() => dbState.tabs[0]?.id || 'tab_positions');
+  const [activeTabId, setActiveTabId] = useState<string>(
+    () => SYSTEM_DASHBOARD_TAB_ID
+  );
   const [highlightedRowId, setHighlightedRowId] = useState<string | null>(null);
 
   // Selection & Grid action signals (used by MenuBar & Ctrl+F)
@@ -353,7 +357,7 @@ export default function App() {
     setDbState(res.state);
     latestDbRef.current = res.state;
     setActiveTabId((prev) =>
-      prev === SYSTEM_DEADLINE_TAB_ID || res.state.tabs.some((t) => t.id === prev)
+      prev === SYSTEM_DEADLINE_TAB_ID || prev === SYSTEM_DASHBOARD_TAB_ID || res.state.tabs.some((t) => t.id === prev)
         ? prev
         : res.state.tabs[0]?.id || 'tab_positions'
     );
@@ -438,7 +442,7 @@ export default function App() {
         setDbState(res.state);
         latestDbRef.current = res.state;
         setActiveTabId((prev) =>
-          prev === SYSTEM_DEADLINE_TAB_ID || res.state.tabs.some((t) => t.id === prev)
+          prev === SYSTEM_DEADLINE_TAB_ID || prev === SYSTEM_DASHBOARD_TAB_ID || res.state.tabs.some((t) => t.id === prev)
             ? prev
             : res.state.tabs[0]?.id || 'tab_positions'
         );
@@ -599,6 +603,8 @@ export default function App() {
   }, [dbState.settings.theme]);
 
   const isSystemDeadlineTab = activeTabId === SYSTEM_DEADLINE_TAB_ID;
+  const isSystemDashboardTab = activeTabId === SYSTEM_DASHBOARD_TAB_ID;
+  const isAnySystemTab = isSystemDeadlineTab || isSystemDashboardTab;
   const currentTab = dbState.tabs.find((t) => t.id === activeTabId) || dbState.tabs[0];
 
   const deadlineEvents = React.useMemo(
@@ -608,6 +614,10 @@ export default function App() {
   const deadlineSummary = React.useMemo(
     () => summarizeDeadlineEvents(deadlineEvents),
     [deadlineEvents]
+  );
+  const totalRowsCount = React.useMemo(
+    () => dbState.tabs.reduce((sum, tab) => sum + tab.rows.length, 0),
+    [dbState.tabs]
   );
   const popoverNotifications = React.useMemo(
     () =>
@@ -649,7 +659,7 @@ export default function App() {
   // ===================== CRUD OPERATIONS =====================
 
   const handleAddRow = useCallback(() => {
-    if (isSystemDeadlineTab || !currentTab) return;
+    if (isAnySystemTab || !currentTab) return;
     const newRowId = createUniqueId('row');
     const newRow: Row = { id: newRowId };
 
@@ -665,7 +675,7 @@ export default function App() {
       ...prev,
       tabs: prev.tabs.map((t) => (t.id === currentTab.id ? { ...t, rows: [newRow, ...t.rows] } : t))
     }));
-  }, [currentTab, isSystemDeadlineTab, updateDbState]);
+  }, [currentTab, isAnySystemTab, updateDbState]);
 
   // Global Keyboard Shortcuts (Ctrl+S, Ctrl+N, Ctrl+F) — layout independent (e.code)
   useEffect(() => {
@@ -1697,7 +1707,7 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-slate-100 dark:bg-slate-900 text-slate-800 dark:text-slate-100 overflow-hidden font-sans">
+    <div className="flex flex-col h-screen w-screen bg-transparent text-slate-800 dark:text-slate-100 overflow-hidden font-sans">
       {/* 1. Header with Legal Entity Switcher & Save Status */}
       <TitleBar
         settings={dbState.settings}
@@ -1722,7 +1732,7 @@ export default function App() {
       <MenuBar
         onSave={() => void handleRetrySave()}
         onExportExcel={() => {
-          if (isSystemDeadlineTab) {
+          if (isAnySystemTab) {
             showToast('Для экспорта таблицы в Excel откройте нужную пользовательскую вкладку.', 'info');
             return;
           }
@@ -1736,27 +1746,29 @@ export default function App() {
         onOpenWorkspaceModal={() => setIsWorkspaceModalOpen(true)}
         workspaceFolderName={workspaceFolderName}
         onAddRow={() => {
-          if (isSystemDeadlineTab) {
+          if (isAnySystemTab) {
             showToast('Для добавления строки откройте пользовательскую вкладку таблицы.', 'info');
             return;
           }
           handleAddRow();
         }}
         onDeleteSelectedRows={() => {
-          if (isSystemDeadlineTab) return;
+          if (isAnySystemTab) return;
           setDeleteSelectedSignal((n) => n + 1);
         }}
-        selectedRowsCount={isSystemDeadlineTab ? 0 : selectedRowIds.size}
+        selectedRowsCount={isAnySystemTab ? 0 : selectedRowIds.size}
         onFocusSearch={() => {
           if (isSystemDeadlineTab) {
             setFocusDeadlineSearchSignal((n) => n + 1);
+          } else if (isSystemDashboardTab) {
+            showToast('Поиск по таблице доступен на вкладках с данными.', 'info');
           } else {
             setFocusSearchSignal((n) => n + 1);
           }
         }}
         onAddTab={handleAddTab}
         onOpenColumnEditor={() => {
-          if (isSystemDeadlineTab) {
+          if (isAnySystemTab) {
             showToast('Для настройки столбцов откройте пользовательскую вкладку таблицы.', 'info');
             return;
           }
@@ -1906,8 +1918,27 @@ export default function App() {
         deadlineDueSoonCount={deadlineSummary.dueSoon}
       />
 
-      {/* 4. Active Workspace: System Tab «Контроль сроков» OR User DataGrid */}
-      {isSystemDeadlineTab ? (
+      {/* 4. Active Workspace: «Главная» (bento) / «Контроль сроков» / User DataGrid */}
+      {isSystemDashboardTab ? (
+        <DashboardView
+          state={dbState}
+          activeEntity={activeEntity}
+          deadlineEvents={deadlineEvents}
+          deadlineSummary={deadlineSummary}
+          storageMode={storageMode}
+          workspaceFolderName={workspaceFolderName}
+          onSelectTab={(tabId) => setActiveTabId(tabId)}
+          onSelectEntity={handleSelectEntity}
+          onOpenDeadlineControl={() => setActiveTabId(SYSTEM_DEADLINE_TAB_ID)}
+          onOpenTemplates={() => {
+            setTemplatesModalScope('all');
+            setIsTemplatesModalOpen(true);
+          }}
+          onOpenGeneratedDocs={() => setIsGeneratedDocsOpen(true)}
+          onOpenBackup={() => setIsBackupOpen(true)}
+          onOpenWorkspaceModal={() => setIsWorkspaceModalOpen(true)}
+        />
+      ) : isSystemDeadlineTab ? (
         <DeadlineControlView
           dbState={dbState}
           todayIso={todayIso}
@@ -1981,17 +2012,24 @@ export default function App() {
       )}
 
       {/* 5. Desktop Status Bar */}
-      {(isSystemDeadlineTab || currentTab) && (
+      {(isAnySystemTab || currentTab) && (
         <StatusBar
-          currentTab={currentTab}
+          currentTab={isAnySystemTab ? undefined : currentTab}
           systemTabSummary={
-            isSystemDeadlineTab
+            isSystemDashboardTab
               ? {
-                  label: 'Контроль сроков',
-                  totalEvents: deadlineSummary.total,
-                  attentionCount: deadlineSummary.actionable
+                  label: 'Главная',
+                  totalEvents: totalRowsCount,
+                  attentionCount: deadlineSummary.actionable,
+                  metricLabel: 'Записей'
                 }
-              : null
+              : isSystemDeadlineTab
+                ? {
+                    label: 'Контроль сроков',
+                    totalEvents: deadlineSummary.total,
+                    attentionCount: deadlineSummary.actionable
+                  }
+                : null
           }
           entityName={activeEntity.profile.shortName || activeEntity.profile.fullName}
           storageMode={storageMode}

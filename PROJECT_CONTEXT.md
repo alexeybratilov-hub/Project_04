@@ -151,3 +151,26 @@ python build_native_windows.py                 # + OT-Baza.exe и ZIP (нуже�
 - Из git убраны генерируемые артефакты (≈25 МБ): `dist-offline/`, `public/app.html`, `public/download/*.exe|.zip`, `resources.o`, `test_*.exe`, `test_launcher.js`, `bun.lock`, `metadata.json`, копии AI Studio-инструкций и неиспользуемые концепт-рендеры.
 - `build_native_windows.py` переписан: проверка Node/MinGW, режим `--skip-native`, сборка `dist/` до упаковки, SHA-256 артефактов, ZIP больше не кладёт демо-БД в `data/`.
 - Кнопки скачивания `.exe`/`.zip` проверяют наличие файла и отключаются, если Windows-сборки нет в поставке.
+
+---
+
+## 7. Дизайн v1: Liquid Glass + Bento (2026-11-25)
+
+Реализован первый срез визуальной системы, объединяющий «жидкое стекло» и bento-сетку.
+
+**Токены и утилиты (`src/index.css`)**
+- Трёхслойная модель сохранена: `Canvas` (градиентный фон с цветными блобами) → `Glass Chrome` (`.lg-chrome`) → `Crisp Data` (`.lg-data-surface`).
+- Палитра Light/Dark через CSS-переменные (`--lg-surface`, `--lg-border`, `--lg-inner-highlight`, `--lg-shadow-*`, `--lg-blur`), радиусы `--lg-radius-card` (22px) и `--lg-radius-chrome` (16px).
+- Утилиты `.lg-card`, `.lg-card-interactive`, `.lg-data-surface`; при `prefers-reduced-transparency` стекло заменяется плотной подложкой, при `prefers-reduced-motion` отключаются трансформации.
+
+**Оболочка**
+- `TitleBar`, `MenuBar`, `TabBar`, `StatusBar` переведены на полупрозрачные поверхности с `backdrop-blur`; корневой контейнер приложения прозрачный, чтобы работал canvas.
+- Таблицы (`DataGrid`) и `DeadlineControlView` остаются на непрозрачной подложке — читаемость данных не sacrificed.
+
+**Главная (bento) — `DashboardView.tsx` + `SYSTEM_DASHBOARD_TAB_ID`**
+- Новая закреплённая системная вкладка «Главная», открывается при старте; вторая системная вкладка («Контроль сроков») сохранена.
+- `TabBar` переведён на список системных вкладок (`SYSTEM_TAB_IDS`), клавиатурная навигация учитывает обе.
+- Карточки: герой-карточка рабочего пространства, 4 KPI, лента ближайших/просроченных событий (реальные данные `deadlineService.collectDeadlineEvents`), организации с переключением, быстрые действия (шаблоны, документы, бэкап, сроки), недавние документы, обзор таблиц с переходом.
+- Все показатели берутся из `DatabaseState` и `deadlineService` — дублирующей логики и фейковых цифр нет.
+
+**Не входит в v1 (следующие шаги)**: гибридная навигация с сайдбаром и превью вкладок (D-4), полная гармонизация 14 модалок и таблиц (D-5), матрица 18 комбинаций и `visualEffects: 'glass' | 'reduced'` в настройках (D-2/D-6).

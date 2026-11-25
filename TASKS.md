@@ -91,3 +91,7 @@
 | R-01 | P2 | Из git убраны 25 МБ артефактов, `.gitignore` расширен | Выполнено |
 | R-02 | P2 | `build_native_windows.py`: `--skip-native`, проверки, SHA-256, без демо-БД в ZIP | Выполнено |
 | R-03 | P1 | Нет `README` / `THIRD_PARTY_NOTICES` / `CHANGELOG` | README и notices добавлены |
+
+| D-2v1 | P1 | **Дизайн v1 (частично D-2)**: токены Liquid Glass Light/Dark, утилиты `.lg-chrome`/`.lg-card`/`.lg-data-surface`, reduced-режимы, стеклянная оболочка (TitleBar/MenuBar/TabBar/StatusBar) | `src/index.css`, `TitleBar.tsx`, `MenuBar.tsx`, `TabBar.tsx`, `StatusBar.tsx`, `App.tsx` | Выполнено (v1) |
+| D-3v1 | P1 | **Главная — bento-дашборд**: `DashboardView`, `SYSTEM_DASHBOARD_TAB_ID`, KPI, лента сроков, организации, быстрые действия, недавние документы, обзор таблиц; стартовый экран | `src/components/DashboardView.tsx`, `src/services/systemTabs.ts`, `TabBar.tsx`, `App.tsx` | Выполнено (v1) |
+| D-4..D-6 | P1 | Сайдбар и TabPreviewPopover, гармонизация всех модалок/таблиц, `visualEffects` в настройках, финальная матрица 18 комбинаций | — | Запланировано |
