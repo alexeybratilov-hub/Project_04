@@ -266,6 +266,10 @@ export interface AppSettings {
   deadlineSettings?: DeadlineAppSettings;
   /** Установленные модули (этапы). Отсутствие поля = базовый набор. */
   installedModules?: string[];
+  /** Визуальный режим: полное стекло или облегчённый (без blur). */
+  visualEffects?: 'glass' | 'reduced';
+  /** Свёрнут ли левый сайдбар. */
+  sidebarCollapsed?: boolean;
 }
 
 export interface DatabaseState {

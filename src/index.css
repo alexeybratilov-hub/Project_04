@@ -121,6 +121,23 @@
   }
 }
 
+/* Ручной режим «облегчённые эффекты» (настройка visualEffects = 'reduced') */
+[data-visual-effects='reduced'] .lg-chrome,
+[data-visual-effects='reduced'] .lg-card,
+[data-visual-effects='reduced'] .lg-backdrop {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background-color: var(--lg-surface-strong);
+}
+
+[data-visual-effects='reduced'] .lg-card {
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+[data-visual-effects='reduced'] .lg-card-interactive:hover {
+  transform: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .lg-card,
   .lg-card-interactive {

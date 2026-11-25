@@ -107,3 +107,8 @@
 | M-08 | P0 | **Матрица по должности и классу условий труда**: условия применимости, обучение руководителей (36 мес.), периодичность медосмотра 24/12 мес., резолв класса из штатного расписания | `src/data/modules.ts`, `src/services/obligationService.ts` | Выполнено |
 | M-09 | P1 | **Новые встроенные шаблоны**: приказ о приёме, приказ о переводе, приказ об увольнении, акт о несчастном случае; системный тег `{Дата_события}`, теги `{Дата_приёма}` и `{СНИЛС}` | `src/data/builtInTemplates.ts`, `src/services/documentGenerator.ts`, `src/data/initialDatabase.ts`, `public/initial_db.json` | Выполнено |
 | M-10 | P1 | **Автосохранение документов в рабочую папку**: `documents/<Категория>/<файл>.docx` при подключённой File System Access папке | `src/App.tsx`, `src/services/workspaceFolderService.ts` | Выполнено |
+
+| D-2v2 | P1 | **Режим эффектов**: `visualEffects: 'glass' \| 'reduced'` в `AppSettings`, `data-visual-effects` на `<html>`, отключение blur/теней/hover, переключатель в сайдбаре | `src/types/database.ts`, `src/services/storageService.ts`, `src/index.css`, `src/components/Sidebar.tsx`, `src/App.tsx` | Выполнено |
+| D-4v1 | P1 | **Гибридная навигация**: стеклянный сайдбар 236/64 px, разделы «Обзор»/«Этапы», счётчик сроков, «Модули этапов» и «Рабочая папка», сохранение свёрнутости | `src/components/Sidebar.tsx`, `src/App.tsx` | Выполнено |
+| D-4v2 | P1 | **TabPreviewPopover**: превью вкладки с реальными данными, 280/180 мс, pointer-bridge, `Escape`, прижатие к границам окна | `src/components/TabPreviewPopover.tsx`, `src/components/TabBar.tsx` | Выполнено |
+| D-5v1 | P2 | **Стекло в модалках**: полупрозрачная панель `AppModal`, радиус 16 px, размытый оверлей | `src/components/ui/AppModal.tsx` | Выполнено |

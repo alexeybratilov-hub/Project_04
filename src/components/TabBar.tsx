@@ -7,6 +7,8 @@ import {
 import { Tab, TabBarMode } from '../types/database';
 import { SYSTEM_DEADLINE_TAB_ID } from '../services/deadlineService';
 import { SYSTEM_DASHBOARD_TAB_ID } from '../services/systemTabs';
+import { MODULE_DEFINITIONS } from '../data/modules';
+import { TabPreviewPopover } from './TabPreviewPopover';
 import { Z_INDEX } from './ui';
 import { calculateTargetIndexFromInsertSlot } from '../utils/reorderUtils';
 
@@ -52,6 +54,64 @@ export const TabBar: React.FC<TabBarProps> = ({
   const [editingTabId, setEditingTabId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+
+  // Hover-превью вкладки (D-4): задержка открытия 280 мс, закрытия — 180 мс
+  const [previewTabId, setPreviewTabId] = useState<string | null>(null);
+  const [previewRect, setPreviewRect] = useState<DOMRect | null>(null);
+  const previewShowTimer = useRef<number | null>(null);
+  const previewHideTimer = useRef<number | null>(null);
+
+  const clearPreviewTimers = () => {
+    if (previewShowTimer.current !== null) {
+      window.clearTimeout(previewShowTimer.current);
+      previewShowTimer.current = null;
+    }
+    if (previewHideTimer.current !== null) {
+      window.clearTimeout(previewHideTimer.current);
+      previewHideTimer.current = null;
+    }
+  };
+
+  const closePreview = () => {
+    clearPreviewTimers();
+    setPreviewTabId(null);
+    setPreviewRect(null);
+  };
+
+  const schedulePreview = (tab: Tab, element: HTMLElement) => {
+    clearPreviewTimers();
+    previewShowTimer.current = window.setTimeout(() => {
+      setPreviewTabId(tab.id);
+      setPreviewRect(element.getBoundingClientRect());
+    }, 280);
+  };
+
+  const schedulePreviewHide = () => {
+    clearPreviewTimers();
+    previewHideTimer.current = window.setTimeout(() => {
+      setPreviewTabId(null);
+      setPreviewRect(null);
+    }, 180);
+  };
+
+  const cancelPreviewHide = () => {
+    if (previewHideTimer.current !== null) {
+      window.clearTimeout(previewHideTimer.current);
+      previewHideTimer.current = null;
+    }
+  };
+
+  useEffect(() => {
+    if (!previewTabId) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closePreview();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      clearPreviewTimers();
+    };
+  }, [previewTabId]);
 
   // Drag & Drop reordering state (ref-backed for immediate sync across rapid dragover/child events)
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
@@ -571,6 +631,9 @@ export const TabBar: React.FC<TabBarProps> = ({
                 onDragStart={(e) => handleDragStart(e, tab.id)}
                 onDragEnd={handleDragEnd}
                 onKeyDown={(e) => handleTabKeyDown(e, tab, index)}
+                onMouseEnter={(e) => schedulePreview(tab, e.currentTarget)}
+                onMouseLeave={schedulePreviewHide}
+                onFocus={() => closePreview()}
                 className={`group relative flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer border shrink-0 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500 ${
                   isActive
                     ? 'bg-white dark:bg-slate-800 text-blue-700 dark:text-blue-400 border-blue-400/70 dark:border-blue-600/80 shadow-xs font-semibold ring-1 ring-blue-500/20'
@@ -864,6 +927,27 @@ export const TabBar: React.FC<TabBarProps> = ({
         </div>,
         document.body
       )}
+
+      {previewTabId && previewRect && (() => {
+        const previewTab = tabs.find((item) => item.id === previewTabId);
+        if (!previewTab) return null;
+        const module = MODULE_DEFINITIONS.find((item) => item.tabId === previewTab.id);
+        return (
+          <TabPreviewPopover
+            anchorRect={previewRect}
+            title={previewTab.name}
+            moduleLabel={module?.title}
+            columns={previewTab.columns}
+            rows={previewTab.rows}
+            onMouseEnter={cancelPreviewHide}
+            onMouseLeave={schedulePreviewHide}
+            onOpen={() => {
+              onSelectTab(previewTab.id);
+              closePreview();
+            }}
+          />
+        );
+      })()}
     </div>
   );
 };

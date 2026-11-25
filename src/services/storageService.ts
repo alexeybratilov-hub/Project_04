@@ -634,6 +634,8 @@ export function normalizeDatabaseState(raw: any): DatabaseState {
       ...INITIAL_DATABASE_STATE.settings,
       ...(raw.settings || {}),
       installedModules,
+      visualEffects: raw.settings?.visualEffects === 'reduced' ? 'reduced' : 'glass',
+      sidebarCollapsed: raw.settings?.sidebarCollapsed === true,
       tabBarMode: raw.settings?.tabBarMode === 'auto' ? 'auto' : 'single',
       rowDensity: raw.settings?.rowDensity === 'normal' ? 'normal' : 'compact',
       pageSize: allowedPageSizes.has(rawPageSize) ? rawPageSize : 100,

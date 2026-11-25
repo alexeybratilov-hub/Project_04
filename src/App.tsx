@@ -11,6 +11,7 @@ import { TabBar } from './components/TabBar';
 import { DataGrid } from './components/DataGrid';
 import { DeadlineControlView } from './components/DeadlineControlView';
 import { DashboardView } from './components/DashboardView';
+import { Sidebar } from './components/Sidebar';
 import { EmployeesView } from './components/EmployeesView';
 import { EmployeeCardModal } from './components/EmployeeCardModal';
 import { ModulesModal } from './components/ModulesModal';
@@ -612,6 +613,14 @@ export default function App() {
       document.documentElement.classList.remove('dark');
     }
   }, [dbState.settings.theme]);
+
+  // Sync visual effects mode (glass / reduced) with document element
+  useEffect(() => {
+    document.documentElement.setAttribute(
+      'data-visual-effects',
+      dbState.settings.visualEffects === 'reduced' ? 'reduced' : 'glass'
+    );
+  }, [dbState.settings.visualEffects]);
 
   const isSystemDeadlineTab = activeTabId === SYSTEM_DEADLINE_TAB_ID;
   const isSystemDashboardTab = activeTabId === SYSTEM_DASHBOARD_TAB_ID;
@@ -2082,6 +2091,38 @@ export default function App() {
         onDeleteEntity={handleDeleteEntity}
       />
 
+      <div className="flex flex-1 min-h-0">
+        <Sidebar
+          collapsed={Boolean(dbState.settings.sidebarCollapsed)}
+          onToggleCollapsed={() =>
+            updateDbState((prev) => ({
+              ...prev,
+              settings: {
+                ...prev.settings,
+                sidebarCollapsed: !prev.settings.sidebarCollapsed
+              }
+            }))
+          }
+          activeTabId={activeTabId}
+          tabs={visibleTabs}
+          installedModules={moduleService.getInstalledModules(dbState)}
+          deadlineAttention={deadlineSummary.actionable}
+          visualEffects={dbState.settings.visualEffects === 'reduced' ? 'reduced' : 'glass'}
+          onToggleVisualEffects={() =>
+            updateDbState((prev) => ({
+              ...prev,
+              settings: {
+                ...prev.settings,
+                visualEffects: prev.settings.visualEffects === 'reduced' ? 'glass' : 'reduced'
+              }
+            }))
+          }
+          onSelectTab={(tabId) => setActiveTabId(tabId)}
+          onOpenModules={() => setIsModulesOpen(true)}
+          onOpenWorkspace={() => setIsWorkspaceModalOpen(true)}
+        />
+
+        <div className="flex flex-1 flex-col min-w-0 min-h-0">
       {/* 2. Menu Bar */}
       <MenuBar
         onSave={() => void handleRetrySave()}
@@ -2438,6 +2479,8 @@ export default function App() {
           onOpenPortableModal={() => setIsWindowsPortableOpen(true)}
         />
       )}
+        </div>
+      </div>
 
       {/* ===================== MODALS ===================== */}
 

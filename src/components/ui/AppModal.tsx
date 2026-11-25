@@ -199,7 +199,7 @@ export const AppModal: React.FC<AppModalProps> = ({
 
   return (
     <div
-      className={`fixed inset-0 ${zClass} flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4`}
+      className={`fixed inset-0 ${zClass} flex items-center justify-center bg-slate-900/55 backdrop-blur-sm p-4`}
       onMouseDown={(e) => {
         if (closeOnBackdrop && !closeDisabled && e.target === e.currentTarget) {
           onClose();
@@ -213,7 +213,7 @@ export const AppModal: React.FC<AppModalProps> = ({
         aria-labelledby={title ? titleId : undefined}
         aria-label={!title ? ariaLabel : undefined}
         tabIndex={-1}
-        className={`w-full ${SIZE_CLASSES[size]} ${heightClass} bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col overflow-hidden outline-none ${className}`}
+        className={`w-full ${SIZE_CLASSES[size]} ${heightClass} bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl rounded-2xl shadow-2xl border border-white/70 dark:border-slate-700/60 flex flex-col overflow-hidden outline-none ${className}`}
       >
         {(title || headerRight) && (
           <div
