@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Usb, AlertTriangle, RefreshCw, Download } from 'lucide-react';
+import { Usb, AlertTriangle, RefreshCw, Download, Users } from 'lucide-react';
 import { TitleBar } from './components/TitleBar';
 import { MenuBar } from './components/MenuBar';
 import { TabBar } from './components/TabBar';
@@ -202,6 +202,7 @@ export default function App() {
   const [isModulesOpen, setIsModulesOpen] = useState(false);
   const [employeeCardRowId, setEmployeeCardRowId] = useState<string | null>(null);
   const [obligationsWorking, setObligationsWorking] = useState(false);
+  const [employeesViewMode, setEmployeesViewMode] = useState<'cards' | 'grid'>('cards');
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isNewTabModalOpen, setIsNewTabModalOpen] = useState(false);
   const [masterDepsTabId, setMasterDepsTabId] = useState<string | null>(null);
@@ -2310,7 +2311,7 @@ export default function App() {
           onMarkCompletedToday={handleMarkDeadlineEventCompletedToday}
           onUpdateHolidays={handleUpdateDeadlineHolidays}
         />
-      ) : isEmployeesModuleTab && employeesTab ? (
+      ) : isEmployeesModuleTab && employeesTab && employeesViewMode === 'cards' ? (
         <EmployeesView
           employeesTab={employeesTab}
           obligations={employeeObligations}
@@ -2320,9 +2321,26 @@ export default function App() {
           onGeneratePackage={(rowId) => void handleGenerateEmployeePackage(rowId)}
           onEnsureAllPackages={handleEnsureAllEmployeePackages}
           employeeEvents={employeeEvents}
+          onOpenGrid={() => setEmployeesViewMode('grid')}
         />
       ) : (
-        currentTab && (
+        <>
+          {isEmployeesModuleTab && employeesViewMode === 'grid' && (
+            <div className="flex items-center justify-between gap-3 px-4 py-1.5 text-[11px] text-slate-600 dark:text-slate-300 bg-white/50 dark:bg-slate-900/50 border-b border-white/60 dark:border-slate-700/60 backdrop-blur-xl shrink-0">
+              <span>
+                Модуль «Сотрудники» · режим таблицы: доступны все столбцы, связи и массовые действия
+              </span>
+              <button
+                type="button"
+                onClick={() => setEmployeesViewMode('cards')}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300/80 dark:border-slate-700 px-2 py-1 font-medium text-slate-700 dark:text-slate-200 hover:bg-white dark:hover:bg-slate-800"
+              >
+                <Users className="w-3.5 h-3.5" />
+                Карточки и пакеты
+              </button>
+            </div>
+          )}
+          {currentTab && (
           <DataGrid
             currentTab={currentTab}
             allTabs={dbState.tabs}
@@ -2382,7 +2400,8 @@ export default function App() {
             highlightedRowId={highlightedRowId}
             holidays={dbState.settings.deadlineSettings?.holidays}
           />
-        )
+          )}
+        </>
       )}
 
       {/* 5. Desktop Status Bar */}

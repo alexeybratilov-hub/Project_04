@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle2, ClipboardCheck, Clock3, FileText, Search, UserPlus, Users } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ClipboardCheck, Clock3, FileText, LayoutGrid, Search, UserPlus, Users } from 'lucide-react';
 import { EmployeeEvent, EmployeeObligation, Row, Tab } from '../types/database';
 import {
   getEmployeeDisplayName,
@@ -19,6 +19,7 @@ interface EmployeesViewProps {
   onGeneratePackage: (rowId: string) => void;
   onEnsureAllPackages: () => void;
   employeeEvents: EmployeeEvent[];
+  onOpenGrid: () => void;
 }
 
 interface EmployeeRowInfo {
@@ -63,7 +64,8 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
   onAddEmployee,
   onGeneratePackage,
   onEnsureAllPackages,
-  employeeEvents
+  employeeEvents,
+  onOpenGrid
 }) => {
   const [query, setQuery] = useState('');
 
@@ -136,6 +138,14 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                 aria-label="Поиск по сотрудникам"
               />
             </label>
+            <button
+              type="button"
+              onClick={onOpenGrid}
+              className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/70 bg-white/70 px-3 text-xs font-medium text-slate-700 hover:bg-white dark:border-slate-700/60 dark:bg-slate-900/60 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              <LayoutGrid className="w-4 h-4" />
+              Таблица
+            </button>
             <button
               type="button"
               onClick={onEnsureAllPackages}
