@@ -1,5 +1,5 @@
 import React from 'react';
-import { HardDrive, Usb, Globe, Check } from 'lucide-react';
+import { HardDrive, Usb, Globe, Check, FolderOpen } from 'lucide-react';
 import { LLMConfig, Tab } from '../types/database';
 import { StorageMode } from '../services/localApiClient';
 
@@ -17,6 +17,8 @@ interface StatusBarProps {
   llmConfig?: LLMConfig;
   onOpenLLMStudio?: () => void;
   onOpenPortableModal: () => void;
+  onOpenWorkspaceModal?: () => void;
+  workspaceFolderName?: string | null;
 }
 
 export const StatusBar: React.FC<StatusBarProps> = ({
@@ -25,7 +27,9 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   storageMode,
   usbDisconnected,
   databaseDirectory,
-  onOpenPortableModal
+  onOpenPortableModal,
+  onOpenWorkspaceModal,
+  workspaceFolderName
 }) => {
   return (
     <footer className="h-6 bg-slate-900 text-slate-400 text-[11px] select-none flex items-center justify-between gap-3 px-3 border-t border-slate-800 shrink-0 z-20">
@@ -71,7 +75,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
       <div className="flex items-center gap-2 shrink-0">
         <button
           type="button"
-          onClick={onOpenPortableModal}
+          onClick={storageMode === 'native-fs' ? onOpenPortableModal : (onOpenWorkspaceModal ?? onOpenPortableModal)}
           className="flex items-center gap-1.5 hover:text-slate-200 transition-colors cursor-pointer"
           title="Расположение и параметры базы данных"
         >
@@ -89,6 +93,14 @@ export const StatusBar: React.FC<StatusBarProps> = ({
                 </span>
               </>
             )
+          ) : storageMode === 'file-handle' ? (
+            <>
+              <FolderOpen className="w-3 h-3 text-emerald-400" />
+              <span className="font-mono text-[10px] hidden md:inline text-emerald-300">
+                Папка: {workspaceFolderName || '—'}/data/ot_database.json
+              </span>
+              <span className="font-mono text-[10px] md:hidden text-emerald-300">Папка на диске</span>
+            </>
           ) : (
             <>
               <Globe className="w-3 h-3 text-slate-400" />

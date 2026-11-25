@@ -1,6 +1,6 @@
 import { DatabaseState } from '../types/database';
 
-export type StorageMode = 'native-fs' | 'web-preview';
+export type StorageMode = 'native-fs' | 'file-handle' | 'web-preview';
 
 export type NativeErrorKind =
   | 'connection'

@@ -19,6 +19,7 @@ import { TemplatesModal, TemplatesModalScope } from './components/TemplatesModal
 import { NormativeDocsModal } from './components/NormativeDocsModal';
 import { LLMStudioModal } from './components/LLMStudioModal';
 import { WindowsPortableModal } from './components/WindowsPortableModal';
+import { WorkspaceFolderModal } from './components/WorkspaceFolderModal';
 import { ColumnEditorModal } from './components/ColumnEditorModal';
 import { BackupModal } from './components/BackupModal';
 import { HelpModal } from './components/HelpModal';
@@ -81,11 +82,18 @@ import {
   restoreArchivedDocument
 } from './services/generatedDocsService';
 import { reorderArray, reorderTabColumns } from './utils/reorderUtils';
+import {
+  workspaceFolderService,
+  type WorkspaceStatus
+} from './services/workspaceFolderService';
 
 export default function App() {
   const { showToast } = useToast();
 
   const [storageMode, setStorageMode] = useState<StorageMode>(() => storageService.getMode());
+  const [workspaceFolderName, setWorkspaceFolderName] = useState<string | null>(null);
+  const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatus>('disconnected');
+  const [isWorkspaceModalOpen, setIsWorkspaceModalOpen] = useState<boolean>(false);
   const [isBootstrapping, setIsBootstrapping] = useState<boolean>(() => localApiClient.isNative());
   const [dbState, setDbState] = useState<DatabaseState>(() => storageService.loadDatabase());
   const [activeTabId, setActiveTabId] = useState<string>(() => dbState.tabs[0]?.id || 'tab_positions');
@@ -418,6 +426,14 @@ export default function App() {
       if (cancelled) return;
 
       setStorageMode(res.mode);
+      setWorkspaceFolderName(res.workspaceFolderName ?? null);
+      if (res.mode === 'file-handle') {
+        setWorkspaceStatus('connected');
+      } else if (res.workspaceNeedsPermission) {
+        setWorkspaceStatus('needs-permission');
+      } else {
+        setWorkspaceStatus(workspaceFolderService.isSupported() ? 'disconnected' : 'unsupported');
+      }
       if (!res.loadError && !res.sessionLost) {
         setDbState(res.state);
         latestDbRef.current = res.state;
@@ -1613,6 +1629,63 @@ export default function App() {
     showToast('Документ удалён из реестра', 'info');
   };
 
+  // ===================== WORKSPACE FOLDER (File System Access API) =====================
+
+  const handleConnectWorkspace = async (): Promise<boolean> => {
+    const res = await workspaceFolderService.connect();
+    if (!res.ok) {
+      showToast(res.error, 'error');
+      return false;
+    }
+    const snapshot = latestDbRef.current;
+    const writeRes = await workspaceFolderService.writeDatabaseText(
+      JSON.stringify({ ...snapshot, lastSaved: new Date().toISOString() }, null, 2)
+    );
+    if (!writeRes.ok) {
+      showToast(`Папка выбрана, но запись не удалась: ${writeRes.error}`, 'error');
+      return false;
+    }
+    setWorkspaceFolderName(res.folderName);
+    setWorkspaceStatus('connected');
+    setStorageMode('file-handle');
+    showToast(
+      `Рабочая папка «${res.folderName}» подключена: база сохраняется в data/ot_database.json`,
+      'success'
+    );
+    return true;
+  };
+
+  const handleRequestWorkspaceAccess = async (): Promise<boolean> => {
+    const access = await workspaceFolderService.requestAccess();
+    if (!access.ok) {
+      showToast(access.error || 'Браузер не предоставил доступ к папке', 'error');
+      return false;
+    }
+    const boot = await storageService.bootstrapDatabase();
+    setWorkspaceFolderName(boot.workspaceFolderName ?? null);
+    if (boot.mode === 'file-handle') {
+      setStorageMode('file-handle');
+      setWorkspaceStatus('connected');
+      setDbState(boot.state);
+      latestDbRef.current = boot.state;
+      showToast('Доступ к рабочей папке подтверждён — данные читаются с диска', 'success');
+      return true;
+    }
+    setWorkspaceStatus('disconnected');
+    showToast(boot.loadError || 'Не удалось прочитать базу из папки', 'error');
+    return false;
+  };
+
+  const handleDisconnectWorkspace = async (): Promise<void> => {
+    const current = latestDbRef.current;
+    await workspaceFolderService.disconnect();
+    setWorkspaceFolderName(null);
+    setWorkspaceStatus(workspaceFolderService.isSupported() ? 'disconnected' : 'unsupported');
+    setStorageMode('web-preview');
+    await persistState(current, true);
+    showToast('Рабочая папка отключена: данные теперь сохраняются в браузере', 'info');
+  };
+
   if (isBootstrapping) {
     return (
       <div className="flex flex-col items-center justify-center h-screen w-screen bg-slate-900 text-slate-200 gap-3 text-xs">
@@ -1660,6 +1733,8 @@ export default function App() {
         onFullBackup={() => setIsBackupOpen(true)}
         onRestore={() => setIsBackupOpen(true)}
         onOpenPortableModal={() => setIsWindowsPortableOpen(true)}
+        onOpenWorkspaceModal={() => setIsWorkspaceModalOpen(true)}
+        workspaceFolderName={workspaceFolderName}
         onAddRow={() => {
           if (isSystemDeadlineTab) {
             showToast('Для добавления строки откройте пользовательскую вкладку таблицы.', 'info');
@@ -1922,6 +1997,8 @@ export default function App() {
           storageMode={storageMode}
           usbDisconnected={usbDisconnected}
           databaseDirectory={dbState.settings.databaseDirectory}
+          workspaceFolderName={workspaceFolderName}
+          onOpenWorkspaceModal={() => setIsWorkspaceModalOpen(true)}
           llmConfig={dbState.llmConfig}
           onOpenLLMStudio={() => {
             setLlmInitialSubTab('settings');
@@ -2040,6 +2117,16 @@ export default function App() {
         onSaveLLMConfig={(newConfig) => updateDbState((p) => ({ ...p, llmConfig: newConfig }))}
         onAddLLMLog={(newLog) => updateDbState((p) => ({ ...p, llmLogs: [newLog, ...p.llmLogs] }))}
         onRecordGeneratedDoc={handleRecordGeneratedDoc}
+      />
+
+      <WorkspaceFolderModal
+        isOpen={isWorkspaceModalOpen}
+        onClose={() => setIsWorkspaceModalOpen(false)}
+        status={workspaceStatus}
+        folderName={workspaceFolderName}
+        onConnect={handleConnectWorkspace}
+        onRequestAccess={handleRequestWorkspaceAccess}
+        onDisconnect={handleDisconnectWorkspace}
       />
 
       <WindowsPortableModal

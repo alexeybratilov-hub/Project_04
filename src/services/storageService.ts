@@ -22,6 +22,7 @@ import {
   StorageMode
 } from './localApiClient';
 import { integrityService } from './integrityService';
+import { workspaceFolderService } from './workspaceFolderService';
 import {
   normalizeDeadlineAppSettings,
   normalizeDeadlineCellValue,
@@ -55,6 +56,10 @@ export interface NativeBootstrapResult {
   loadError?: string;
   loadErrorKind?: NativeErrorKind;
   sessionLost?: boolean;
+  /** Имя подключённой рабочей папки (режим file-handle). */
+  workspaceFolderName?: string;
+  /** Папка выбрана ранее, но браузер требует повторно подтвердить доступ. */
+  workspaceNeedsPermission?: boolean;
 }
 
 export interface RecoveryEvaluation {
@@ -672,9 +677,9 @@ export function cloneLegalEntity(
 
 export const storageService = {
   getMode(): StorageMode {
-    return localApiClient.isNative() || localApiClient.isNativeSessionLost()
-      ? 'native-fs'
-      : 'web-preview';
+    if (localApiClient.isNative() || localApiClient.isNativeSessionLost()) return 'native-fs';
+    if (workspaceFolderService.isConnected()) return 'file-handle';
+    return 'web-preview';
   },
 
   loadDatabase(): DatabaseState {
@@ -708,9 +713,42 @@ export const storageService = {
     }
 
     if (!localApiClient.isNative()) {
+      // Рабочая папка на диске (File System Access API) заменяет нативный сервер:
+      // приложение само читает/пишет ./data/ot_database.json в выбранной папке.
+      const workspace = await workspaceFolderService.getStatus();
+      if (workspace.status === 'connected') {
+        try {
+          const text = await workspaceFolderService.readDatabaseText();
+          if (text && text.trim().length > 0) {
+            return {
+              mode: 'file-handle',
+              state: normalizeDatabaseState(JSON.parse(text)),
+              workspaceFolderName: workspace.folderName ?? undefined
+            };
+          }
+          // Файла ещё нет — переносим текущее состояние браузера в папку.
+          const seed = storageService.loadDatabase();
+          await workspaceFolderService.writeDatabaseText(JSON.stringify(seed, null, 2));
+          return {
+            mode: 'file-handle',
+            state: seed,
+            workspaceFolderName: workspace.folderName ?? undefined
+          };
+        } catch (err: any) {
+          return {
+            mode: 'file-handle',
+            state: storageService.loadDatabase(),
+            workspaceFolderName: workspace.folderName ?? undefined,
+            loadErrorKind: 'disk_write',
+            loadError: err?.message || 'Не удалось прочитать data/ot_database.json в рабочей папке'
+          };
+        }
+      }
       return {
         mode: 'web-preview',
-        state: storageService.loadDatabase()
+        state: storageService.loadDatabase(),
+        workspaceFolderName: workspace.folderName ?? undefined,
+        workspaceNeedsPermission: workspace.status === 'needs-permission'
       };
     }
 
@@ -816,6 +854,21 @@ export const storageService = {
           options?.expectedRevision ?? (getCurrentRevision() > 0 ? getCurrentRevision() : undefined),
           options?.saveOptions
         );
+      }
+
+      if (workspaceFolderService.isConnected()) {
+        const writeRes = await workspaceFolderService.writeDatabaseText(
+          JSON.stringify(toSave, null, 2)
+        );
+        if (!writeRes.ok) {
+          return {
+            ok: false,
+            errorCode: 'WORKSPACE_WRITE_ERROR',
+            errorKind: 'disk_write',
+            message: `Не удалось записать data/ot_database.json в рабочую папку: ${writeRes.error}`
+          };
+        }
+        return { ok: true };
       }
 
       try {

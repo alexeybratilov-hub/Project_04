@@ -27,6 +27,8 @@ interface MenuBarProps {
   onFullBackup: () => void;
   onRestore: () => void;
   onOpenPortableModal: () => void;
+  onOpenWorkspaceModal?: () => void;
+  workspaceFolderName?: string | null;
   onAddRow: () => void;
   onDeleteSelectedRows: () => void;
   selectedRowsCount?: number;
@@ -86,6 +88,8 @@ export const MenuBar: React.FC<MenuBarProps> = ({
   onFullBackup,
   onRestore,
   onOpenPortableModal,
+  onOpenWorkspaceModal,
+  workspaceFolderName,
   onAddRow,
   onDeleteSelectedRows,
   selectedRowsCount = 0,
@@ -430,6 +434,21 @@ export const MenuBar: React.FC<MenuBarProps> = ({
               </button>
 
               <div role="separator" className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
+
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onOpenWorkspaceModal?.(); closeMenu(); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 font-medium focus:outline-hidden"
+              >
+                <FolderOpen className="w-3.5 h-3.5 text-amber-600" />
+                <span>
+                  {workspaceFolderName
+                    ? `Рабочая папка: ${workspaceFolderName}`
+                    : 'Рабочая папка на диске…'}
+                </span>
+              </button>
 
               <button
                 type="button"
