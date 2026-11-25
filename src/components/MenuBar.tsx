@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+﻿import React, { useState, useRef, useEffect } from 'react';
 import {
   FileText, Download, Upload, Plus, Trash2,
   Search, Link as LinkIcon, Database,
@@ -28,6 +28,7 @@ interface MenuBarProps {
   onRestore: () => void;
   onOpenPortableModal: () => void;
   onOpenWorkspaceModal?: () => void;
+  onOpenModules?: () => void;
   workspaceFolderName?: string | null;
   onAddRow: () => void;
   onDeleteSelectedRows: () => void;
@@ -89,6 +90,7 @@ export const MenuBar: React.FC<MenuBarProps> = ({
   onRestore,
   onOpenPortableModal,
   onOpenWorkspaceModal,
+  onOpenModules,
   workspaceFolderName,
   onAddRow,
   onDeleteSelectedRows,
@@ -620,6 +622,19 @@ export const MenuBar: React.FC<MenuBarProps> = ({
                 <Plus className="w-3.5 h-3.5" />
                 <span>Создать новую вкладку (до 20)</span>
               </button>
+
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { onOpenModules?.(); closeMenu(); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 focus:outline-hidden"
+              >
+                <Layers className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Модули этапов…</span>
+              </button>
+
+              <div role="separator" className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
 
               <button
                 type="button"

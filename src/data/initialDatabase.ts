@@ -1,10 +1,11 @@
-import { AttachedDoc, DatabaseState, LegalEntity, LegalEntityProfile, Tab, Tag } from '../types/database';
+﻿import { AttachedDoc, DatabaseState, LegalEntity, LegalEntityProfile, Tab, Tag } from '../types/database';
 import { BUILT_IN_TEMPLATES } from './builtInTemplates';
 import { BUILT_IN_NORMATIVE_DOCS } from './builtInNormativeDocs';
 
 export const INITIAL_TABS: Tab[] = [
   {
     id: 'tab_positions',
+    moduleId: 'staffing',
     name: 'Штатное расписание',
     description: 'Мастер-таблица должностей и базовых условий труда по СОУТ',
     isMaster: true,
@@ -30,6 +31,7 @@ export const INITIAL_TABS: Tab[] = [
   },
   {
     id: 'tab_employees',
+    moduleId: 'employees',
     name: 'Список работников',
     description: 'Персональный состав с привязкой к штатному расписанию',
     columns: [
@@ -67,6 +69,7 @@ export const INITIAL_TABS: Tab[] = [
   },
   {
     id: 'tab_factors',
+    moduleId: 'sout',
     name: 'Вредные факторы (СОУТ)',
     description: 'Классификатор производственных факторов по приказу 29н и картам СОУТ',
     isMaster: true,
@@ -88,6 +91,7 @@ export const INITIAL_TABS: Tab[] = [
   },
   {
     id: 'tab_med',
+    moduleId: 'medical',
     name: 'Медосмотры и МО',
     description: 'Учет периодических и предварительных медосмотров с контролем сроков',
     columns: [
@@ -129,6 +133,7 @@ export const INITIAL_TABS: Tab[] = [
   },
   {
     id: 'tab_siz',
+    moduleId: 'ppe',
     name: 'Выдача СИЗ',
     description: 'Журнал выдачи средств индивидуальной защиты и нормы носки',
     columns: [
@@ -164,6 +169,7 @@ export const INITIAL_TABS: Tab[] = [
   },
   {
     id: 'tab_instructions',
+    moduleId: 'briefings',
     name: 'Инструктажи по ОТ',
     description: 'Журнал регистрации инструктажей на рабочем месте (вводный, первичный, повторный)',
     columns: [
@@ -196,6 +202,7 @@ export const INITIAL_TABS: Tab[] = [
   },
   {
     id: 'tab_incidents',
+    moduleId: 'incidents',
     name: 'Несчастные случаи и микротравмы',
     description: 'Журнал учета инцидентов, микроповреждений и расследований по ТК РФ',
     columns: [
@@ -341,6 +348,9 @@ export const INITIAL_DATABASE_STATE: DatabaseState = {
     tabBarMode: 'single',
     rowDensity: 'compact',
     pageSize: 100,
-    lastBackupDate: '2026-03-01'
-  }
+    lastBackupDate: '2026-03-01',
+    // Новая база стартует с двух базовых модулей: «Штатное расписание» и «Сотрудники».
+    installedModules: ['staffing', 'employees']
+  },
+  employeeObligations: []
 };

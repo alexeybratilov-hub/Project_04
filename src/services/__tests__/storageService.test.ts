@@ -489,7 +489,10 @@ describe('storageService', () => {
       delete legacySnapshot.settings.deadlineSettings;
 
       const normalized = normalizeDatabaseState(legacySnapshot);
-      expect(normalized.entities).toEqual(legacySnapshot.entities);
+      // Нормализация добавляет пустой реестр обязательств — остальная структура не меняется
+      expect(
+        normalized.entities.map(({ employeeObligations: _obligations, ...rest }) => rest)
+      ).toEqual(legacySnapshot.entities);
       expect(normalized.tabs).toEqual(legacySnapshot.tabs);
       expect(normalized.settings.deadlineSettings).toEqual({
         holidays: [],

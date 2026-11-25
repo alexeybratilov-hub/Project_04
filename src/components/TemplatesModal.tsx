@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+﻿import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   FileText,
   Download,
@@ -98,7 +98,7 @@ interface TemplatesModalProps {
   selectedRowIds?: string[];
   onOpenTagsModal: () => void;
   onSaveTemplates: (templates: DocumentTemplate[]) => void;
-  onRecordGeneratedDoc?: (payload: RecordGeneratedDocPayload) => Promise<void> | void;
+  onRecordGeneratedDoc?: (payload: RecordGeneratedDocPayload) => Promise<string> | void;
 }
 
 export const TemplatesModal: React.FC<TemplatesModalProps> = ({

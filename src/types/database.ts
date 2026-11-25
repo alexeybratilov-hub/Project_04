@@ -79,6 +79,8 @@ export interface Tab {
   name: string;
   description?: string;
   isMaster?: boolean;
+  /** Модуль, которому принадлежит вкладка (этап/точка контроля). */
+  moduleId?: string;
   columns: Column[];
   rows: Row[];
   attachedDocs: AttachedDoc[];
@@ -192,6 +194,7 @@ export interface LegalEntity {
   templates: DocumentTemplate[];
   llmLogs: LLMGenerationLog[];
   generatedDocs: GeneratedDocRecord[];
+  employeeObligations?: EmployeeObligation[];
   createdAt: string;
   updatedAt: string;
 }
@@ -205,6 +208,35 @@ export interface DeadlineAppSettings {
   notificationsEnabled?: boolean; // default true
 }
 
+/** Обязательство по работнику: документ, срок или контрольная точка. */
+export type ObligationStatus = 'pending' | 'done' | 'skipped';
+export type ObligationKind = 'document' | 'deadline' | 'control';
+
+export interface EmployeeObligation {
+  id: string;
+  /** Строка работника во вкладке «Сотрудники» (Row.id). */
+  employeeRowId: string;
+  moduleId: string;
+  /** Стабильный ключ требования внутри модуля. */
+  requirementId: string;
+  title: string;
+  kind: ObligationKind;
+  /** Шаблон, которым формируется документ (для kind === 'document'). */
+  templateId?: string;
+  /** Плановый срок (ISO YYYY-MM-DD). */
+  dueDate?: string;
+  /** Периодичность в месяцах: после выполнения создаётся следующая задача. */
+  periodicityMonths?: number;
+  status: ObligationStatus;
+  completedAt?: string;
+  generatedDocId?: string;
+  /** Строка в таблице модуля, по которой сформирован документ (медосмотр, СИЗ, инструктаж). */
+  linkedRowId?: string;
+  legalBasis?: string;
+  note?: string;
+  createdAt: string;
+}
+
 export interface AppSettings {
   databaseDirectory: string;
   portableMode: boolean;
@@ -215,6 +247,8 @@ export interface AppSettings {
   pageSize?: number;
   lastBackupDate?: string;
   deadlineSettings?: DeadlineAppSettings;
+  /** Установленные модули (этапы). Отсутствие поля = базовый набор. */
+  installedModules?: string[];
 }
 
 export interface DatabaseState {
@@ -228,6 +262,7 @@ export interface DatabaseState {
   tags: Tag[];
   templates: DocumentTemplate[];
   generatedDocs: GeneratedDocRecord[];
+  employeeObligations?: EmployeeObligation[];
   llmConfig: LLMConfig;
   llmLogs: LLMGenerationLog[];
   settings: AppSettings;

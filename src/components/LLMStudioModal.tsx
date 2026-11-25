@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+﻿import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Cpu, Play, Download, RefreshCw, FileText, Sparkles,
   AlertCircle, CheckCircle2, Eye, EyeOff, Info, Copy, Check
@@ -53,7 +53,7 @@ interface LLMStudioModalProps {
   selectedRowId?: string;
   onSaveLLMConfig: (config: LLMConfig) => void;
   onAddLLMLog: (log: LLMGenerationLog) => void;
-  onRecordGeneratedDoc?: (payload: RecordGeneratedDocPayload) => Promise<void> | void;
+  onRecordGeneratedDoc?: (payload: RecordGeneratedDocPayload) => Promise<string> | void;
 }
 
 export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({

@@ -3,6 +3,7 @@ import {
   Activity,
   AlertTriangle,
   ArrowUpRight,
+  Blocks,
   Building2,
   CalendarClock,
   Clock3,
@@ -13,9 +14,10 @@ import {
   FolderOpen,
   LayoutGrid,
   ShieldCheck,
-  Sparkles
+  Sparkles,
+  Users
 } from 'lucide-react';
-import { DatabaseState, LegalEntity } from '../types/database';
+import { DatabaseState, EmployeeObligation, LegalEntity, Row, Tab } from '../types/database';
 import {
   DeadlineEventItem,
   DeadlineEventsSummary,
@@ -23,6 +25,7 @@ import {
   type DeadlineStatus
 } from '../services/deadlineService';
 import type { StorageMode } from '../services/localApiClient';
+import { getEmployeeDisplayName, summarizeObligations } from '../services/obligationService';
 
 interface DashboardViewProps {
   state: DatabaseState;
@@ -31,6 +34,9 @@ interface DashboardViewProps {
   deadlineSummary: DeadlineEventsSummary;
   storageMode: StorageMode;
   workspaceFolderName?: string | null;
+  todayIso: string;
+  employeeObligations: EmployeeObligation[];
+  employeesTab: Tab | null;
   onSelectTab: (tabId: string) => void;
   onSelectEntity: (entityId: string) => void;
   onOpenDeadlineControl: () => void;
@@ -38,6 +44,9 @@ interface DashboardViewProps {
   onOpenGeneratedDocs: () => void;
   onOpenBackup: () => void;
   onOpenWorkspaceModal: () => void;
+  onOpenEmployees: () => void;
+  onOpenModules: () => void;
+  onOpenEmployeeCard: (rowId: string) => void;
 }
 
 const STATUS_TONE: Record<DeadlineStatus, { chip: string; dot: string; label: string }> = {
@@ -113,15 +122,54 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   deadlineSummary,
   storageMode,
   workspaceFolderName,
+  todayIso,
+  employeeObligations,
+  employeesTab,
   onSelectTab,
   onSelectEntity,
   onOpenDeadlineControl,
   onOpenTemplates,
   onOpenGeneratedDocs,
   onOpenBackup,
-  onOpenWorkspaceModal
+  onOpenWorkspaceModal,
+  onOpenEmployees,
+  onOpenModules,
+  onOpenEmployeeCard
 }) => {
   const totalRows = useMemo(() => countRows(state.tabs), [state.tabs]);
+
+  const packageIssues = useMemo(() => {
+    if (!employeesTab) return [];
+    return employeesTab.rows
+      .map((row: Row) => {
+        const own = employeeObligations.filter((item) => item.employeeRowId === row.id);
+        const summary = summarizeObligations(own, todayIso);
+        return {
+          row,
+          name: getEmployeeDisplayName(row, employeesTab),
+          total: summary.total,
+          done: summary.done,
+          overdue: summary.overdue,
+          dueSoon: summary.dueSoon,
+          nextDue: summary.nearestDueDate
+        };
+      })
+      .filter((item) => item.total === 0 || item.overdue > 0)
+      .sort((a, b) => b.overdue - a.overdue || (a.nextDue || '').localeCompare(b.nextDue || ''))
+      .slice(0, 6);
+  }, [employeesTab, employeeObligations, todayIso]);
+
+  const packageStats = useMemo(() => {
+    if (!employeesTab) return { total: 0, withoutPackage: 0, overdue: 0 };
+    let withoutPackage = 0;
+    let overdue = 0;
+    employeesTab.rows.forEach((row) => {
+      const own = employeeObligations.filter((item) => item.employeeRowId === row.id);
+      if (own.length === 0) withoutPackage += 1;
+      if (summarizeObligations(own, todayIso).overdue > 0) overdue += 1;
+    });
+    return { total: employeesTab.rows.length, withoutPackage, overdue };
+  }, [employeesTab, employeeObligations, todayIso]);
 
   const entities = useMemo(
     () =>
@@ -437,6 +485,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 {[
                   { label: 'Шаблоны', icon: <FileText className="w-4 h-4" />, onClick: onOpenTemplates },
                   { label: 'Документы', icon: <FileSpreadsheet className="w-4 h-4" />, onClick: onOpenGeneratedDocs },
+                  { label: 'Сотрудники', icon: <Users className="w-4 h-4" />, onClick: onOpenEmployees },
+                  { label: 'Модули', icon: <Blocks className="w-4 h-4" />, onClick: onOpenModules },
                   { label: 'Резервная копия', icon: <Database className="w-4 h-4" />, onClick: onOpenBackup },
                   { label: 'Сроки', icon: <CalendarClock className="w-4 h-4" />, onClick: onOpenDeadlineControl }
                 ].map((action) => (
@@ -493,6 +543,95 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <span className="shrink-0 text-[10.5px] font-mono text-slate-500 dark:text-slate-400">
                         {doc.sizeFormatted}
                       </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </section>
+
+          {/* Пакеты документов по сотрудникам */}
+          <section className="col-span-12">
+            <div className="lg-card p-5">
+              <CardTitle
+                icon={<Users className="w-4 h-4" />}
+                action={
+                  <button
+                    type="button"
+                    onClick={onOpenEmployees}
+                    className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                  >
+                    Все сотрудники
+                    <ArrowUpRight className="w-3.5 h-3.5" />
+                  </button>
+                }
+              >
+                Пакеты документов
+              </CardTitle>
+
+              <div className="mb-3 flex flex-wrap gap-2 text-[11px]">
+                <span className="rounded-full bg-white/70 dark:bg-slate-900/60 border border-white/70 dark:border-slate-700/50 px-2.5 py-1 text-slate-600 dark:text-slate-300">
+                  сотрудников: <strong className="tabular-nums">{packageStats.total}</strong>
+                </span>
+                <span
+                  className={`rounded-full px-2.5 py-1 border ${
+                    packageStats.withoutPackage > 0
+                      ? 'bg-amber-100/80 text-amber-800 border-amber-200/70 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-900/50'
+                      : 'bg-white/70 text-slate-600 border-white/70 dark:bg-slate-900/60 dark:text-slate-300 dark:border-slate-700/50'
+                  }`}
+                >
+                  без пакета: <strong className="tabular-nums">{packageStats.withoutPackage}</strong>
+                </span>
+                <span
+                  className={`rounded-full px-2.5 py-1 border ${
+                    packageStats.overdue > 0
+                      ? 'bg-rose-100/80 text-rose-700 border-rose-200/70 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-900/50'
+                      : 'bg-white/70 text-slate-600 border-white/70 dark:bg-slate-900/60 dark:text-slate-300 dark:border-slate-700/50'
+                  }`}
+                >
+                  с просрочкой: <strong className="tabular-nums">{packageStats.overdue}</strong>
+                </span>
+              </div>
+
+              {!employeesTab ? (
+                <p className="text-[11.5px] text-slate-500 dark:text-slate-400">
+                  Модуль «Сотрудники» отключён. Включите его в разделе «Модули», чтобы вести пакеты
+                  документов.
+                </p>
+              ) : packageIssues.length === 0 ? (
+                <p className="text-[11.5px] text-slate-500 dark:text-slate-400">
+                  Все пакеты укомплектованы, просрочек нет.
+                </p>
+              ) : (
+                <ul className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {packageIssues.map((item) => (
+                    <li key={item.row.id}>
+                      <button
+                        type="button"
+                        onClick={() => onOpenEmployeeCard(item.row.id)}
+                        className="w-full flex items-center justify-between gap-3 rounded-2xl bg-white/55 dark:bg-slate-900/45 border border-white/70 dark:border-slate-700/50 px-3 py-2 text-left hover:bg-white/85 dark:hover:bg-slate-800/70 transition-colors"
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate text-[12px] font-semibold text-slate-800 dark:text-slate-100">
+                            {item.name}
+                          </span>
+                          <span className="block truncate text-[10.5px] text-slate-500 dark:text-slate-400">
+                            {item.total === 0
+                              ? 'пакет не рассчитан'
+                              : `выполнено ${item.done} из ${item.total}` +
+                                (item.nextDue ? ` · ближайший ${formatIsoToDisplay(item.nextDue)}` : '')}
+                          </span>
+                        </span>
+                        {item.overdue > 0 ? (
+                          <span className="shrink-0 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold text-rose-700 dark:bg-rose-950/60 dark:text-rose-300">
+                            просрочено {item.overdue}
+                          </span>
+                        ) : (
+                          <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
+                            нет пакета
+                          </span>
+                        )}
+                      </button>
                     </li>
                   ))}
                 </ul>

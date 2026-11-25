@@ -23,6 +23,8 @@ import {
 } from './localApiClient';
 import { integrityService } from './integrityService';
 import { workspaceFolderService } from './workspaceFolderService';
+import { moduleService } from './moduleService';
+import { DEFAULT_INSTALLED_MODULES, MODULE_DEFINITIONS } from '../data/modules';
 import {
   normalizeDeadlineAppSettings,
   normalizeDeadlineCellValue,
@@ -235,6 +237,7 @@ export function applyDatabaseTransition(
               tags: updated.tags,
               templates: updated.templates,
               generatedDocs: updated.generatedDocs,
+              employeeObligations: updated.employeeObligations || [],
               llmLogs: updated.llmLogs,
               ...(now ? { updatedAt: now } : {})
             }
@@ -532,7 +535,7 @@ export function normalizeDatabaseState(raw: any): DatabaseState {
   } else {
     entities = entities.map((ent) => {
       const normalizedTabs = Array.isArray(ent.tabs)
-        ? normalizeTabsDeadlineColumns(ent.tabs)
+        ? moduleService.stampTabModules(normalizeTabsDeadlineColumns(ent.tabs))
         : ent.tabs;
       if (Array.isArray(normalizedTabs)) {
         collectTabDocs(normalizedTabs);
@@ -540,7 +543,8 @@ export function normalizeDatabaseState(raw: any): DatabaseState {
       return {
         ...ent,
         tabs: normalizedTabs,
-        generatedDocs: Array.isArray(ent.generatedDocs) ? ent.generatedDocs : []
+        generatedDocs: Array.isArray(ent.generatedDocs) ? ent.generatedDocs : [],
+        employeeObligations: Array.isArray(ent.employeeObligations) ? ent.employeeObligations : []
       };
     });
     if (sharedNormatives.length === 0) {
@@ -550,6 +554,25 @@ export function normalizeDatabaseState(raw: any): DatabaseState {
 
   const activeEntity =
     entities.find((e) => e.id === raw.activeEntityId) || entities[0];
+
+  // Установленные модули: явная настройка, иначе — все модули, чьи вкладки есть в базе
+  // (совместимость: обновление не должно прятать уже существующие данные).
+  const knownModuleIds = new Set(MODULE_DEFINITIONS.map((module) => module.id));
+  let installedModules: string[];
+  if (Array.isArray(raw.settings?.installedModules)) {
+    installedModules = raw.settings.installedModules.filter((id: unknown) => typeof id === 'string' && knownModuleIds.has(id));
+  } else {
+    installedModules = Array.from(
+      new Set(
+        (activeEntity.tabs || [])
+          .map((tab) => tab.moduleId)
+          .filter((id): id is string => Boolean(id) && knownModuleIds.has(id as string))
+      )
+    );
+    if (installedModules.length === 0) {
+      installedModules = [...DEFAULT_INSTALLED_MODULES];
+    }
+  }
 
   const allowedPageSizes = new Set([50, 100, 250, 500]);
   const rawPageSize = Number(raw.settings?.pageSize);
@@ -564,11 +587,15 @@ export function normalizeDatabaseState(raw: any): DatabaseState {
     tags: activeEntity.tags,
     templates: activeEntity.templates,
     generatedDocs: activeEntity.generatedDocs || [],
+    employeeObligations: Array.isArray(raw.employeeObligations)
+      ? raw.employeeObligations
+      : activeEntity.employeeObligations || [],
     llmConfig: normalizeLLMConfig(raw.llmConfig || INITIAL_DATABASE_STATE.llmConfig),
     llmLogs: activeEntity.llmLogs || [],
     settings: {
       ...INITIAL_DATABASE_STATE.settings,
       ...(raw.settings || {}),
+      installedModules,
       tabBarMode: raw.settings?.tabBarMode === 'auto' ? 'auto' : 'single',
       rowDensity: raw.settings?.rowDensity === 'normal' ? 'normal' : 'compact',
       pageSize: allowedPageSizes.has(rawPageSize) ? rawPageSize : 100,

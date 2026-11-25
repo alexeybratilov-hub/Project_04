@@ -11,7 +11,13 @@ import { TabBar } from './components/TabBar';
 import { DataGrid } from './components/DataGrid';
 import { DeadlineControlView } from './components/DeadlineControlView';
 import { DashboardView } from './components/DashboardView';
+import { EmployeesView } from './components/EmployeesView';
+import { EmployeeCardModal } from './components/EmployeeCardModal';
+import { ModulesModal } from './components/ModulesModal';
 import { SYSTEM_DASHBOARD_TAB_ID } from './services/systemTabs';
+import { moduleService } from './services/moduleService';
+import { MODULE_DEFINITIONS } from './data/modules';
+import { obligationService } from './services/obligationService';
 import { StatusBar } from './components/StatusBar';
 import { MasterJumpDialog } from './components/MasterJumpDialog';
 import { ExcelImportModal } from './components/ExcelImportModal';
@@ -192,6 +198,9 @@ export default function App() {
   const [isWindowsPortableOpen, setIsWindowsPortableOpen] = useState(false);
   const [isColumnEditorOpen, setIsColumnEditorOpen] = useState(false);
   const [isBackupOpen, setIsBackupOpen] = useState(false);
+  const [isModulesOpen, setIsModulesOpen] = useState(false);
+  const [employeeCardRowId, setEmployeeCardRowId] = useState<string | null>(null);
+  const [obligationsWorking, setObligationsWorking] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isNewTabModalOpen, setIsNewTabModalOpen] = useState(false);
   const [masterDepsTabId, setMasterDepsTabId] = useState<string | null>(null);
@@ -605,7 +614,26 @@ export default function App() {
   const isSystemDeadlineTab = activeTabId === SYSTEM_DEADLINE_TAB_ID;
   const isSystemDashboardTab = activeTabId === SYSTEM_DASHBOARD_TAB_ID;
   const isAnySystemTab = isSystemDeadlineTab || isSystemDashboardTab;
-  const currentTab = dbState.tabs.find((t) => t.id === activeTabId) || dbState.tabs[0];
+  const visibleTabs = React.useMemo(
+    () => moduleService.getVisibleTabs(dbState),
+    [dbState.tabs, dbState.settings.installedModules]
+  );
+  const currentTab = visibleTabs.find((t) => t.id === activeTabId) || visibleTabs[0];
+  const employeesTab = React.useMemo(
+    () => dbState.tabs.find((tab) => tab.moduleId === 'employees') || null,
+    [dbState.tabs]
+  );
+  const employeeObligations = dbState.employeeObligations || [];
+  const isEmployeesModuleTab = Boolean(
+    currentTab && currentTab.moduleId === 'employees' && currentTab.id !== SYSTEM_DEADLINE_TAB_ID
+  );
+
+  // Если активная вкладка принадлежит отключённому модулю — переключаемся на первую доступную.
+  React.useEffect(() => {
+    if (isAnySystemTab) return;
+    if (visibleTabs.some((tab) => tab.id === activeTabId)) return;
+    setActiveTabId(visibleTabs[0]?.id ?? SYSTEM_DASHBOARD_TAB_ID);
+  }, [visibleTabs, activeTabId, isAnySystemTab]);
 
   const deadlineEvents = React.useMemo(
     () => collectDeadlineEvents(dbState, { todayIso }),
@@ -1471,7 +1499,7 @@ export default function App() {
 
   // ===================== GENERATED DOCS & ARCHIVE LIFECYCLE =====================
 
-  const handleRecordGeneratedDoc = (payload: RecordGeneratedDocPayload): Promise<void> => {
+  const handleRecordGeneratedDoc = (payload: RecordGeneratedDocPayload): Promise<string> => {
     const run = docRecordQueueRef.current.then(async () => {
       const dataBase64 =
         !localApiClient.isNative() && payload.blob.size <= 1_500_000
@@ -1540,9 +1568,11 @@ export default function App() {
           'info'
         );
       }
+
+      return regResult.newRecord.id;
     });
 
-    docRecordQueueRef.current = run.catch(() => undefined);
+    docRecordQueueRef.current = run.then(() => undefined).catch(() => undefined);
     return run;
   };
 
@@ -1696,6 +1726,246 @@ export default function App() {
     showToast('Рабочая папка отключена: данные теперь сохраняются в браузере', 'info');
   };
 
+  // ===================== МОДУЛИ ЭТАПОВ И ОБЯЗАТЕЛЬСТВА =====================
+
+  const handleToggleModule = (moduleId: string, nextEnabled: boolean) => {
+    updateDbState((prev) =>
+      nextEnabled
+        ? moduleService.installModule(prev, moduleId)
+        : moduleService.disableModule(prev, moduleId)
+    );
+    const module = MODULE_DEFINITIONS.find((item) => item.id === moduleId);
+    showToast(
+      nextEnabled
+        ? `Модуль «${module?.title}» включён: вкладка, шаблоны и сроки добавлены`
+        : `Модуль «${module?.title}» отключён — данные сохранены в базе`,
+      'info'
+    );
+  };
+
+  const ensureEmployeePackage = (employeeRowId: string) => {
+    updateDbState((prev) => {
+      const tab = prev.tabs.find((item) => item.moduleId === 'employees');
+      const row = tab?.rows.find((candidate) => candidate.id === employeeRowId);
+      if (!tab || !row) return prev;
+      const hireDate = obligationService.getEmployeeHireDate(row);
+      if (!hireDate) return prev;
+      const next = obligationService.ensureHireObligations(prev.employeeObligations || [], {
+        employeeRowId,
+        hireDateIso: hireDate
+      });
+      if (next === prev.employeeObligations) return prev;
+      return { ...prev, employeeObligations: next };
+    });
+  };
+
+  const handleUpdateEmployee = (employeeRowId: string, patch: Record<string, any>) => {
+    updateDbState((prev) => {
+      const tabs = prev.tabs.map((tab) =>
+        tab.moduleId === 'employees'
+          ? {
+              ...tab,
+              rows: tab.rows.map((row) => (row.id === employeeRowId ? { ...row, ...patch } : row))
+            }
+          : tab
+      );
+      const employeesTabNext = tabs.find((tab) => tab.moduleId === 'employees');
+      const updatedRow = employeesTabNext?.rows.find((row) => row.id === employeeRowId);
+      let employeeObligations = prev.employeeObligations || [];
+      if (updatedRow) {
+        const hireDate = obligationService.getEmployeeHireDate(updatedRow);
+        if (hireDate) {
+          const ensured = obligationService.ensureHireObligations(employeeObligations, {
+            employeeRowId,
+            hireDateIso: hireDate
+          });
+          employeeObligations = obligationService.rescheduleObligationsForHireDate(
+            ensured,
+            employeeRowId,
+            hireDate
+          );
+        }
+      }
+      return { ...prev, tabs, employeeObligations };
+    });
+    showToast('Данные работника сохранены', 'success');
+  };
+
+  const handleEnsureAllEmployeePackages = () => {
+    updateDbState((prev) => {
+      const tab = prev.tabs.find((item) => item.moduleId === 'employees');
+      if (!tab) return prev;
+      let obligations = prev.employeeObligations || [];
+      tab.rows.forEach((row) => {
+        const hireDate = obligationService.getEmployeeHireDate(row);
+        if (!hireDate) return;
+        obligations = obligationService.ensureHireObligations(obligations, {
+          employeeRowId: row.id,
+          hireDateIso: hireDate
+        });
+      });
+      if (obligations === prev.employeeObligations) return prev;
+      return { ...prev, employeeObligations: obligations };
+    });
+    showToast('Пакеты документов рассчитаны для сотрудников с датой приёма', 'success');
+  };
+
+  const handleAddEmployee = () => {
+    const tab = dbState.tabs.find((item) => item.moduleId === 'employees');
+    if (!tab) {
+      showToast('Модуль «Сотрудники» не включён — включите его в разделе «Модули этапов»', 'error');
+      return;
+    }
+    const newRow: Record<string, any> = { id: createUniqueId('row_emp') };
+    tab.columns.forEach((column) => {
+      if (column.type === 'date') newRow[column.id] = column.id === 'emp_hire_date' ? todayIso : '';
+      else if (column.type === 'number') newRow[column.id] = '';
+      else if (column.type === 'boolean') newRow[column.id] = false;
+      else if (column.type === 'deadline_control') newRow[column.id] = {};
+      else newRow[column.id] = '';
+    });
+    if ('emp_hire_date' in newRow) newRow.emp_hire_date = todayIso;
+
+    const nextObligations = obligationService.ensureHireObligations(dbState.employeeObligations || [], {
+      employeeRowId: newRow.id,
+      hireDateIso: todayIso
+    });
+
+    updateDbState((prev) => ({
+      ...prev,
+      tabs: prev.tabs.map((item) =>
+        item.id === tab.id ? { ...item, rows: [newRow as any, ...item.rows] } : item
+      ),
+      employeeObligations: nextObligations
+    }));
+
+    setEmployeeCardRowId(newRow.id);
+    showToast('Сотрудник добавлен: пакет документов и сроки рассчитаны', 'success');
+  };
+
+  const handleCompleteObligation = (obligationId: string) => {
+    updateDbState((prev) => ({
+      ...prev,
+      employeeObligations: obligationService.completeObligation(
+        prev.employeeObligations || [],
+        obligationId
+      )
+    }));
+  };
+
+  const handleReopenObligation = (obligationId: string) => {
+    updateDbState((prev) => ({
+      ...prev,
+      employeeObligations: obligationService.reopenObligation(
+        prev.employeeObligations || [],
+        obligationId
+      )
+    }));
+  };
+
+  const handleGenerateObligationDocument = async (obligationId: string) => {
+    const state = latestDbRef.current;
+    const obligation = (state.employeeObligations || []).find((item) => item.id === obligationId);
+    if (!obligation) return;
+    const employeesTabRef = state.tabs.find((tab) => tab.moduleId === 'employees');
+    const employeeRow = employeesTabRef?.rows.find((row) => row.id === obligation.employeeRowId);
+    if (!employeesTabRef || !employeeRow) {
+      showToast('Не найден работник для этого требования', 'error');
+      return;
+    }
+    const template = obligation.templateId
+      ? state.templates.find((item) => item.id === obligation.templateId)
+      : undefined;
+    if (!template) {
+      showToast(
+        `Для «${obligation.title}» нет шаблона — включите модуль этапа или добавьте шаблон в разделе «Шаблоны»`,
+        'error'
+      );
+      return;
+    }
+
+    const moduleTab =
+      state.tabs.find(
+        (tab) => tab.moduleId === obligation.moduleId && tab.id !== employeesTabRef.id
+      ) || employeesTabRef;
+
+    let targetRow = obligation.linkedRowId
+      ? moduleTab.rows.find((row) => row.id === obligation.linkedRowId)
+      : undefined;
+    let createdRow: Record<string, any> | null = null;
+    if (!targetRow && moduleTab.id !== employeesTabRef.id) {
+      const linked = obligationService.buildLinkedRow(
+        moduleTab,
+        employeesTabRef,
+        employeeRow,
+        obligationService.getEmployeeHireDate(employeeRow)
+      );
+      targetRow = linked;
+      createdRow = linked;
+    }
+    const rowForGeneration = targetRow ?? employeeRow;
+    const employeeName = obligationService.getEmployeeDisplayName(employeeRow, employeesTabRef);
+
+    const resolved = documentGenerator.resolveTemplateTagsDetailed(
+      template.contentTemplate,
+      rowForGeneration,
+      moduleTab,
+      state.tabs,
+      state.tags,
+      activeEntity.profile,
+      { holidays: state.settings.deadlineSettings?.holidays, todayIso }
+    );
+    const safeName =
+      `${template.name} — ${employeeName}`.replace(/[\\/:*?"<>|]+/g, '_').slice(0, 120) || template.name;
+    const blob = await documentGenerator.generateDocx(template.name, resolved.text);
+    const docId = await handleRecordGeneratedDoc({
+      title: template.name,
+      fileName: `${safeName}.docx`,
+      category: template.category || moduleTab.name,
+      format: 'docx',
+      blob,
+      sourceTabName: moduleTab.name,
+      sourceTabId: moduleTab.id,
+      rowIdentifier: employeeName
+    });
+
+    updateDbState((prev) => {
+      const tabs = createdRow
+        ? prev.tabs.map((tab) =>
+            tab.id === moduleTab.id ? { ...tab, rows: [createdRow as any, ...tab.rows] } : tab
+          )
+        : prev.tabs;
+      const employeeObligations = (prev.employeeObligations || []).map((item) =>
+        item.id === obligationId
+          ? { ...item, linkedRowId: rowForGeneration.id, generatedDocId: docId }
+          : item
+      );
+      return { ...prev, tabs, employeeObligations };
+    });
+    showToast(`Документ «${template.name}» сформирован`, 'success');
+  };
+
+  const handleGenerateEmployeePackage = async (employeeRowId: string) => {
+    setObligationsWorking(true);
+    try {
+      ensureEmployeePackage(employeeRowId);
+      const pending = (latestDbRef.current.employeeObligations || []).filter(
+        (item) =>
+          item.employeeRowId === employeeRowId && item.kind === 'document' && item.status !== 'done'
+      );
+      for (const item of pending) {
+        await handleGenerateObligationDocument(item.id);
+      }
+      if (pending.length === 0) {
+        showToast('Все документы пакета уже сформированы', 'info');
+      }
+    } catch (error: any) {
+      showToast(error?.message || 'Не удалось сформировать пакет документов', 'error');
+    } finally {
+      setObligationsWorking(false);
+    }
+  };
+
   if (isBootstrapping) {
     return (
       <div className="flex flex-col items-center justify-center h-screen w-screen bg-slate-900 text-slate-200 gap-3 text-xs">
@@ -1744,6 +2014,7 @@ export default function App() {
         onRestore={() => setIsBackupOpen(true)}
         onOpenPortableModal={() => setIsWindowsPortableOpen(true)}
         onOpenWorkspaceModal={() => setIsWorkspaceModalOpen(true)}
+        onOpenModules={() => setIsModulesOpen(true)}
         workspaceFolderName={workspaceFolderName}
         onAddRow={() => {
           if (isAnySystemTab) {
@@ -1892,7 +2163,7 @@ export default function App() {
 
       {/* 3. Multi-Tab Navigation Bar */}
       <TabBar
-        tabs={dbState.tabs}
+        tabs={visibleTabs}
         activeTabId={activeTabId}
         tabBarMode={dbState.settings.tabBarMode || 'single'}
         onChangeTabBarMode={(mode) =>
@@ -1927,6 +2198,14 @@ export default function App() {
           deadlineSummary={deadlineSummary}
           storageMode={storageMode}
           workspaceFolderName={workspaceFolderName}
+          todayIso={todayIso}
+          employeeObligations={employeeObligations}
+          employeesTab={employeesTab}
+          onOpenEmployees={() =>
+            setActiveTabId(employeesTab?.id ?? SYSTEM_DASHBOARD_TAB_ID)
+          }
+          onOpenModules={() => setIsModulesOpen(true)}
+          onOpenEmployeeCard={(rowId) => setEmployeeCardRowId(rowId)}
           onSelectTab={(tabId) => setActiveTabId(tabId)}
           onSelectEntity={handleSelectEntity}
           onOpenDeadlineControl={() => setActiveTabId(SYSTEM_DEADLINE_TAB_ID)}
@@ -1946,6 +2225,16 @@ export default function App() {
           onJumpToEvent={handleJumpToDeadlineEvent}
           onMarkCompletedToday={handleMarkDeadlineEventCompletedToday}
           onUpdateHolidays={handleUpdateDeadlineHolidays}
+        />
+      ) : isEmployeesModuleTab && employeesTab ? (
+        <EmployeesView
+          employeesTab={employeesTab}
+          obligations={employeeObligations}
+          todayIso={todayIso}
+          onOpenCard={(rowId) => setEmployeeCardRowId(rowId)}
+          onAddEmployee={handleAddEmployee}
+          onGeneratePackage={(rowId) => void handleGenerateEmployeePackage(rowId)}
+          onEnsureAllPackages={handleEnsureAllEmployeePackages}
         />
       ) : (
         currentTab && (
@@ -2155,6 +2444,40 @@ export default function App() {
         onSaveLLMConfig={(newConfig) => updateDbState((p) => ({ ...p, llmConfig: newConfig }))}
         onAddLLMLog={(newLog) => updateDbState((p) => ({ ...p, llmLogs: [newLog, ...p.llmLogs] }))}
         onRecordGeneratedDoc={handleRecordGeneratedDoc}
+      />
+
+      <ModulesModal
+        isOpen={isModulesOpen}
+        onClose={() => setIsModulesOpen(false)}
+        installed={moduleService.getInstalledModules(dbState)}
+        rowCounts={Object.fromEntries(
+          MODULE_DEFINITIONS.map((module) => [module.id, moduleService.countModuleRows(dbState, module)])
+        )}
+        onToggle={handleToggleModule}
+      />
+
+      <EmployeeCardModal
+        isOpen={Boolean(employeeCardRowId)}
+        onClose={() => setEmployeeCardRowId(null)}
+        employeeRow={
+          employeeCardRowId
+            ? employeesTab?.rows.find((row) => row.id === employeeCardRowId) || null
+            : null
+        }
+        employeesTab={employeesTab || ({ id: '', name: '', columns: [], rows: [], attachedDocs: [] } as any)}
+        obligations={
+          employeeCardRowId
+            ? employeeObligations.filter((item) => item.employeeRowId === employeeCardRowId)
+            : []
+        }
+        todayIso={todayIso}
+        isWorking={obligationsWorking}
+        onEnsurePackage={ensureEmployeePackage}
+        onGenerateDocument={handleGenerateObligationDocument}
+        onGeneratePackage={handleGenerateEmployeePackage}
+        onCompleteObligation={handleCompleteObligation}
+        onReopenObligation={handleReopenObligation}
+        onUpdateEmployee={handleUpdateEmployee}
       />
 
       <WorkspaceFolderModal
