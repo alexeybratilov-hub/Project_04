@@ -49,6 +49,9 @@ static volatile LONGLONG g_lastClientTick = 0;
 static volatile LONG g_clientEverConnected = 0;
 static volatile LONG g_shutdownPending = 0;
 static volatile LONGLONG g_shutdownTick = 0;
+/* Live ClientThreadProc workers: teardown must not free the critical section or
+ * WinSock while any worker can still touch them. */
+static volatile LONG g_activeClients = 0;
 
 static ULONGLONG ReadTick64(volatile LONGLONG* pVal) {
     return (ULONGLONG)InterlockedCompareExchange64(pVal, 0, 0);
@@ -1102,8 +1105,7 @@ static const char* GuessMimeType(const char* utf8Name) {
 
 /* ---------------- Connection Worker ---------------- */
 
-static DWORD WINAPI ClientThreadProc(LPVOID param) {
-    SOCKET s = (SOCKET)(ULONG_PTR)param;
+static DWORD WINAPI ClientThreadMain(SOCKET s) {
 
     DWORD timeoutMs = 15000;
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeoutMs, sizeof(timeoutMs));
@@ -1700,6 +1702,13 @@ static DWORD WINAPI ClientThreadProc(LPVOID param) {
     return 0;
 }
 
+static DWORD WINAPI ClientThreadProc(LPVOID param) {
+    SOCKET s = (SOCKET)(ULONG_PTR)param;
+    DWORD rc = ClientThreadMain(s);
+    InterlockedDecrement(&g_activeClients);
+    return rc;
+}
+
 static DWORD WINAPI AcceptLoopProc(LPVOID param) {
     (void)param;
     while (InterlockedCompareExchange(&g_running, 1, 1) == 1) {
@@ -1709,14 +1718,51 @@ static DWORD WINAPI AcceptLoopProc(LPVOID param) {
             Sleep(50);
             continue;
         }
+        /* Count the worker before the thread exists: an increment inside the thread
+         * would let teardown observe zero while a not-yet-scheduled worker is alive. */
+        InterlockedIncrement(&g_activeClients);
         HANDLE hThread = CreateThread(NULL, 0, ClientThreadProc, (LPVOID)(ULONG_PTR)client, 0, NULL);
         if (hThread) {
             CloseHandle(hThread);
         } else {
+            InterlockedDecrement(&g_activeClients);
             closesocket(client);
         }
     }
     return 0;
+}
+
+/* Resolve a browser executable strictly by absolute path.
+ * Launching a bare "msedge.exe" with the application folder as the working directory
+ * lets anyone able to write next to OT-Baza.exe (USB stick / shared folder) plant a
+ * malicious msedge.exe that would then run with the user's privileges. */
+static BOOL TryKnownBrowserPath(const wchar_t* envName, const wchar_t* suffix, wchar_t* outPath, size_t outCap) {
+    wchar_t base[OT_PATH_CAP] = {0};
+    DWORD n = GetEnvironmentVariableW(envName, base, OT_PATH_CAP);
+    if (n == 0 || n >= (DWORD)OT_PATH_CAP) return FALSE;
+    if (!FormatW(outPath, outCap, L"%s%s", base, suffix)) return FALSE;
+    DWORD attrs = GetFileAttributesW(outPath);
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+static BOOL FindInstalledBrowserExecutable(wchar_t* outPath, size_t outCap) {
+    /* Single table: two parallel arrays could silently drift out of sync. */
+    static const struct {
+        const wchar_t* env;
+        const wchar_t* suffix;
+    } candidates[] = {
+        { L"ProgramFiles(x86)", L"\\Microsoft\\Edge\\Application\\msedge.exe" },
+        { L"ProgramFiles",      L"\\Microsoft\\Edge\\Application\\msedge.exe" },
+        { L"LOCALAPPDATA",      L"\\Microsoft\\Edge\\Application\\msedge.exe" },
+        { L"ProgramFiles",      L"\\Google\\Chrome\\Application\\chrome.exe" },
+        { L"ProgramFiles(x86)", L"\\Google\\Chrome\\Application\\chrome.exe" },
+        { L"LOCALAPPDATA",      L"\\Google\\Chrome\\Application\\chrome.exe" }
+    };
+    const size_t count = sizeof(candidates) / sizeof(candidates[0]);
+    for (size_t i = 0; i < count; i++) {
+        if (TryKnownBrowserPath(candidates[i].env, candidates[i].suffix, outPath, outCap)) return TRUE;
+    }
+    return FALSE;
 }
 
 static void LaunchBrowserWindow(uint16_t port, const char* token) {
@@ -1729,12 +1775,16 @@ static void LaunchBrowserWindow(uint16_t port, const char* token) {
     wchar_t appArgs[320];
     FormatW(appArgs, 320, L"--app=%s", appUrl);
 
-    HINSTANCE hRun = ShellExecuteW(NULL, L"open", L"msedge.exe", appArgs, g_dirPath, SW_SHOWNORMAL);
-    if ((INT_PTR)hRun <= 32) {
-        hRun = ShellExecuteW(NULL, L"open", L"chrome.exe", appArgs, g_dirPath, SW_SHOWNORMAL);
+    HINSTANCE hRun = (HINSTANCE)0;
+    wchar_t browserPath[OT_PATH_CAP] = {0};
+    if (FindInstalledBrowserExecutable(browserPath, OT_PATH_CAP)) {
+        /* lpDirectory = NULL: the browser must not inherit the application folder as its
+         * working directory (that would re-open a DLL-planting vector via CWD search). */
+        hRun = ShellExecuteW(NULL, L"open", browserPath, appArgs, NULL, SW_SHOWNORMAL);
     }
     if ((INT_PTR)hRun <= 32) {
-        ShellExecuteW(NULL, L"open", appUrl, NULL, g_dirPath, SW_SHOWNORMAL);
+        /* Fall back to the default browser handler using the URL itself. */
+        ShellExecuteW(NULL, L"open", appUrl, NULL, NULL, SW_SHOWNORMAL);
     }
 }
 
@@ -1844,6 +1894,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     bindAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); /* strictly 127.0.0.1 */
     bindAddr.sin_port = 0; /* ephemeral port */
 
+    /* Prevent another local socket from binding the same port with SO_REUSEADDR and
+     * hijacking loopback traffic (which would also expose the session token). */
+    int exclusiveAddr = 1;
+    if (setsockopt(g_listenSock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char*)&exclusiveAddr, sizeof(exclusiveAddr)) == SOCKET_ERROR) {
+        closesocket(g_listenSock);
+        WSACleanup();
+        DeleteCriticalSection(&g_fsLock);
+        if (hMutex) CloseHandle(hMutex);
+        return 8;
+    }
+
     if (bind(g_listenSock, (struct sockaddr*)&bindAddr, sizeof(bindAddr)) == SOCKET_ERROR) {
         closesocket(g_listenSock);
         WSACleanup();
@@ -1941,8 +2002,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     OtDeleteFileW(g_pathRuntime);
-    WSACleanup();
-    DeleteCriticalSection(&g_fsLock);
+
+    /* Wait for in-flight workers before tearing down shared primitives: a worker may
+     * still be inside EnterCriticalSection()/send() and would hit freed state. */
+    BOOL clientsDrained = FALSE;
+    for (int i = 0; i < 100; i++) {
+        if (InterlockedCompareExchange(&g_activeClients, 0, 0) == 0) {
+            clientsDrained = TRUE;
+            break;
+        }
+        Sleep(50);
+    }
+
+    SecureZeroMemory(g_token, sizeof(g_token));
+
+    if (clientsDrained) {
+        WSACleanup();
+        DeleteCriticalSection(&g_fsLock);
+    }
     if (hMutex) {
         ReleaseMutex(hMutex);
         CloseHandle(hMutex);

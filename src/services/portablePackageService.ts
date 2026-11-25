@@ -139,6 +139,25 @@ exit
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   },
 
+  /**
+   * Probe whether a downloadable artifact exists in this build.
+   * OT-Baza.exe / OT-Baza-Windows.zip are produced separately (MinGW-w64), so a
+   * web-only build legitimately ships without them — the UI must not offer dead buttons.
+   */
+  async isAssetAvailable(url: string): Promise<boolean> {
+    try {
+      const res = await fetch(url, { method: 'HEAD', cache: 'no-store', credentials: 'same-origin' });
+      if (!res.ok) return false;
+      // Static hosts and `vite preview` answer unknown paths with the SPA index.html
+      // instead of 404, so an HTML payload means the binary is actually missing.
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+      if (contentType.includes('text/html')) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
   async downloadValidatedAsset(
     url: string,
     filename: string,

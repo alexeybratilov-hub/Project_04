@@ -8,9 +8,10 @@
 
 ### Технологический стек
 - **Frontend**: React 19, TypeScript, Vite 8 (`vite.config.ts`, `vite.offline.config.ts`), Tailwind CSS v4 (`@tailwindcss/vite`), `lucide-react`, `motion`.
-- **Документы и таблицы**: `xlsx` (импорт/экспорт Excel/CSV с поддержкой Win-1251), `docx` (генерация Word `.docx`), `jspdf` (генерация PDF со встроенным кириллическим шрифтом `DejaVuSans` в `src/data/cyrillicFont.ts`).
+- **Шрифты**: `Manrope` + `JetBrains Mono` подключаются локально через `@fontsource-variable/*` (без внешних CDN — приложение должно выглядеть одинаково офлайн).
+- **Документы и таблицы**: `xlsx` (импорт/экспорт Excel/CSV с поддержкой Win-1251), `docx` (генерация Word `.docx`), `jspdf` (генерация PDF со встроенным кириллическим шрифтом `DejaVuSans` в `src/data/cyrillicFont.ts`), `fflate` (разбор OOXML для готовых `.docx`-шаблонов). `docx`, `jspdf` и шрифты PDF загружаются лениво (`await import()`) и не попадают в стартовый бандл.
 - **Нативный Windows-рантайм**: `launcher.c` + `resources.rc` -> кросс-компиляция `x86_64-w64-mingw32-gcc` в 64-битный GUI PE `public/download/OT-Baza.exe` и пакет `public/download/OT-Baza-Windows.zip`.
-- **Тестирование**: Vitest 5.1 (`npm test` -> `vitest run`).
+- **Тестирование**: Vitest 5.1 (`pnpm test` -> `vitest run`), TypeScript strict (`pnpm lint` -> `tsc --noEmit`).
 
 ### Режимы хранения и работы
 1. **`native-fs` (запуск через `OT-Baza.exe`)**:
@@ -65,7 +66,7 @@
 ### Интерфейс (`src/components/` и `src/components/ui/`)
 - Главная оболочка: `App.tsx`, `TitleBar.tsx`, `MenuBar.tsx`, `TabBar.tsx`, `StatusBar.tsx`.
 - Таблица и навигация по связям: `DataGrid.tsx` (`sticky right-0` действия, просмотр длинных ячеек, безопасный `boolean` и `'link'`), `ImportHintCard.tsx`, `MasterJumpDialog.tsx`.
-- Дизайн-система (`src/components/ui/`): `AppModal.tsx`, `AppButton.tsx`, `AppInput.tsx`, `FormField.tsx`, `InlineConfirm.tsx`, `StatusBanner.tsx`, `ConfirmDialog.tsx`, `ToastProvider.tsx`, `modalStack.ts`, `zIndex.ts`. Все 15 модальных окон унифицированы на этих примитивах с поддержкой focus-trap, LIFO `Escape` и `dirty-guard`.
+- Дизайн-система (`src/components/ui/`): `AppModal.tsx`, `AppButton.tsx`, `AppInput.tsx`, `FormField.tsx`, `InlineConfirm.tsx`, `StatusBanner.tsx`, `ConfirmDialog.tsx`, `ToastProvider.tsx`, `ErrorBoundary.tsx`, `modalStack.ts`, `zIndex.ts`. Все 14 модальных окон (плюс `MasterJumpDialog` и `TagCatalogDrawer` как оверлеи) унифицированы на этих примитивах с поддержкой focus-trap, LIFO `Escape` и `dirty-guard`; `FormField` сам связывает label с контролом (`useId` + `aria-describedby`).
 - Модальные окна управления структурой и данными:
   - `LegalEntityModal.tsx` — карточка юрлица (создание, редактирование 13 реквизитов, клонирование).
   - `NewTabModal.tsx`, `ColumnEditorModal.tsx`, `MasterDependenciesModal.tsx`, `RelationsSchemaModal.tsx`.
@@ -76,26 +77,32 @@
 
 ---
 
-## 3. Текущий статус и оставшиеся доработки
+## 3. Текущий статус
 
-Все задачи этапов 1–10 (`T-01`–`T-35`) завершены и покрыты автотестами (**53/53** в Vitest), проверкой TypeScript и браузерной верификацией (`playwright-cli`).
+Функционально реализованы все задачи `T-01`–`T-49` (включая «Контроль сроков» и уведомления) и трек документации `D-1`. Актуальная проверка: **145 тестов в 17 файлах** (`pnpm test`), `tsc --noEmit` — 0 ошибок при `strict: true`, `vite build` проходит.
 
-Оставшиеся незакрытые пункты за пределами `T-35`:
-1. **`T-36` (отложено как отдельная доработка)**: детализация пакетного отчёта генерации документов в `TemplatesModal.tsx` с указанием конкретной записи (`rowIdentifier` / № строки), проблемного тега и причины ошибки.
-2. **Финальная сборка Windows-бинарников**: в Linux-контейнере отсутствует MinGW-w64 (`x86_64-w64-mingw32-gcc` / `windres`), поэтому после `T-35` пересобран `public/app.html`, а `public/download/OT-Baza.exe` и `OT-Baza-Windows.zip` требуют пересборки командой `python3 build_native_windows.py` на среде с MinGW-w64 / Windows.
+Стартовый (web) бандл ≈ 1.35 МБ (≈ 390 КБ gzip); шрифты PDF (`cyrillicFont`, 1.96 МБ) и `jspdf`/`docx` вынесены в отдельные ленивые чанки.
+
+Оставшиеся незакрытые пункты:
+1. **`T-36`** — выполнен (пакетный отчёт генерации с изоляцией сбоев по строкам, `BatchGenerationReportPanel.tsx`).
+2. **Windows-релиз**: `OT-Baza.exe` / `OT-Baza-Windows.zip` не собираются в этой среде (нет MinGW-w64) и намеренно **не хранятся в git**; собираются командой `python build_native_windows.py` на Windows. Живой прогон нативного сервера, DPI 125/150 % и работа с `./templates/` в Word/LibreOffice остаются за пределами автоматических проверок.
+3. **UX/UI Redesign** `D-2`–`D-6` не начат (см. раздел 5).
 
 ---
 
 ## 4. Команды сборки и верификации
 
 ```bash
-npm run lint                      # tsc --noEmit (0 ошибок)
-npm test                          # vitest run (53/53 тестов)
-npm run build                     # vite build (dist/ + PWA)
-python3 build_native_windows.py   # полная пересборка app.html, OT-Baza.exe, OT-Baza-Windows.zip и dist/ (требует MinGW-w64)
+pnpm lint                          # tsc --noEmit (strict)
+pnpm test                          # vitest run (145 тестов, 17 файлов)
+pnpm build                         # vite build (dist/ + PWA)
+pnpm check                         # lint + test + build
+
+python build_native_windows.py --skip-native   # dist-offline/ + public/app.html + dist/
+python build_native_windows.py                 # + OT-Baza.exe и ZIP (нужен MinGW-w64)
 ```
 
-После любого изменения `src/*` или `launcher.c` необходимо запускать `python3 build_native_windows.py`, чтобы скачиваемые из интерфейса `OT-Baza.exe` и `OT-Baza-Windows.zip` оставались синхронизированы с кодовой базой.
+`public/app.html` (офлайн-однофайловик) и `dist/` — генерируемые артефакты, в git не хранятся. После любого изменения `src/*` или `launcher.c` их нужно пересобрать, чтобы скачиваемые файлы соответствовали коду.
 
 ---
 
@@ -109,3 +116,38 @@ python3 build_native_windows.py   # полная пересборка app.html, 
 - `UI_ACCEPTANCE.md` — критерии приёмки для этапов `D-1`–`D-6` и матрица проверки разрешений/DPI/тем.
 - `docs/d1_liquid_glass_prototype.html` — статический интерактивный визуальный прототип концепции (вне `src/` и `public/`).
 
+
+---
+
+## 6. Технический аудит 2026-11-25: что исправлено
+
+Аудит проведён по 5 направлениям (архитектура и данные, фронтенд, нативный C-слой, UX/доступность, документация/гигиена репозитория).
+
+**Сохранность данных**
+- Импорт Excel: даты больше не сдвигаются на −1 день (`toISOString()` заменён на локальные компоненты даты); пустой заголовок в строке шапки больше не сдвигает колонки, дубли заголовков разводятся суффиксом `(2)`.
+- Импорт/вставка не подменяют невалидные значения: нечисло в числовом столбце и текст в дате отклоняются с отчётом о расхождениях (`convertCellToColumnType`), вместо прежней подстановки `0`/`false`/сырого текста.
+- Миграция `localStorage → диск` очищает браузерную копию только после подтверждённой записи.
+- `restoreDatabaseSafely` / `resetDatabaseAsync` дожидаются очереди сохранений (`saveQueueRef`), чтобы отложенная запись не откатила восстановление.
+- Реестр сгенерированных документов обновляется мержем по `id` от актуального состояния, а не перезаписью снимка, взятого до `await`.
+- Документы привязаны к вкладке по `sourceTabId` (с fallback на имя для старых записей) — переименование вкладки больше не «осиротляет» документы.
+
+**Нативный слой (`launcher.c`)**
+- Браузер запускается только по абсолютному пути из известных каталогов Edge/Chrome (устранён planting `msedge.exe` рядом с программой) и без наследования рабочего каталога приложения (`lpDirectory = NULL`).
+- Teardown дожидается завершения клиентских потоков (счётчик `g_activeClients`, инкремент в accept-потоке) — больше нет `DeleteCriticalSection`/`WSACleanup` под живым потоком.
+- Добавлен `SO_EXCLUSIVEADDRUSE` до `bind` (с блокировкой старта при ошибке) и `SecureZeroMemory` для токена при выходе.
+
+**UI/UX и доступность**
+- `Ctrl+V` больше не вставляет строки в таблицу за открытой модалкой.
+- `Ctrl+S` / `Ctrl+N` / `Ctrl+F` работают в русской раскладке (`e.code`) и не срабатывают при открытой модалке или в полях ввода.
+- Добавлен `ErrorBoundary` с кнопкой «Скачать копию данных (JSON)».
+- `FormField` связывает подпись и контрол (`htmlFor`/`id`, `aria-invalid`, `aria-describedby`, `role="alert"`).
+- Исправлен невалидный Tailwind-класс `py-0.2`.
+
+**Сборка, зависимости, репозиторий**
+- Добавлена отсутствовавшая зависимость `fflate` (без неё чистый клон не проходил `tsc`).
+- Включён `strict` + `noUnusedLocals`/`noUnusedParameters` в `tsconfig.json`; удалён неиспользуемый алиас `@/*`.
+- Удалены мёртвые зависимости (`@google/genai`, `dotenv`, `express`, `motion`, `autoprefixer`, `esbuild`, `tsx`), build-пакеты перенесены в `devDependencies`; манифест переименован в `ot-baza@1.3.0`.
+- Шрифты переведены на локальные `@fontsource-variable/*` — внешний Google Fonts CDN удалён.
+- Из git убраны генерируемые артефакты (≈25 МБ): `dist-offline/`, `public/app.html`, `public/download/*.exe|.zip`, `resources.o`, `test_*.exe`, `test_launcher.js`, `bun.lock`, `metadata.json`, копии AI Studio-инструкций и неиспользуемые концепт-рендеры.
+- `build_native_windows.py` переписан: проверка Node/MinGW, режим `--skip-native`, сборка `dist/` до упаковки, SHA-256 артефактов, ZIP больше не кладёт демо-БД в `data/`.
+- Кнопки скачивания `.exe`/`.zip` проверяют наличие файла и отключаются, если Windows-сборки нет в поставке.

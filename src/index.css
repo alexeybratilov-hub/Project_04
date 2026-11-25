@@ -1,42 +1,36 @@
+/* Self-hosted fonts (bundled, no external CDN): the app must look identical offline. */
+@import "@fontsource-variable/manrope";
+@import "@fontsource-variable/jetbrains-mono";
 @import "tailwindcss";
+
 @custom-variant dark (&:where(.dark, .dark *));
+
+/* Map the local variable fonts onto Tailwind's font utilities: `font-sans` on <body>
+ * and `font-mono` everywhere must resolve to the bundled faces, not to system defaults. */
+@theme {
+  --font-sans: "Manrope Variable", "Manrope", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
 
 @layer base {
   :root {
     --surface-canvas: #f8fafc;
-    --surface-panel: #ffffff;
-    --surface-subtle: #f1f5f9;
-    --border-hairline: #e2e8f0;
     --text-primary: #0f172a;
-    --text-muted: #64748b;
-    --accent-primary: #2563eb;
-    --z-sticky: 20;
-    --z-topbar: 50;
-    --z-popover: 80;
-    --z-modal: 100;
-    --z-modal-nested: 130;
-    --z-confirm: 160;
-    --z-toast: 200;
   }
 
   .dark {
     --surface-canvas: #0f172a;
-    --surface-panel: #0f172a;
-    --surface-subtle: #1e293b;
-    --border-hairline: #1e293b;
     --text-primary: #f1f5f9;
-    --text-muted: #94a3b8;
-    --accent-primary: #3b82f6;
   }
 
   body {
-    font-family: 'Manrope', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: 'Manrope Variable', 'Manrope', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
     background-color: var(--surface-canvas);
     color: var(--text-primary);
   }
 
   code, pre, .font-mono {
-    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-family: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     font-variant-numeric: tabular-nums;
   }
 }

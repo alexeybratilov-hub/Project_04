@@ -403,7 +403,7 @@ export const DeadlineControlView: React.FC<DeadlineControlViewProps> = ({
               title="Настроить список пользовательских нерабочих и праздничных дней для расчёта рабочих дней"
             >
               <span>Праздничные дни</span>
-              <span className="font-mono tabular-nums text-[10px] px-1 py-0.2 rounded bg-slate-200/80 dark:bg-slate-700 text-slate-700 dark:text-slate-200">
+              <span className="font-mono tabular-nums text-[10px] px-1 py-0.5 rounded bg-slate-200/80 dark:bg-slate-700 text-slate-700 dark:text-slate-200">
                 {holidays.length}
               </span>
             </AppButton>

@@ -1,8 +1,7 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
-import path from 'path';
-import {defineConfig} from 'vite';
+import { defineConfig } from 'vite';
 
 export default defineConfig(() => {
   return {
@@ -37,11 +36,6 @@ export default defineConfig(() => {
         },
       }),
     ],
-    resolve: {
-      alias: {
-        '@': path.resolve(import.meta.dirname || '.', '.'),
-      },
-    },
     server: {
       host: '0.0.0.0',
       port: 3000,

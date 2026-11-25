@@ -1,4 +1,5 @@
 import { Column, DocumentTemplate, GeneratedDocRecord, Row, Tab, Tag } from '../types/database';
+import { isGeneratedDocFromTab } from './generatedDocsService';
 
 export const BUILT_IN_ENTITY_AND_SYSTEM_TAGS = new Set<string>([
   '{id}',
@@ -472,7 +473,7 @@ export const integrityService = {
     const affectedTagsCount = tags.filter((tag) => tag.tabId === tabId).length;
     const boundTemplates = templates.filter((tpl) => tpl.tabId === tabId && !tpl.isArchived);
     const affectedDocsCount = targetTab
-      ? generatedDocs.filter((d) => d.sourceTabName === targetTab.name).length
+      ? generatedDocs.filter((d) => isGeneratedDocFromTab(d, targetTab)).length
       : 0;
 
     return {

@@ -1,7 +1,4 @@
-import { Document, Packer, Paragraph, TextRun, AlignmentType } from 'docx';
-import jsPDF from 'jspdf';
 import { Column, DocumentTemplate, LegalEntityProfile, Row, Tab, Tag } from '../types/database';
-import { DEJAVU_SANS_BOLD_B64, DEJAVU_SANS_REGULAR_B64 } from '../data/cyrillicFont';
 import { formatDeadlineCellDisplay, resolveSafeRowIdentifier } from './deadlineService';
 import { localApiClient } from './localApiClient';
 import { BUILT_IN_ENTITY_AND_SYSTEM_TAGS } from './integrityService';
@@ -18,10 +15,19 @@ export interface GeneratedDocumentResult {
   textPreview: string;
 }
 
-function registerCyrillicFonts(doc: jsPDF): void {
-  doc.addFileToVFS('DejaVuSans.ttf', DEJAVU_SANS_REGULAR_B64);
+interface FontRegistrar {
+  addFileToVFS(fileName: string, data: string): void;
+  addFont(fileName: string, fontFamily: string, fontStyle: string): void;
+}
+
+function registerCyrillicFonts(
+  doc: FontRegistrar,
+  regularB64: string,
+  boldB64: string
+): void {
+  doc.addFileToVFS('DejaVuSans.ttf', regularB64);
   doc.addFont('DejaVuSans.ttf', 'DejaVuSans', 'normal');
-  doc.addFileToVFS('DejaVuSans-Bold.ttf', DEJAVU_SANS_BOLD_B64);
+  doc.addFileToVFS('DejaVuSans-Bold.ttf', boldB64);
   doc.addFont('DejaVuSans-Bold.ttf', 'DejaVuSans', 'bold');
 }
 
@@ -782,20 +788,31 @@ export const documentGenerator = {
     _title: string,
     resolvedText: string
   ): Promise<Blob> {
+    // `docx` is ~300 kB and is needed only when a Word file is actually exported,
+    // so it is loaded on demand instead of inflating the initial bundle.
+    const {
+      Document,
+      Packer,
+      Paragraph: DocxParagraph,
+      TextRun,
+      AlignmentType: DocxAlignment
+    } = await import('docx');
+    type DocxParagraphInstance = InstanceType<typeof DocxParagraph>;
+
     const lines = resolvedText.split('\n');
-    const paragraphs: Paragraph[] = [];
+    const paragraphs: DocxParagraphInstance[] = [];
 
     lines.forEach((line) => {
       const trimmed = line.trim();
       if (!trimmed) {
-        paragraphs.push(new Paragraph({ text: '', spacing: { after: 120 } }));
+        paragraphs.push(new DocxParagraph({ text: '', spacing: { after: 120 } }));
         return;
       }
 
       const isHeader = trimmed === trimmed.toUpperCase() && trimmed.length < 80 && !trimmed.includes('{');
       if (isHeader) {
         paragraphs.push(
-          new Paragraph({
+          new DocxParagraph({
             children: [
               new TextRun({
                 text: trimmed,
@@ -804,13 +821,13 @@ export const documentGenerator = {
                 font: 'Times New Roman'
               })
             ],
-            alignment: AlignmentType.CENTER,
+            alignment: DocxAlignment.CENTER,
             spacing: { before: 200, after: 120 }
           })
         );
       } else {
         paragraphs.push(
-          new Paragraph({
+          new DocxParagraph({
             children: [
               new TextRun({
                 text: line,
@@ -852,13 +869,21 @@ export const documentGenerator = {
     _title: string,
     resolvedText: string
   ): Promise<Blob> {
-    const doc = new jsPDF({
+    // jsPDF + the embedded DejaVu fonts (~2.1 MB of base64) are only needed for PDF
+    // export, so they stay out of the initial bundle and load on first PDF generation.
+    const [jspdfModule, fonts] = await Promise.all([
+      import('jspdf'),
+      import('../data/cyrillicFont')
+    ]);
+    const JsPDF = jspdfModule.jsPDF ?? jspdfModule.default;
+
+    const doc = new JsPDF({
       orientation: 'portrait',
       unit: 'mm',
       format: 'a4'
     });
 
-    registerCyrillicFonts(doc);
+    registerCyrillicFonts(doc, fonts.DEJAVU_SANS_REGULAR_B64, fonts.DEJAVU_SANS_BOLD_B64);
     doc.setFont('DejaVuSans', 'normal');
     doc.setFontSize(10);
 

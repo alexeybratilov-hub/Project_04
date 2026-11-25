@@ -931,6 +931,7 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
           format,
           blob,
           sourceTabName: boundTab.name,
+          sourceTabId: boundTab.id,
           rowIdentifier: getRowLabel(targetRow, boundTab)
         });
         if (previewIssues.length > 0 || extraWarnings.length > 0) {
@@ -1019,6 +1020,7 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
               format,
               blob,
               sourceTabName: boundTab.name,
+              sourceTabId: boundTab.id,
               rowIdentifier: getRowLabel(row, boundTab)
             });
           } else {

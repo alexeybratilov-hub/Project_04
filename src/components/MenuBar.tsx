@@ -114,6 +114,25 @@ export const MenuBar: React.FC<MenuBarProps> = ({
 }) => {
   const { showToast } = useToast();
   const [activeMenu, setActiveMenu] = useState<MenuKey | null>(null);
+  const [windowsAssets, setWindowsAssets] = useState<{ exe: boolean; zip: boolean }>({
+    exe: true,
+    zip: true
+  });
+
+  // The Windows binaries are built separately (MinGW-w64) and may be absent in a
+  // web-only distribution — hide the actions instead of showing dead menu items.
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([
+      portablePackageService.isAssetAvailable('/download/OT-Baza.exe'),
+      portablePackageService.isAssetAvailable('/download/OT-Baza-Windows.zip')
+    ]).then(([exe, zip]) => {
+      if (!cancelled) setWindowsAssets({ exe, zip });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [isDeadlinePopoverOpen, setIsDeadlinePopoverOpen] = useState<boolean>(
     initialDeadlinePopoverOpen
   );
@@ -416,6 +435,8 @@ export const MenuBar: React.FC<MenuBarProps> = ({
                 type="button"
                 role="menuitem"
                 tabIndex={-1}
+                disabled={!windowsAssets.exe}
+                title={windowsAssets.exe ? undefined : 'Windows-сборка отсутствует в этой поставке'}
                 onClick={() => {
                   closeMenu();
                   portablePackageService
@@ -423,7 +444,7 @@ export const MenuBar: React.FC<MenuBarProps> = ({
                     .then(() => showToast('OT-Baza.exe проверен и сохранён', 'success'))
                     .catch((err: any) => showToast(err?.message || 'Ошибка скачивания OT-Baza.exe', 'error'));
                 }}
-                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-blue-600 dark:text-blue-400 font-semibold focus:outline-hidden"
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-blue-600 dark:text-blue-400 font-semibold focus:outline-hidden disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>Скачать OT-Baza.exe (.exe файл)</span>
@@ -433,6 +454,8 @@ export const MenuBar: React.FC<MenuBarProps> = ({
                 type="button"
                 role="menuitem"
                 tabIndex={-1}
+                disabled={!windowsAssets.zip}
+                title={windowsAssets.zip ? undefined : 'Windows-сборка отсутствует в этой поставке'}
                 onClick={() => {
                   closeMenu();
                   portablePackageService
@@ -440,7 +463,7 @@ export const MenuBar: React.FC<MenuBarProps> = ({
                     .then(() => showToast('OT-Baza-Windows.zip проверен и сохранён', 'success'))
                     .catch((err: any) => showToast(err?.message || 'Ошибка скачивания OT-Baza-Windows.zip', 'error'));
                 }}
-                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 font-medium focus:outline-hidden"
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 font-medium focus:outline-hidden disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
               >
                 <Download className="w-3.5 h-3.5 text-emerald-600" />
                 <span>Скачать OT-Baza-Windows.zip (Архив)</span>

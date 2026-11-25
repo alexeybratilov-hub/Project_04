@@ -161,6 +161,8 @@ export interface GeneratedDocRecord {
   archivedAt?: string;
   archiveDateFolder?: string;
   sourceTabName?: string;
+  /** Stable tab id the document was generated from (sourceTabName is renamed freely). */
+  sourceTabId?: string;
   rowIdentifier?: string;
   sizeFormatted: string;
   dataBase64?: string;

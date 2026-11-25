@@ -47,7 +47,6 @@ import {
   cloneLegalEntity,
   createIsolatedEmptyEntity,
   executeColumnsUpdateTransaction,
-  normalizeDatabaseState,
   storageService
 } from './services/storageService';
 import {
@@ -77,6 +76,7 @@ import { documentGenerator } from './services/documentGenerator';
 import {
   archiveExistingDocManually,
   formatBytesReadable,
+  isGeneratedDocFromTab,
   registerGeneratedDocument,
   restoreArchivedDocument
 } from './services/generatedDocsService';
@@ -651,18 +651,37 @@ export default function App() {
     }));
   }, [currentTab, isSystemDeadlineTab, updateDbState]);
 
-  // Global Keyboard Shortcuts (Ctrl+S, Ctrl+N, Ctrl+F)
+  // Global Keyboard Shortcuts (Ctrl+S, Ctrl+N, Ctrl+F) — layout independent (e.code)
   useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null) => {
+      const el = target as HTMLElement | null;
+      if (!el) return false;
+      if (el.isContentEditable) return true;
+      const tag = el.tagName?.toLowerCase();
+      return tag === 'input' || tag === 'textarea' || tag === 'select';
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      // Never hijack shortcuts while a modal dialog is open
+      if (document.querySelector('[role="dialog"]')) return;
+
+      const key = e.key.toLowerCase();
+      const isS = e.code === 'KeyS' || key === 's' || key === 'ы';
+      const isN = e.code === 'KeyN' || key === 'n' || key === 'т';
+      const isF = e.code === 'KeyF' || key === 'f' || key === 'а';
+
+      if (isS) {
         e.preventDefault();
         void handleRetrySave();
+        return;
       }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
+      // Ctrl+N / Ctrl+F must not fire while typing in a field
+      if (isTypingTarget(e.target)) return;
+      if (isN) {
         e.preventDefault();
         handleAddRow();
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+      } else if (isF) {
         e.preventDefault();
         if (activeTabId === SYSTEM_DEADLINE_TAB_ID) {
           setFocusDeadlineSearchSignal((n) => n + 1);
@@ -907,7 +926,7 @@ export default function App() {
     // Handle generatedDocs attached to deleted tab (archive into АРХИВ/<dd.mm.yyyy>/ or delete physically)
     let nextGeneratedDocs = snapshot.generatedDocs || [];
     if (tabToDel) {
-      const matchingDocs = nextGeneratedDocs.filter((d) => d.sourceTabName === tabToDel.name);
+      const matchingDocs = nextGeneratedDocs.filter((d) => isGeneratedDocFromTab(d, tabToDel));
       if (mode === 'archive') {
         for (const doc of matchingDocs) {
           if (!doc.isArchived) {
@@ -940,7 +959,7 @@ export default function App() {
             await localApiClient.deleteFileFromBucket('templates', tpl.storageFileName);
           }
         }
-        nextGeneratedDocs = nextGeneratedDocs.filter((d) => d.sourceTabName !== tabToDel.name);
+        nextGeneratedDocs = nextGeneratedDocs.filter((d) => !isGeneratedDocFromTab(d, tabToDel));
       }
     }
 
@@ -953,12 +972,28 @@ export default function App() {
           ? integrityService.archiveTabTemplates(prev.templates, tabId, tabToDel?.name || 'Удалённая вкладка')
           : integrityService.deleteTabTemplates(prev.templates, tabId);
 
+      // Recompute the document registry from the freshest state (never from the
+      // snapshot taken before the awaited file moves) so concurrent changes survive.
+      let nextDocs = prev.generatedDocs || [];
+      if (tabToDel) {
+        if (mode === 'archive') {
+          const idsToArchive = nextDocs
+            .filter((d) => !d.isArchived && isGeneratedDocFromTab(d, tabToDel))
+            .map((d) => d.id);
+          for (const docId of idsToArchive) {
+            nextDocs = archiveExistingDocManually(nextDocs, docId).nextDocs;
+          }
+        } else {
+          nextDocs = nextDocs.filter((d) => !isGeneratedDocFromTab(d, tabToDel));
+        }
+      }
+
       return {
         ...prev,
         tabs: cleanedTabs,
         tags: cleanedTags,
         templates: nextTemplates,
-        generatedDocs: nextGeneratedDocs
+        generatedDocs: nextDocs
       };
     });
 
@@ -1424,6 +1459,7 @@ export default function App() {
         category: payload.category,
         format: payload.format,
         sourceTabName: payload.sourceTabName,
+        sourceTabId: payload.sourceTabId,
         rowIdentifier: payload.rowIdentifier,
         sizeFormatted: formatBytesReadable(payload.blob.size),
         dataBase64
@@ -1451,10 +1487,24 @@ export default function App() {
         regResult.newRecord.relativePath
       );
 
-      updateDbState((prev) => ({
-        ...prev,
-        generatedDocs: regResult.nextDocs
-      }));
+      updateDbState((prev) => {
+        // Merge by id instead of replacing the whole registry: the snapshot used to
+        // compute regResult is stale after the awaited file operations.
+        const prevDocs = prev.generatedDocs || [];
+        const transitionedIds = new Set(regResult.archivedTransitions.map((t) => t.archivedRecord.id));
+        const merged = new Map(prevDocs.map((doc) => [doc.id, doc] as const));
+        regResult.nextDocs.forEach((doc) => {
+          if (
+            doc.id === regResult.newRecord.id ||
+            transitionedIds.has(doc.id) ||
+            merged.has(doc.id)
+          ) {
+            merged.set(doc.id, doc);
+          }
+        });
+        const rest = Array.from(merged.values()).filter((doc) => doc.id !== regResult.newRecord.id);
+        return { ...prev, generatedDocs: [regResult.newRecord, ...rest] };
+      });
       await saveQueueRef.current;
 
       if (regResult.archivedTransitions.length > 0) {
@@ -2080,6 +2130,9 @@ export default function App() {
         onClose={() => setIsBackupOpen(false)}
         databaseState={dbState}
         onRestoreDatabase={async (nextState) => {
+          // Flush pending queued saves first: otherwise a task queued before the restore
+          // can land after it and silently revert the restored database.
+          await saveQueueRef.current;
           const res = await storageService.restoreDatabaseSafely(latestDbRef.current, nextState);
           if (res.ok) {
             shownToastKeysRef.current.clear();
@@ -2108,6 +2161,8 @@ export default function App() {
           return res;
         }}
         onResetDatabase={async () => {
+          // Same reasoning as restore: a queued save must not overwrite the reset database.
+          await saveQueueRef.current;
           const { state, saveResult, backupFileName } = await storageService.resetDatabaseAsync(
             latestDbRef.current
           );
@@ -2220,12 +2275,26 @@ export default function App() {
         cancelLabel="Оставить файл с диска"
         onConfirm={() => {
           if (migrationCandidate) {
-            setDbState(migrationCandidate.legacyState);
-            latestDbRef.current = migrationCandidate.legacyState;
-            persistState(migrationCandidate.legacyState, true);
-            if (migrationCandidate.legacyState.tabs[0]) {
-              setActiveTabId(migrationCandidate.legacyState.tabs[0].id);
+            const legacyState = migrationCandidate.legacyState;
+            setDbState(legacyState);
+            latestDbRef.current = legacyState;
+            if (legacyState.tabs[0]) {
+              setActiveTabId(legacyState.tabs[0].id);
             }
+            setMigrationCandidate(null);
+            void persistState(legacyState, true).then((res) => {
+              if (res.ok) {
+                // Drop the browser copy only after the disk write is confirmed.
+                storageService.clearLegacyLocalStorageMarker();
+                showToast('Данные перенесены из браузера на диск', 'success');
+                return;
+              }
+              showToast(
+                'Не удалось записать перенесённые данные на диск. Копия в кэше браузера сохранена — устраните ошибку и повторите перенос.',
+                'error'
+              );
+            });
+            return;
           }
           storageService.clearLegacyLocalStorageMarker();
           setMigrationCandidate(null);

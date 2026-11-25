@@ -476,7 +476,7 @@ export const TabBar: React.FC<TabBarProps> = ({
                   />
                   <span className="whitespace-nowrap">Контроль сроков</span>
                   <span
-                    className={`text-[10px] tabular-nums px-1.5 py-0.2 rounded-full font-mono font-semibold ${
+                    className={`text-[10px] tabular-nums px-1.5 py-0.5 rounded-full font-mono font-semibold ${
                       hasOverdue
                         ? isSystemActive
                           ? 'bg-red-500 text-white'
@@ -593,7 +593,7 @@ export const TabBar: React.FC<TabBarProps> = ({
               )}
 
               {/* Rows count badge */}
-              <span className={`text-[10px] tabular-nums px-1.5 py-0.2 rounded-full font-mono ${
+              <span className={`text-[10px] tabular-nums px-1.5 py-0.5 rounded-full font-mono ${
                 isActive 
                   ? 'bg-blue-100 dark:bg-blue-950/80 text-blue-700 dark:text-blue-300 font-semibold' 
                   : 'bg-slate-200/80 dark:bg-slate-800 text-slate-500 dark:text-slate-400'

@@ -165,3 +165,29 @@ describe('generatedDocsService and archive rotation', () => {
   });
 });
 
+
+describe('Регрессия аудита: привязка документа к вкладке по id, а не только по имени', () => {
+  it('считает документ принадлежащим вкладке по sourceTabId после переименования', async () => {
+    const { isGeneratedDocFromTab } = await import('../generatedDocsService');
+    const doc = {
+      id: 'g1',
+      title: 'Приказ',
+      fileName: 'prikaz.docx',
+      category: 'Приказы',
+      format: 'docx' as const,
+      createdAt: '2026-11-01T00:00:00.000Z',
+      dateFormatted: '01.11.2026',
+      relativePath: 'Приказы/prikaz.docx',
+      isArchived: false,
+      sourceTabName: 'Старое имя',
+      sourceTabId: 'tab_a',
+      sizeFormatted: '10 КБ'
+    };
+
+    expect(isGeneratedDocFromTab(doc, { id: 'tab_a', name: 'Новое имя' })).toBe(true);
+    expect(isGeneratedDocFromTab(doc, { id: 'tab_b', name: 'Старое имя' })).toBe(false);
+
+    const legacyDoc = { ...doc, sourceTabId: undefined };
+    expect(isGeneratedDocFromTab(legacyDoc, { id: 'tab_z', name: 'Старое имя' })).toBe(true);
+  });
+});

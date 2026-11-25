@@ -35,6 +35,7 @@ export interface RecordGeneratedDocPayload {
   format: 'docx' | 'pdf';
   blob: Blob;
   sourceTabName?: string;
+  sourceTabId?: string;
   rowIdentifier?: string;
 }
 
@@ -332,6 +333,7 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
         format: 'docx',
         blob,
         sourceTabName: currentTab.name,
+        sourceTabId: currentTab.id,
         rowIdentifier: targetRow
           ? String(targetRow.emp_fio || targetRow.pos_title || targetRow.id)
           : undefined
@@ -356,6 +358,7 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
         format: 'pdf',
         blob,
         sourceTabName: currentTab.name,
+        sourceTabId: currentTab.id,
         rowIdentifier: targetRow
           ? String(targetRow.emp_fio || targetRow.pos_title || targetRow.id)
           : undefined

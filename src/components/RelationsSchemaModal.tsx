@@ -113,7 +113,7 @@ export const RelationsSchemaModal: React.FC<RelationsSchemaModalProps> = ({
           )}
           <span>Аудит целостности</span>
           {auditReport.totalIssues > 0 && (
-            <span className="px-1.5 py-0.2 rounded bg-amber-500 text-white text-[10px] font-mono tabular-nums font-bold">
+            <span className="px-1.5 py-0.5 rounded bg-amber-500 text-white text-[10px] font-mono tabular-nums font-bold">
               {auditReport.totalIssues}
             </span>
           )}

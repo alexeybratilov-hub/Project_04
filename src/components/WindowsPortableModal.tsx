@@ -25,6 +25,21 @@ export const WindowsPortableModal: React.FC<WindowsPortableModalProps> = ({
   const [dbDir, setDbDir] = useState(databaseState.settings.databaseDirectory);
   const [isCopied, setIsCopied] = useState(false);
   const [downloading, setDownloading] = useState<'exe' | 'zip' | 'html' | null>(null);
+  const [available, setAvailable] = useState<{ exe: boolean; zip: boolean }>({ exe: true, zip: true });
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    void Promise.all([
+      portablePackageService.isAssetAvailable('/download/OT-Baza.exe'),
+      portablePackageService.isAssetAvailable('/download/OT-Baza-Windows.zip')
+    ]).then(([exe, zip]) => {
+      if (!cancelled) setAvailable({ exe, zip });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
 
   useEffect(() => {
     if (isOpen) {
@@ -177,8 +192,9 @@ export const WindowsPortableModal: React.FC<WindowsPortableModalProps> = ({
             <AppButton
               variant="primary"
               size="md"
-              disabled={downloading !== null}
+              disabled={downloading !== null || !available.exe}
               onClick={handleDownloadExe}
+              title={available.exe ? undefined : 'Файл OT-Baza.exe отсутствует в этой поставке'}
             >
               <Download className="w-4 h-4" />
               <span>{downloading === 'exe' ? 'Проверка и загрузка...' : 'Скачать OT-Baza.exe'}</span>
@@ -187,8 +203,9 @@ export const WindowsPortableModal: React.FC<WindowsPortableModalProps> = ({
             <AppButton
               variant="secondary"
               size="md"
-              disabled={downloading !== null}
+              disabled={downloading !== null || !available.zip}
               onClick={handleDownloadZip}
+              title={available.zip ? undefined : 'Файл OT-Baza-Windows.zip отсутствует в этой поставке'}
               className="!bg-slate-800 hover:!bg-slate-700 dark:!bg-slate-700 dark:hover:!bg-slate-600 !text-white !border-transparent"
             >
               <Download className="w-4 h-4" />
@@ -199,6 +216,17 @@ export const WindowsPortableModal: React.FC<WindowsPortableModalProps> = ({
               </span>
             </AppButton>
           </div>
+
+          {(!available.exe || !available.zip) && (
+            <p
+              role="status"
+              className="text-[11px] text-amber-700 dark:text-amber-300 leading-relaxed"
+            >
+              Windows-сборка отсутствует в этой поставке: бинарники <code>.exe</code>/<code>.zip</code>
+              собираются отдельно командой <code>python build_native_windows.py</code> на Windows с
+              MinGW-w64. Веб-версия (<code>app.html</code>) и перенос базы через JSON работают без них.
+            </p>
+          )}
         </div>
 
         <div className="p-4 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">

@@ -371,3 +371,70 @@ describe('excelService', () => {
     expect(pasteRes.rows[2].c_dl).toEqual({ _rawOriginal: 'весна 2026' });
   });
 });
+
+describe('Регрессии аудита: целостность импорта и вставки', () => {
+  it('не сдвигает календарный день при импорте Date-ячейки (локальная полночь)', async () => {
+    const XLSX = await import('xlsx');
+    const ws = XLSX.utils.aoa_to_sheet([['Дата приёма'], [new Date(2026, 1, 1)]]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Лист1');
+    const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+
+    const parsed = await excelService.parseFile(new File([buf], 'dates.xlsx'));
+    expect(parsed['Лист1'].rawRows).toHaveLength(1);
+    expect(parsed['Лист1'].rawRows[0]['Дата приёма']).toBe('2026-02-01');
+  });
+
+  it('не сдвигает колонки при пустом заголовке и разводит дубли заголовков', async () => {
+    const XLSX = await import('xlsx');
+    const ws = XLSX.utils.aoa_to_sheet([
+      ['ФИО', '', 'Должность', 'ФИО'],
+      ['Иванов И.И.', 'служебное', 'Слесарь', 'Петров П.П.']
+    ]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Лист1');
+    const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+
+    const parsed = await excelService.parseFile(new File([buf], 'headers.xlsx'));
+    const sheet = parsed['Лист1'];
+    expect(sheet.headers).toEqual(['ФИО', 'Должность', 'ФИО (2)']);
+    expect(sheet.rawRows[0]['ФИО']).toBe('Иванов И.И.');
+    expect(sheet.rawRows[0]['Должность']).toBe('Слесарь');
+    expect(sheet.rawRows[0]['ФИО (2)']).toBe('Петров П.П.');
+  });
+
+  it('строго проверяет типы столбцов вместо подстановки 0/false', () => {
+    const boolCol = { id: 'c_bool', name: 'Проверка', type: 'boolean' as const };
+    const numCol = { id: 'c_num', name: 'Количество', type: 'number' as const };
+    const dateCol = { id: 'c_date', name: 'Дата', type: 'date' as const };
+
+    expect(excelService.convertCellToColumnType(boolCol, 'нет')).toEqual({ ok: true, value: false });
+    expect(excelService.convertCellToColumnType(boolCol, 'да')).toEqual({ ok: true, value: true });
+    expect(excelService.convertCellToColumnType(boolCol, 'не требуется').ok).toBe(false);
+
+    expect(excelService.convertCellToColumnType(numCol, '1 234,5')).toEqual({ ok: true, value: 1234.5 });
+    expect(excelService.convertCellToColumnType(numCol, 'двенадцать').ok).toBe(false);
+
+    expect(excelService.convertCellToColumnType(dateCol, '01.02.2026')).toEqual({ ok: true, value: '2026-02-01' });
+    expect(excelService.convertCellToColumnType(dateCol, '32.13.2026').ok).toBe(false);
+
+    expect(excelService.convertCellToColumnType(numCol, '')).toEqual({ ok: true, value: '' });
+  });
+
+  it('отклоняет вставку из Excel с нечисловым значением в числовой столбец', () => {
+    const numTab: Tab = {
+      id: 'tab_numbers',
+      name: 'Числа',
+      columns: [{ id: 'c_num', name: 'Количество', type: 'number' }],
+      rows: [],
+      attachedDocs: []
+    };
+
+    const res = excelService.parseInlineClipboardPaste('Количество\n12\nдвенадцать', numTab, [numTab]);
+
+    expect(res.ok).toBe(false);
+    expect(res.discrepancies).toHaveLength(1);
+    expect(res.discrepancies[0].reason).toContain('не является числом');
+    expect(res.discrepancies[0].rowNumber).toBe(2);
+  });
+});

@@ -586,6 +586,9 @@ export const DataGrid: React.FC<DataGridProps> = ({
       if (tag === 'input' || tag === 'textarea' || tag === 'select' || target?.isContentEditable) {
         return;
       }
+      // Never paste rows into the grid behind an open modal: the rows would be
+      // written to the database while the user is filling in an unrelated form.
+      if (document.querySelector('[role="dialog"]')) return;
       const text = e.clipboardData?.getData('text/plain') || '';
       if (!text.trim()) return;
       if (text.includes('\t') || text.includes('\n') || activeAnchorRef.current) {

@@ -2,7 +2,8 @@ import * as XLSX from 'xlsx';
 import { Column, ColumnType, Tab } from '../types/database';
 import {
   formatDeadlineCellForExcel,
-  parseDeadlineCellFromExcel
+  parseDeadlineCellFromExcel,
+  parseFlexibleDateToIso
 } from './deadlineService';
 
 export interface ParsedExcelSheet {
@@ -92,8 +93,23 @@ export const excelService = {
       const jsonData: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '', header: 1 });
       if (!jsonData || jsonData.length === 0) return;
 
-      const headerRow = (jsonData[0] || []).map((h: any) => String(h || '').trim());
-      const cleanHeaders = headerRow.filter((h: string) => h.length > 0);
+      const headerRow: string[] = (jsonData[0] || []).map((h: any) => String(h ?? '').trim());
+      // Keep the original sheet index for every header cell: an empty header must not
+      // shift the remaining columns, otherwise imported values land in the wrong fields.
+      const headerEntries: Array<{ name: string; index: number }> = [];
+      const usedHeaderNames = new Set<string>();
+      headerRow.forEach((rawName, index) => {
+        if (!rawName) return;
+        let name = rawName;
+        let suffix = 2;
+        while (usedHeaderNames.has(name.toLowerCase())) {
+          name = `${rawName} (${suffix})`;
+          suffix += 1;
+        }
+        usedHeaderNames.add(name.toLowerCase());
+        headerEntries.push({ name, index });
+      });
+      const cleanHeaders = headerEntries.map((entry) => entry.name);
       if (cleanHeaders.length === 0) return;
 
       const rawRows: Record<string, any>[] = [];
@@ -102,15 +118,17 @@ export const excelService = {
         if (!rowArr || rowArr.length === 0) continue;
         const rowObj: Record<string, any> = {};
         let hasAnyValue = false;
-        cleanHeaders.forEach((colName: string, idx: number) => {
-          let val = rowArr[idx];
+        headerEntries.forEach(({ name, index }) => {
+          let val = rowArr[index];
           if (val instanceof Date) {
-            val = val.toISOString().split('T')[0];
+            // Calendar dates must be built from local parts: toISOString() shifts them
+            // one day back for positive UTC offsets (01.02.2026 00:00 MSK -> 2026-01-31).
+            val = parseFlexibleDateToIso(val) ?? '';
           }
           if (val !== undefined && val !== null && String(val).trim() !== '') {
             hasAnyValue = true;
           }
-          rowObj[colName] = val ?? '';
+          rowObj[name] = val ?? '';
         });
         if (hasAnyValue) {
           rawRows.push(rowObj);
@@ -497,13 +515,67 @@ export const excelService = {
   },
 
   /**
-   * Normalize raw imported Excel value according to target column type
+   * Strictly convert a raw imported/pasted value to the target column type.
+   * On unparsable input returns `ok: false` with a human-readable reason instead of
+   * silently inventing 0 / false (which used to corrupt real data on paste/import).
+   */
+  convertCellToColumnType(
+    col: Column,
+    rawVal: unknown
+  ): { ok: boolean; value: any; reason?: string } {
+    if (col.type === 'deadline_control') {
+      return { ok: true, value: parseDeadlineCellFromExcel(rawVal) };
+    }
+    if (rawVal === null || rawVal === undefined || String(rawVal).trim() === '') {
+      return { ok: true, value: '' };
+    }
+    if (col.type === 'boolean') {
+      const s = String(rawVal).trim().toLowerCase();
+      if (['да', 'true', '1', '+', 'yes', 'y', 'истина'].includes(s)) {
+        return { ok: true, value: true };
+      }
+      if (['нет', 'false', '0', '-', 'no', 'n', 'ложь'].includes(s)) {
+        return { ok: true, value: false };
+      }
+      return {
+        ok: false,
+        value: '',
+        reason: `в столбце «${col.name}» значение «${String(rawVal)}» не распознано как «Да»/«Нет»`
+      };
+    }
+    if (col.type === 'number') {
+      const num = Number(String(rawVal).trim().replace(/\s+/g, '').replace(',', '.'));
+      if (!Number.isFinite(num)) {
+        return {
+          ok: false,
+          value: '',
+          reason: `в столбце «${col.name}» значение «${String(rawVal)}» не является числом`
+        };
+      }
+      return { ok: true, value: num };
+    }
+    if (col.type === 'date') {
+      const iso = parseFlexibleDateToIso(rawVal);
+      if (!iso) {
+        return {
+          ok: false,
+          value: '',
+          reason: `в столбце «${col.name}» значение «${String(rawVal)}» не распознано как дата (ГГГГ-ММ-ДД или ДД.ММ.ГГГГ)`
+        };
+      }
+      return { ok: true, value: iso };
+    }
+    return { ok: true, value: String(rawVal) };
+  },
+
+  /**
+   * Normalize raw imported Excel value according to target column type.
+   * Unconvertible values are kept as-is here; callers that need validation must use
+   * `convertCellToColumnType` and report discrepancies to the user.
    */
   normalizeImportedCellValue(col: Column, rawVal: unknown): any {
-    if (col.type === 'deadline_control') {
-      return parseDeadlineCellFromExcel(rawVal);
-    }
-    return rawVal ?? '';
+    const converted = excelService.convertCellToColumnType(col, rawVal);
+    return converted.ok ? converted.value : (rawVal ?? '');
   },
 
   /**
@@ -774,6 +846,7 @@ export const excelService = {
       };
     }
 
+    const conversionIssues: ValidationDiscrepancy[] = [];
     const convertedRows: Record<string, any>[] = rawRows.map((fileRow, idx) => {
       const r: Record<string, any> = {
         id: `row_paste_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 6)}`
@@ -785,34 +858,41 @@ export const excelService = {
           r[col.id] =
             col.type === 'boolean'
               ? false
-              : col.type === 'number'
-                ? 0
-                : col.type === 'deadline_control'
-                  ? {}
-                  : '';
+              : col.type === 'deadline_control'
+                ? {}
+                : '';
           return;
         }
-        let val: any = fileRow[mappedKey] ?? '';
-        if (col.type === 'boolean') {
-          const s = String(val).trim().toLowerCase();
-          val = ['да', 'true', '1', '+'].includes(s);
-        } else if (col.type === 'number') {
-          const num = Number(String(val).replace(',', '.').replace(/\s+/g, ''));
-          val = String(val).trim() !== '' && !isNaN(num) ? num : 0;
-        } else if (col.type === 'date') {
-          const s = String(val).trim();
-          const ruDateMatch = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(s);
-          if (ruDateMatch) {
-            val = `${ruDateMatch[3]}-${ruDateMatch[2]}-${ruDateMatch[1]}`;
-          }
-        } else if (col.type === 'deadline_control') {
-          val = parseDeadlineCellFromExcel(val);
+        const rawVal = fileRow[mappedKey] ?? '';
+        const converted = excelService.convertCellToColumnType(col, rawVal);
+        if (!converted.ok) {
+          conversionIssues.push({
+            rowNumber: idx + 1,
+            columnName: col.name,
+            value: rawVal,
+            masterTabName: '',
+            expectedValuesSnippet: '',
+            reason: converted.reason
+          });
+          r[col.id] = '';
+          return;
         }
-        r[col.id] = val ?? '';
+        r[col.id] = converted.value;
       });
 
       return r;
     });
+
+    if (conversionIssues.length > 0) {
+      return {
+        ok: false,
+        error: `Вставка отклонена: ${conversionIssues.length} значений не соответствуют типам столбцов вкладки. Приведите значения в Excel к нужному типу или измените типы столбцов.`,
+        discrepancies: conversionIssues,
+        rows: [],
+        mode,
+        targetColumnNames
+      };
+    }
 
     return {
       ok: true,

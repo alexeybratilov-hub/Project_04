@@ -105,6 +105,7 @@ export interface RegisterGeneratedDocInput {
   format: 'docx' | 'pdf';
   createdAt?: string;
   sourceTabName?: string;
+  sourceTabId?: string;
   rowIdentifier?: string;
   sizeFormatted: string;
   dataBase64?: string;
@@ -190,6 +191,7 @@ export function registerGeneratedDocument(
     relativePath: newActivePath,
     isArchived: false,
     sourceTabName: input.sourceTabName,
+    sourceTabId: input.sourceTabId,
     rowIdentifier: input.rowIdentifier,
     sizeFormatted: input.sizeFormatted,
     dataBase64: input.dataBase64
@@ -200,6 +202,18 @@ export function registerGeneratedDocument(
     nextDocs: [newRecord, ...updatedExisting],
     archivedTransitions
   };
+}
+
+/**
+ * A generated document belongs to a tab if it stores the stable tab id.
+ * Legacy records (created before sourceTabId existed) fall back to the tab name.
+ */
+export function isGeneratedDocFromTab(
+  doc: GeneratedDocRecord,
+  tab: { id: string; name: string }
+): boolean {
+  if (doc.sourceTabId) return doc.sourceTabId === tab.id;
+  return doc.sourceTabName === tab.name;
 }
 
 export function archiveExistingDocManually(

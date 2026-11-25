@@ -202,18 +202,39 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
         return;
       }
 
-      // Map rows to target tab column IDs
-      const mappedRows = rowsToImport.map((fileRow) => {
+      // Map rows to target tab column IDs with strict type conversion.
+      // Unparsable values must be reported, never silently replaced with 0/false/''
+      const conversionIssues: ValidationDiscrepancy[] = [];
+      const mappedRows = rowsToImport.map((fileRow, rowIdx) => {
         const rowObj: Record<string, any> = { id: createUniqueId('row_imp') };
         currentTab.columns.forEach((col) => {
           const fileHeader = columnMapping[col.id];
-          rowObj[col.id] = excelService.normalizeImportedCellValue(
-            col,
-            fileHeader ? fileRow[fileHeader] : undefined
-          );
+          const rawVal = fileHeader ? fileRow[fileHeader] : undefined;
+          const converted = excelService.convertCellToColumnType(col, rawVal);
+          if (!converted.ok) {
+            conversionIssues.push({
+              rowNumber: rowIdx + 1,
+              columnName: col.name,
+              value: rawVal ?? '',
+              masterTabName: '',
+              expectedValuesSnippet: '',
+              reason: converted.reason
+            });
+            rowObj[col.id] = '';
+            return;
+          }
+          rowObj[col.id] = converted.value;
         });
         return rowObj;
       });
+
+      if (conversionIssues.length > 0) {
+        setDiscrepancies(conversionIssues);
+        setErrorMsg(
+          `Обнаружены значения, не соответствующие типам столбцов (${conversionIssues.length}). Импорт отменён: исправьте данные в файле или измените типы столбцов во вкладке.`
+        );
+        return;
+      }
 
       onCommitImportExistingTab(currentTab.id, mappedRows);
       onClose();
