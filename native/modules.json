@@ -1,0 +1,126 @@
+{
+  "defaultColumns": [
+    { "id": "item_name", "name": "Название", "type": "text", "width": 220 },
+    { "id": "item_date", "name": "Дата", "type": "date", "width": 120 },
+    { "id": "item_owner", "name": "Ответственный", "type": "text", "width": 180 },
+    { "id": "item_note", "name": "Примечание", "type": "text", "width": 240 }
+  ],
+  "modules": [
+    {
+      "id": "staffing",
+      "title": "Штатное расписание",
+      "tabId": "tab_positions",
+      "tabName": "Штатное расписание",
+      "base": true,
+      "columns": [
+        { "id": "pos_title", "name": "Должность (профессия)", "type": "text", "width": 220, "required": true },
+        { "id": "pos_dept", "name": "Подразделение", "type": "text", "width": 180 },
+        { "id": "pos_salary", "name": "Оклад (руб)", "type": "number", "width": 120 },
+        { "id": "pos_sout_class", "name": "Класс условий труда", "type": "text", "width": 150 },
+        { "id": "pos_okpdtr", "name": "Код ОКПДТР", "type": "text", "width": 120 }
+      ]
+    },
+    {
+      "id": "employees",
+      "title": "Сотрудники",
+      "tabId": "tab_employees",
+      "tabName": "Список работников",
+      "base": true,
+      "columns": [
+        { "id": "emp_fio", "name": "ФИО", "type": "text", "width": 220, "required": true },
+        { "id": "emp_tab_num", "name": "Табельный №", "type": "text", "width": 110 },
+        { "id": "emp_position", "name": "Должность", "type": "text", "width": 190 },
+        { "id": "emp_dept", "name": "Подразделение", "type": "text", "width": 170 },
+        { "id": "emp_hire_date", "name": "Дата приёма", "type": "date", "width": 130 },
+        { "id": "emp_snils", "name": "СНИЛС", "type": "text", "width": 150 },
+        { "id": "emp_status", "name": "Статус", "type": "select", "options": ["Работает", "Уволен"], "width": 110 }
+      ]
+    },
+    {
+      "id": "briefings",
+      "title": "Инструктажи и проверка знаний",
+      "tabId": "tab_instructions",
+      "tabName": "Инструктажи по ОТ",
+      "columns": [
+        { "id": "bri_type", "name": "Вид инструктажа", "type": "select", "options": ["Вводный", "Первичный", "Повторный", "Внеплановый"], "width": 170 },
+        { "id": "bri_employee", "name": "Работник", "type": "text", "width": 200 },
+        { "id": "bri_date", "name": "Дата", "type": "date", "width": 120 },
+        { "id": "bri_instructor", "name": "Инструктор", "type": "text", "width": 180 },
+        { "id": "bri_next_date", "name": "Следующий", "type": "date", "width": 120 }
+      ]
+    },
+    {
+      "id": "medical",
+      "title": "Медосмотры",
+      "tabId": "tab_med",
+      "tabName": "Медосмотры и МО",
+      "columns": [
+        { "id": "med_employee", "name": "Работник", "type": "text", "width": 200 },
+        { "id": "med_type", "name": "Вид осмотра", "type": "select", "options": ["Предварительный", "Периодический", "Внеплановый"], "width": 170 },
+        { "id": "med_date", "name": "Дата", "type": "date", "width": 120 },
+        { "id": "med_next_date", "name": "Следующий", "type": "date", "width": 120 },
+        { "id": "med_result", "name": "Заключение", "type": "text", "width": 180 }
+      ]
+    },
+    {
+      "id": "ppe",
+      "title": "Выдача СИЗ",
+      "tabId": "tab_siz",
+      "tabName": "Выдача СИЗ",
+      "columns": [
+        { "id": "ppe_employee", "name": "Работник", "type": "text", "width": 200 },
+        { "id": "ppe_item", "name": "Средство защиты", "type": "text", "width": 200 },
+        { "id": "ppe_norm", "name": "Норма выдачи", "type": "text", "width": 170 },
+        { "id": "ppe_issue_date", "name": "Дата выдачи", "type": "date", "width": 120 },
+        { "id": "ppe_wear_months", "name": "Срок носки, мес.", "type": "number", "width": 130 },
+        { "id": "ppe_next_date", "name": "Следующая выдача", "type": "date", "width": 140 }
+      ]
+    },
+    {
+      "id": "sout",
+      "title": "СОУТ и вредные факторы",
+      "tabId": "tab_factors",
+      "tabName": "Вредные факторы (СОУТ)",
+      "columns": [
+        { "id": "fac_name", "name": "Вредный фактор", "type": "text", "width": 230 },
+        { "id": "fac_code_29n", "name": "Код по 29н", "type": "text", "width": 110 },
+        { "id": "fac_class", "name": "Класс условий труда", "type": "text", "width": 150 },
+        { "id": "fac_workplace", "name": "Рабочее место", "type": "text", "width": 190 },
+        { "id": "fac_date", "name": "Дата оценки", "type": "date", "width": 120 }
+      ]
+    },
+    {
+      "id": "incidents",
+      "title": "Несчастные случаи",
+      "tabId": "tab_incidents",
+      "tabName": "Несчастные случаи",
+      "columns": [
+        { "id": "inc_date", "name": "Дата", "type": "date", "width": 120 },
+        { "id": "inc_employee", "name": "Работник", "type": "text", "width": 200 },
+        { "id": "inc_type", "name": "Тип", "type": "select", "options": ["Микротравма", "Лёгкий", "Тяжёлый", "Смертельный"], "width": 150 },
+        { "id": "inc_description", "name": "Обстоятельства", "type": "text", "width": 260 },
+        { "id": "inc_act_number", "name": "№ акта", "type": "text", "width": 120 }
+      ]
+    }
+  ],
+  "rules": [
+    { "id": "hire_order", "moduleId": "employees", "event": "hire", "title": "Приказ о приёме на работу", "kind": "document", "offsetDays": 0, "legalBasis": "ТК РФ, ст. 68" },
+    { "id": "briefing_intro", "moduleId": "briefings", "event": "hire", "title": "Вводный инструктаж по охране труда", "kind": "deadline", "offsetDays": 0, "legalBasis": "Постановление Правительства РФ № 2464, п. 10" },
+    { "id": "briefing_initial", "moduleId": "briefings", "event": "hire", "title": "Первичный инструктаж на рабочем месте", "kind": "deadline", "offsetDays": 30, "legalBasis": "Постановление Правительства РФ № 2464, п. 13" },
+    { "id": "knowledge_test", "moduleId": "briefings", "event": "hire", "title": "Проверка знаний требований охраны труда", "kind": "document", "offsetDays": 30, "periodicityMonths": 12, "legalBasis": "Постановление Правительства РФ № 2464, п. 32" },
+    { "id": "med_referral", "moduleId": "medical", "event": "hire", "title": "Направление на предварительный медосмотр", "kind": "document", "offsetDays": 0, "periodicityMonths": 12, "periodicityBySoutClass": { "2.0": 24, "3.1": 12, "3.2": 12, "3.3": 12, "3.4": 12 }, "legalBasis": "Приказ Минздрава РФ № 29н" },
+    { "id": "ppe_card", "moduleId": "ppe", "event": "hire", "title": "Карточка учёта выдачи СИЗ", "kind": "document", "offsetDays": 0, "legalBasis": "Приказ Минтруда РФ № 766н" },
+    { "id": "periodic_briefing", "moduleId": "briefings", "event": "hire", "title": "Повторный инструктаж по охране труда", "kind": "deadline", "offsetDays": 180, "periodicityMonths": 6, "legalBasis": "Постановление Правительства РФ № 2464, п. 16" },
+    { "id": "periodic_med", "moduleId": "medical", "event": "hire", "title": "Периодический медосмотр", "kind": "deadline", "offsetDays": 365, "periodicityMonths": 12, "periodicityBySoutClass": { "2.0": 24, "3.1": 12, "3.2": 12, "3.3": 12, "3.4": 12 }, "legalBasis": "Приказ Минздрава РФ № 29н" },
+    { "id": "manager_training", "moduleId": "briefings", "event": "hire", "title": "Обучение по охране труда руководителей и специалистов", "kind": "deadline", "offsetDays": 60, "periodicityMonths": 36, "positionMatches": ["руководител", "начальник", "директор", "заместител", "мастер", "заведующ"], "legalBasis": "Постановление Правительства РФ № 2464, п. 46" },
+    { "id": "transfer_order", "moduleId": "employees", "event": "transfer", "title": "Приказ о переводе на другую работу", "kind": "document", "offsetDays": 0, "legalBasis": "ТК РФ, ст. 72.1" },
+    { "id": "transfer_briefing", "moduleId": "briefings", "event": "transfer", "title": "Внеплановый инструктаж при переводе", "kind": "deadline", "offsetDays": 0, "legalBasis": "Постановление Правительства РФ № 2464, п. 18" },
+    { "id": "transfer_knowledge", "moduleId": "briefings", "event": "transfer", "title": "Проверка знаний после перевода", "kind": "deadline", "offsetDays": 30, "legalBasis": "Постановление Правительства РФ № 2464, п. 32" },
+    { "id": "dismissal_order", "moduleId": "employees", "event": "dismissal", "title": "Приказ о прекращении трудового договора", "kind": "document", "offsetDays": 0, "legalBasis": "ТК РФ, ст. 84.1" },
+    { "id": "ppe_return", "moduleId": "ppe", "event": "dismissal", "title": "Возврат СИЗ при увольнении", "kind": "deadline", "offsetDays": 0, "legalBasis": "Приказ Минтруда РФ № 766н" },
+    { "id": "personal_card_close", "moduleId": "employees", "event": "dismissal", "title": "Закрытие личной карточки работника", "kind": "deadline", "offsetDays": 0, "legalBasis": "ТК РФ, ст. 84.1" },
+    { "id": "incident_act", "moduleId": "incidents", "event": "incident", "title": "Акт о несчастном случае на производстве", "kind": "document", "offsetDays": 1, "legalBasis": "ТК РФ, ст. 230" },
+    { "id": "incident_investigation", "moduleId": "incidents", "event": "incident", "title": "Расследование обстоятельств и причин", "kind": "deadline", "offsetDays": 3, "legalBasis": "ТК РФ, ст. 229.1" },
+    { "id": "incident_briefing", "moduleId": "briefings", "event": "incident", "title": "Внеплановый инструктаж после несчастного случая", "kind": "deadline", "offsetDays": 7, "legalBasis": "Постановление Правительства РФ № 2464, п. 18" }
+  ]
+}

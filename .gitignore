@@ -37,3 +37,6 @@ pnpm-debug.log*
 /.runtime/
 ot-startup.log
 
+
+# Нативная сборка
+native/OtBazaNative.exe

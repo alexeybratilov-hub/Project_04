@@ -1,0 +1,422 @@
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Globalization;
+using System.Linq;
+using System.Windows.Forms;
+
+namespace OtBaza
+{
+    /// <summary>Редактор строки: controls строятся по описанию колонок модуля.</summary>
+    internal sealed class RowEditorForm : Form
+    {
+        public Dictionary<string, object> Result = new Dictionary<string, object>();
+
+        private readonly List<Dictionary<string, object>> _columns;
+        private readonly Dictionary<string, object> _existing;
+        private readonly Dictionary<string, Func<object>> _getters = new Dictionary<string, Func<object>>();
+        private readonly Dictionary<string, string> _types = new Dictionary<string, string>();
+
+        public RowEditorForm(List<Dictionary<string, object>> columns, Dictionary<string, object> existing, string title)
+        {
+            _columns = columns;
+            _existing = existing != null ? new Dictionary<string, object>(existing) : new Dictionary<string, object>();
+
+            Text = title;
+            Width = 640;
+            Height = 560;
+            MinimumSize = new Size(520, 420);
+            StartPosition = FormStartPosition.CenterParent;
+            BackColor = Theme.Canvas;
+            Font = Theme.Font(9.5f);
+            FormBorderStyle = FormBorderStyle.Sizable;
+            MaximizeBox = false;
+            MinimizeBox = false;
+
+            var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(16, 12, 16, 12) };
+            Controls.Add(scroll);
+
+            var table = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                ColumnCount = 2,
+                BackColor = Theme.Canvas
+            };
+            table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
+            table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            scroll.Controls.Add(table);
+
+            foreach (var column in columns)
+            {
+                string id = J.Str(J.Get(column, "id"));
+                string name = J.Str(J.Get(column, "name"));
+                string type = J.Str(J.Get(column, "type"));
+                bool required = J.Str(J.Get(column, "required")) == "true";
+                _types[id] = type;
+
+                var label = new Label
+                {
+                    Text = name + (required ? " *" : string.Empty),
+                    AutoSize = true,
+                    ForeColor = Theme.Ink,
+                    Margin = new Padding(0, 10, 8, 6),
+                    Font = Theme.Font(9.25f, required ? FontStyle.Bold : FontStyle.Regular)
+                };
+                table.Controls.Add(label);
+
+                object value = J.Get(_existing, id);
+                table.Controls.Add(BuildControl(column, id, type, value));
+            }
+
+            var buttons = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Bottom,
+                Height = 58,
+                FlowDirection = FlowDirection.RightToLeft,
+                Padding = new Padding(16, 12, 16, 12)
+            };
+            Controls.Add(buttons);
+
+            var save = new Button
+            {
+                Text = "Сохранить",
+                Width = 130,
+                Height = 34,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Theme.Accent,
+                ForeColor = Theme.AccentInk,
+                Font = Theme.Font(9.25f, FontStyle.Bold),
+                Cursor = Cursors.Hand
+            };
+            save.FlatAppearance.BorderSize = 0;
+            save.Click += delegate { SaveAndClose(); };
+            buttons.Controls.Add(save);
+
+            var cancel = new Button
+            {
+                Text = "Отмена",
+                Width = 110,
+                Height = 34,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Theme.Surface,
+                ForeColor = Theme.Ink,
+                Cursor = Cursors.Hand
+            };
+            cancel.FlatAppearance.BorderColor = Theme.Line;
+            cancel.DialogResult = DialogResult.Cancel;
+            buttons.Controls.Add(cancel);
+
+            AcceptButton = save;
+            CancelButton = cancel;
+        }
+
+        private Control BuildControl(Dictionary<string, object> column, string id, string type, object value)
+        {
+            string text = J.Str(value);
+            Control control;
+
+            if (type == "date")
+            {
+                var picker = new DateTimePicker
+                {
+                    Format = DateTimePickerFormat.Custom,
+                    CustomFormat = "dd.MM.yyyy",
+                    ShowCheckBox = true,
+                    Checked = text.Length > 0,
+                    Value = ObligationsEngine.ParseIso(text),
+                    Width = 180,
+                    Margin = new Padding(0, 6, 0, 4)
+                };
+                _getters[id] = delegate
+                {
+                    return picker.Checked ? picker.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : string.Empty;
+                };
+                control = picker;
+            }
+            else if (type == "select")
+            {
+                var combo = new ComboBox
+                {
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    Width = 280,
+                    Margin = new Padding(0, 6, 0, 4)
+                };
+                combo.Items.Add(string.Empty);
+                foreach (object option in J.Arr(J.Get(column, "options")))
+                {
+                    combo.Items.Add(J.Str(option));
+                }
+                combo.SelectedItem = text.Length > 0 && combo.Items.Contains(text) ? text : string.Empty;
+                _getters[id] = delegate { return J.Str(combo.SelectedItem); };
+                control = combo;
+            }
+            else if (type == "bool")
+            {
+                var check = new CheckBox
+                {
+                    Text = "да",
+                    Checked = text == "true" || text == "1",
+                    AutoSize = true,
+                    Margin = new Padding(0, 8, 0, 4)
+                };
+                _getters[id] = delegate { return check.Checked ? "true" : "false"; };
+                control = check;
+            }
+            else
+            {
+                var box = new TextBox
+                {
+                    Text = text,
+                    Width = 360,
+                    Margin = new Padding(0, 6, 0, 4),
+                    Font = Theme.Font(9.5f)
+                };
+                _getters[id] = delegate { return box.Text.Trim(); };
+                control = box;
+            }
+
+            var host = new Panel { AutoSize = true, Dock = DockStyle.Fill };
+            host.Controls.Add(control);
+            return host;
+        }
+
+        private void SaveAndClose()
+        {
+            var result = new Dictionary<string, object>();
+            foreach (var column in _columns)
+            {
+                string id = J.Str(J.Get(column, "id"));
+                string name = J.Str(J.Get(column, "name"));
+                bool required = J.Str(J.Get(column, "required")) == "true";
+                object value = _getters.ContainsKey(id) ? _getters[id]() : string.Empty;
+                string text = J.Str(value);
+
+                if (required && text.Length == 0)
+                {
+                    MessageBox.Show("Заполните поле «" + name + "».", "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                if (_types[id] == "number" && text.Length > 0)
+                {
+                    decimal number;
+                    if (!decimal.TryParse(text.Replace(',', '.'), NumberStyles.Any, CultureInfo.InvariantCulture, out number))
+                    {
+                        MessageBox.Show("Поле «" + name + "» должно быть числом.", "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                    text = number.ToString(CultureInfo.InvariantCulture);
+                }
+
+                result[id] = text;
+            }
+
+            Result = result;
+            DialogResult = DialogResult.OK;
+            Close();
+        }
+    }
+
+    /// <summary>Каталог модулей: включение/выключение и создание своего этапа.</summary>
+    internal sealed class ModulesForm : Form
+    {
+        private readonly Store _store;
+        private readonly CheckedListBox _list;
+        private readonly TextBox _name;
+        private readonly TextBox _columns;
+
+        public ModulesForm(Store store)
+        {
+            _store = store;
+            Text = "Модули этапов";
+            Width = 780;
+            Height = 640;
+            MinimumSize = new Size(680, 520);
+            StartPosition = FormStartPosition.CenterParent;
+            BackColor = Theme.Canvas;
+            Font = Theme.Font(9.5f);
+            MaximizeBox = false;
+            MinimizeBox = false;
+
+            var intro = new Label
+            {
+                Dock = DockStyle.Top,
+                Height = 58,
+                Padding = new Padding(18, 12, 18, 8),
+                ForeColor = Theme.Muted,
+                Font = Theme.Font(9f),
+                Text = "Модуль — это этап работы: вкладка со своими колонками и правилами. Отключение скрывает этап, но не удаляет данные. Новый модуль создаётся копированием структуры и наполняется своим содержимым."
+            };
+            Controls.Add(intro);
+
+            _list = new CheckedListBox
+            {
+                Dock = DockStyle.Fill,
+                CheckOnClick = true,
+                Font = Theme.Font(9.25f),
+                BorderStyle = BorderStyle.FixedSingle,
+                Padding = new Padding(8)
+            };
+            _list.ItemCheck += OnItemCheck;
+            Controls.Add(_list);
+
+            var bottom = new Panel { Dock = DockStyle.Bottom, Height = 168, Padding = new Padding(18, 8, 18, 12) };
+            Controls.Add(bottom);
+
+            var newTitle = new Label
+            {
+                Text = "Свой этап (модуль создаётся копированием структуры):",
+                Dock = DockStyle.Top,
+                Height = 24,
+                ForeColor = Theme.Ink,
+                Font = Theme.Font(9f, FontStyle.Bold)
+            };
+            bottom.Controls.Add(newTitle);
+
+            _name = new TextBox { Width = 300, Location = new Point(0, 30) };
+            _columns = new TextBox { Width = 380, Location = new Point(310, 30) };
+            bottom.Controls.Add(_name);
+            bottom.Controls.Add(_columns);
+            bottom.Controls.Add(new Label
+            {
+                Text = "Название этапа",
+                Location = new Point(0, 56),
+                AutoSize = true,
+                ForeColor = Theme.Muted,
+                Font = Theme.Font(8.25f)
+            });
+            bottom.Controls.Add(new Label
+            {
+                Text = "Колонки через запятую (необязательно)",
+                Location = new Point(310, 56),
+                AutoSize = true,
+                ForeColor = Theme.Muted,
+                Font = Theme.Font(8.25f)
+            });
+
+            var create = new Button
+            {
+                Text = "Создать модуль",
+                Location = new Point(700, 28),
+                Size = new Size(150, 34),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Theme.Surface,
+                ForeColor = Theme.Ink,
+                Cursor = Cursors.Hand
+            };
+            create.FlatAppearance.BorderColor = Theme.Line;
+            create.Click += delegate { CreateModule(); };
+            bottom.Controls.Add(create);
+
+            var apply = new Button
+            {
+                Text = "Применить",
+                Location = new Point(0, 104),
+                Size = new Size(150, 38),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Theme.Accent,
+                ForeColor = Theme.AccentInk,
+                Font = Theme.Font(9.25f, FontStyle.Bold),
+                Cursor = Cursors.Hand
+            };
+            apply.FlatAppearance.BorderSize = 0;
+            apply.Click += delegate { Apply(); };
+            bottom.Controls.Add(apply);
+
+            var close = new Button
+            {
+                Text = "Закрыть",
+                Location = new Point(162, 104),
+                Size = new Size(120, 38),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Theme.Surface,
+                ForeColor = Theme.Ink,
+                Cursor = Cursors.Hand,
+                DialogResult = DialogResult.OK
+            };
+            close.FlatAppearance.BorderColor = Theme.Line;
+            bottom.Controls.Add(close);
+
+            AcceptButton = apply;
+            CancelButton = close;
+
+            FillList();
+        }
+
+        private void FillList()
+        {
+            _list.Items.Clear();
+            var installed = _store.InstalledModules;
+            foreach (ModuleDef module in _store.Catalog.Modules)
+            {
+                string suffix = module.Base ? "  (базовый)" : module.Custom ? "  (свой)" : string.Empty;
+                int index = _list.Items.Add(new ModuleItem(module, module.Title + suffix));
+                _list.SetItemChecked(index, installed.Contains(module.Id));
+            }
+        }
+
+        private void OnItemCheck(object sender, ItemCheckEventArgs e)
+        {
+            var item = _list.Items[e.Index] as ModuleItem;
+            if (item == null) return;
+            if (item.Module.Base && e.NewValue == CheckState.Unchecked)
+            {
+                e.NewValue = CheckState.Checked;
+            }
+        }
+
+        private void Apply()
+        {
+            for (int i = 0; i < _list.Items.Count; i++)
+            {
+                var item = _list.Items[i] as ModuleItem;
+                if (item == null) continue;
+                bool wanted = _list.GetItemChecked(i);
+                bool installed = _store.InstalledModules.Contains(item.Module.Id);
+                if (wanted && !installed) _store.InstallModule(item.Module);
+                if (!wanted && installed && !item.Module.Base) _store.DisableModule(item.Module.Id);
+            }
+            _store.Save();
+            MessageBox.Show("Список этапов обновлён.", "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            FillList();
+        }
+
+        private void CreateModule()
+        {
+            string title = _name.Text.Trim();
+            if (title.Length == 0)
+            {
+                MessageBox.Show("Введите название этапа.", "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            _store.CreateCustomModule(title, _columns.Text);
+            _store.Save();
+            _name.Clear();
+            _columns.Clear();
+            FillList();
+            MessageBox.Show(
+                "Модуль «" + title + "» создан: вкладка и правила для него не нужны — структура скопирована, содержимое наполняется в таблице.",
+                "ОТ-База",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+
+        private sealed class ModuleItem
+        {
+            public readonly ModuleDef Module;
+            private readonly string _caption;
+
+            public ModuleItem(ModuleDef module, string caption)
+            {
+                Module = module;
+                _caption = caption;
+            }
+
+            public override string ToString()
+            {
+                return _caption;
+            }
+        }
+    }
+}
