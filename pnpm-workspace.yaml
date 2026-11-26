@@ -1,0 +1,12 @@
+# Корневой пакет + правила pnpm для install-скриптов.
+# esbuild нужен для сборки Vite; core-js выполняет только рекламный постскрипт.
+packages:
+  - "."
+
+strictDepBuilds: false
+
+onlyBuiltDependencies:
+  - esbuild
+
+ignoredBuiltDependencies:
+  - core-js
