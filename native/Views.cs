@@ -45,6 +45,7 @@ namespace OtBaza
             {
                 toolbar.Controls.Add(ToolButton("Карточка", delegate { OpenEmployeeCard(); }, false));
             }
+            toolbar.Controls.Add(ToolButton("Импорт Excel", delegate { ImportExcel(); }, false));
             toolbar.Controls.Add(ToolButton("Изменить", delegate { EditRow(); }, false));
             toolbar.Controls.Add(ToolButton("Удалить", delegate { DeleteRows(); }, false));
             toolbar.Controls.Add(ToolButton("Экспорт CSV", delegate { ExportCsv(); }, false));
@@ -187,8 +188,123 @@ namespace OtBaza
             return _grid.CurrentRow.Tag as Dictionary<string, object>;
         }
 
-        private void OpenEmployeeCard()
+        private static string NormalizeHeader(string value)
         {
+            if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+            string lower = value.Trim().ToLowerInvariant().Replace('ё', 'е');
+            var builder = new StringBuilder();
+            foreach (char c in lower)
+            {
+                if (char.IsLetterOrDigit(c)) builder.Append(c);
+            }
+            return builder.ToString();
+        }
+
+        private void ImportExcel()
+        {
+            using (var dialog = new OpenFileDialog
+            {
+                Title = "Импорт из Excel",
+                Filter = "Excel (*.xlsx)|*.xlsx"
+            })
+            {
+                if (dialog.ShowDialog(FindForm()) != DialogResult.OK) return;
+
+                try
+                {
+                    var sheetRows = XlsxReader.Read(dialog.FileName);
+                    if (sheetRows.Count < 2)
+                    {
+                        MessageBox.Show("В файле нет строк с данными.", "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
+                    }
+
+                    string[] headers = sheetRows[0];
+                    var columns = Columns;
+                    var mapping = new Dictionary<int, string>();
+                    var addedColumns = new List<string>();
+                    string suffix = DateTime.Now.ToString("HHmmss", CultureInfo.InvariantCulture);
+
+                    for (int i = 0; i < headers.Length; i++)
+                    {
+                        string header = (headers[i] ?? string.Empty).Trim();
+                        if (header.Length == 0) continue;
+
+                        var match = columns.FirstOrDefault(c => NormalizeHeader(J.Str(J.Get(c, "name"))) == NormalizeHeader(header));
+                        if (match != null)
+                        {
+                            mapping[i] = J.Str(J.Get(match, "id"));
+                            continue;
+                        }
+
+                        string id = "imp_" + suffix + "_" + i;
+                        columns.Add(new Dictionary<string, object>
+                        {
+                            { "id", id },
+                            { "name", header },
+                            { "type", "text" },
+                            { "width", 170 }
+                        });
+                        mapping[i] = id;
+                        addedColumns.Add(header);
+                    }
+
+                    J.Put(_tab, "columns", columns.Cast<object>().ToArray());
+
+                    string question = string.Format(
+                        "Строк с данными: {0}\nКолонок в файле: {1}\nНовых колонок: {2}\n\nИмпортировать в «{3}»?",
+                        sheetRows.Count - 1, headers.Length, addedColumns.Count, J.Str(J.Get(_tab, "name")));
+                    if (MessageBox.Show(question, "Импорт из Excel", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+
+                    bool isEmployees = J.Str(J.Get(_tab, "moduleId")) == "employees";
+                    string stamp = DateTime.Now.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
+                    int imported = 0;
+                    for (int r = 1; r < sheetRows.Count; r++)
+                    {
+                        string[] cells = sheetRows[r];
+                        if (!cells.Any(value => !string.IsNullOrWhiteSpace(value))) continue;
+
+                        imported++;
+                        var row = new Dictionary<string, object>
+                        {
+                            { "id", "row_imp_" + stamp + "_" + r }
+                        };
+                        foreach (var pair in mapping)
+                        {
+                            if (pair.Key < cells.Length) row[pair.Value] = (cells[pair.Key] ?? string.Empty).Trim();
+                        }
+                        _rows.Add(row);
+
+                        if (isEmployees)
+                        {
+                            var info = Employees.Read(_store, row);
+                            if (info.Fio.Length > 0)
+                            {
+                                string hireDate = info.HireDate.Length > 0 ? info.HireDate : ObligationsEngine.TodayIso();
+                                ObligationsEngine.RegisterEvent(_store, row, "hire", hireDate);
+                            }
+                        }
+                    }
+
+                    PersistRows();
+                    BuildColumns();
+                    Reload();
+                    _onChanged();
+                    MessageBox.Show(
+                        "Импортировано строк: " + imported + "." +
+                        (isEmployees ? "\nДля работников созданы требования по приёму." : string.Empty),
+                        "Импорт из Excel",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Не удалось прочитать Excel: " + ex.Message, "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        private void OpenEmployeeCard()        {
             var row = SelectedRow();
             if (row == null)
             {

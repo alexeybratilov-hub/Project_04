@@ -77,6 +77,10 @@ namespace OtBaza
             openFolder.Click += delegate { OpenDocumentsFolder(); };
             actions.Controls.Add(openFolder);
 
+            var preview = new PillButton { Text = "Просмотр документа", Width = 190, Height = 36, Margin = new Padding(0, 0, 8, 0) };
+            preview.Click += delegate { PreviewLatestDocument(); };
+            actions.Controls.Add(preview);
+
             _eventType = new ComboBox
             {
                 DropDownStyle = ComboBoxStyle.DropDownList,
@@ -265,6 +269,29 @@ namespace OtBaza
             catch (Exception ex)
             {
                 MessageBox.Show(ex.Message, "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        private void PreviewLatestDocument()
+        {
+            string folder = Path.Combine(_store.DataRoot, "documents");
+            if (!Directory.Exists(folder))
+            {
+                MessageBox.Show("Документы ещё не формировались.", "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            var latest = Directory.GetFiles(folder, "*.docx", SearchOption.AllDirectories)
+                .Select(path => new FileInfo(path))
+                .OrderByDescending(info => info.LastWriteTimeUtc)
+                .FirstOrDefault();
+            if (latest == null)
+            {
+                MessageBox.Show("Документы ещё не формировались.", "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            using (var preview = new DocxPreviewForm(latest.FullName))
+            {
+                preview.ShowDialog(this);
             }
         }
     }

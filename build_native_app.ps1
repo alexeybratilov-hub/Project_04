@@ -39,7 +39,7 @@ if (Test-Path $Output) {
 & $csc /nologo /target:winexe /platform:x64 "/out:$Output" `
     "/resource:$modules,modules.json" `
     "/resource:$seed,initial_db.json" `
-    /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll /r:System.Core.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll `
+    /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll /r:System.Core.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:System.Xml.dll `
     (Join-Path $native "*.cs")
 
 if ($LASTEXITCODE -ne 0) {

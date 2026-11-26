@@ -162,6 +162,7 @@ namespace OtBaza
                 if (_demo == "modules") ShowModulesDialog();
                 else if (_demo == "row") OpenDemoRowDialog();
                 else if (_demo == "card") OpenDemoCard();
+                else if (_demo == "docx") OpenDemoDocx();
                 else if (_demo == "preview")
                 {
                     var employees = _store.FindTabByModule("employees");
@@ -412,6 +413,39 @@ namespace OtBaza
             using (var card = new EmployeeCardForm(_store, row, RebuildAll))
             {
                 card.ShowDialog(this);
+            }
+        }
+
+        private void OpenDemoDocx()
+        {
+            var employees = _store.FindTabByModule("employees");
+            if (employees == null) return;
+            ShowTab(employees);
+            var rows = J.Arr(J.Get(employees, "rows"));
+            if (rows.Count == 0) return;
+            var row = J.Obj(rows[0]);
+            if (row == null) return;
+
+            string rowId = J.Str(J.Get(row, "id"));
+            bool hasObligations = _store.Obligations.Select(J.Obj).Any(o => o != null && J.Str(J.Get(o, "employeeRowId")) == rowId);
+            if (!hasObligations) ObligationsEngine.RegisterEvent(_store, row, "hire", ObligationsEngine.TodayIso());
+
+            string path = null;
+            foreach (var obligation in _store.Obligations.Select(J.Obj)
+                .Where(o => o != null && J.Str(J.Get(o, "employeeRowId")) == rowId && !ObligationsEngine.IsDone(o)))
+            {
+                if (J.Str(J.Get(obligation, "templateId")).Length == 0) continue;
+                path = DocxService.GenerateForObligation(_store, obligation);
+                if (path != null) break;
+            }
+            if (path == null)
+            {
+                MessageBox.Show("Не удалось сформировать документ по шаблону.", "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            using (var preview = new DocxPreviewForm(path))
+            {
+                preview.ShowDialog(this);
             }
         }
 

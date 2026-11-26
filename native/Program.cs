@@ -23,6 +23,12 @@ namespace OtBaza
                 return;
             }
 
+            if (args.Length > 1 && args[0] == "--import-test")
+            {
+                Environment.ExitCode = ImportTest.Run(args[1]);
+                return;
+            }
+
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.ThreadException += delegate(object sender, System.Threading.ThreadExceptionEventArgs e)
@@ -51,6 +57,33 @@ namespace OtBaza
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
             }
+        }
+    }
+
+    /// <summary>Проверка чтения XLSX: --import-test файл.xlsx.</summary>
+    internal static class ImportTest
+    {
+        public static int Run(string path)
+        {
+            var log = new StringBuilder();
+            int code = 0;
+            try
+            {
+                var rows = XlsxReader.Read(path);
+                log.AppendLine("rows=" + rows.Count);
+                for (int i = 0; i < Math.Min(rows.Count, 5); i++)
+                {
+                    log.AppendLine("row" + i + ": " + string.Join(" | ", rows[i]));
+                }
+                code = rows.Count > 0 ? 0 : 1;
+            }
+            catch (Exception ex)
+            {
+                log.AppendLine("error: " + ex.Message);
+                code = 1;
+            }
+            try { File.WriteAllText(Path.Combine(Path.GetTempPath(), "ot-xlsx-import.log"), log.ToString(), Encoding.UTF8); } catch { }
+            return code;
         }
     }
 
