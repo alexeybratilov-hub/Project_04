@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import {
   HardDrive, Sun, Moon, Check, AlertTriangle,
   Building2, ChevronDown, Plus, Copy, Edit2, Trash2,
@@ -346,7 +346,11 @@ export const TitleBar: React.FC<TitleBarProps> = ({
             <span className="flex items-center gap-1 text-slate-300 whitespace-nowrap">
               <Check className="w-3 h-3 text-emerald-400" />
               <span>
-                {storageMode === 'native-fs' ? 'Записано на диск' : 'Сохранено в браузере'}
+                {storageMode === 'native-fs'
+                  ? 'Записано на диск'
+                  : storageMode === 'file-handle'
+                    ? 'Записано в файл'
+                    : 'Сохранено в браузере'}
               </span>
             </span>
             {formattedTime && (

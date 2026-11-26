@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { FolderOpen, HardDrive, ShieldCheck, AlertTriangle, Globe, Check } from 'lucide-react';
 import { AppModal, AppButton, StatusBanner } from './ui';
 import type { WorkspaceStatus } from '../services/workspaceFolderService';
+import { isDesktop, openDataFolder } from '../services/workspaceFolderService';
 
 interface WorkspaceFolderModalProps {
   isOpen: boolean;
@@ -39,6 +40,7 @@ export const WorkspaceFolderModal: React.FC<WorkspaceFolderModalProps> = ({
 
   const isConnected = status === 'connected';
   const isUnsupported = status === 'unsupported';
+  const desktop = isDesktop();
 
   return (
     <AppModal
@@ -47,11 +49,15 @@ export const WorkspaceFolderModal: React.FC<WorkspaceFolderModalProps> = ({
       size="lg"
       icon={<FolderOpen className="w-5 h-5" />}
       iconTone="amber"
-      title="Рабочая папка на диске"
-      subtitle="Веб-версия может хранить базу прямо в файле — без установки OT-Baza.exe"
+      title={desktop ? 'Где хранятся данные' : 'Рабочая папка на диске'}
+      subtitle={
+        desktop
+          ? 'Десктопная версия хранит базу рядом с программой — выбирать папку не нужно'
+          : 'Веб-версия может хранить базу прямо в файле — без установки OT-Baza.exe'
+      }
       footer={
         <>
-          {isConnected && (
+          {isConnected && !desktop && (
             <AppButton
               variant="secondary"
               size="sm"
@@ -73,6 +79,31 @@ export const WorkspaceFolderModal: React.FC<WorkspaceFolderModalProps> = ({
             Этот браузер не даёт веб-странице доступ к папкам. Откройте приложение в Chrome или Edge
             (по `https://` или `http://localhost`), либо используйте OT-Baza.exe.
           </StatusBanner>
+        ) : desktop ? (
+          <div className="rounded-xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/50 dark:bg-emerald-950/30 p-4 space-y-3">
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-lg bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-300 flex items-center justify-center shrink-0">
+                <Check className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                  Данные хранятся рядом с программой
+                </div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                  База — <code className="font-mono">data/ot_database.json</code>, бэкап —{' '}
+                  <code className="font-mono">data/backups/</code>, документы —{' '}
+                  <code className="font-mono">documents/</code>. Скопируйте папку с программой — данные
+                  переедут вместе с ней.
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <AppButton variant="primary" size="sm" onClick={() => void openDataFolder()}>
+                <FolderOpen className="w-4 h-4" />
+                Открыть папку с данными
+              </AppButton>
+            </div>
+          </div>
         ) : (
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3">
             <div className="flex items-start gap-3">
@@ -155,27 +186,41 @@ export const WorkspaceFolderModal: React.FC<WorkspaceFolderModalProps> = ({
             Что важно знать
           </div>
           <ul className="text-[11px] text-slate-600 dark:text-slate-300 space-y-1.5 list-disc pl-4">
-            <li>
-              Работает в Chrome и Edge на <code className="font-mono">https://</code> или{' '}
-              <code className="font-mono">localhost</code>. В Firefox и Safari недоступно —
-              там остаётся хранение в браузере.
-            </li>
-            <li>
-              Папку выбирает только пользователь, через системный диалог. Приложение не получает
-              доступ к остальным файлам.
-            </li>
-            <li>
-              После перезагрузки страницы браузер может попросить подтвердить доступ — это его
-              политика безопасности, а не ошибка.
-            </li>
-            <li>
-              Отключение папки не удаляет файлы: данные остаются на диске, а приложение
-              переключается на хранение в браузере.
-            </li>
+            {desktop ? (
+              <>
+                <li>Это десктопная версия: база и документы лежат в папке программы, без браузера и localhost.</li>
+                <li>
+                  Переносится вместе с папкой: скопируйте <code className="font-mono">.exe</code> и папку{' '}
+                  <code className="font-mono">data/</code> — данные сохранятся.
+                </li>
+                <li>Перед каждой перезаписью базы создаётся резервная копия в <code className="font-mono">data/backups/</code>.</li>
+                <li>Интернет не требуется: приложение полностью автономно.</li>
+              </>
+            ) : (
+              <>
+                <li>
+                  Работает в Chrome и Edge на <code className="font-mono">https://</code> или{' '}
+                  <code className="font-mono">localhost</code>. В Firefox и Safari недоступно —
+                  там остаётся хранение в браузере.
+                </li>
+                <li>
+                  Папку выбирает только пользователь, через системный диалог. Приложение не получает
+                  доступ к остальным файлам.
+                </li>
+                <li>
+                  После перезагрузки страницы браузер может попросить подтвердить доступ — это его
+                  политика безопасности, а не ошибка.
+                </li>
+                <li>
+                  Отключение папки не удаляет файлы: данные остаются на диске, а приложение
+                  переключается на хранение в браузере.
+                </li>
+              </>
+            )}
           </ul>
         </div>
 
-        {status === 'needs-permission' && (
+        {!desktop && status === 'needs-permission' && (
           <StatusBanner variant="info" role="status" compact>
             <span className="flex items-center gap-2">
               <AlertTriangle className="w-4 h-4 shrink-0" />

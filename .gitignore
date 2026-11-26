@@ -30,3 +30,10 @@ Thumbs.db
 *.log
 npm-debug.log*
 pnpm-debug.log*
+
+# Десктопная сборка: рабочие данные и служебные папки
+/data/
+/.webview2/
+/.runtime/
+ot-startup.log
+

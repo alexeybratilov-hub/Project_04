@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Рабочая папка на диске для веб-версии (без нативного сервера).
  *
  * Использует File System Access API (Chrome/Edge 86+, только secure context:
@@ -50,6 +50,66 @@ const IDB_KEY = 'workdir';
 
 let connectedHandle: FsDirectoryHandle | null = null;
 
+/**
+ * Десктопный режим (WebView2): файлы читаются и пишутся через нативный мост C#,
+ * папка фиксирована рядом с программой. Диалоги браузера в этом режиме не нужны
+ * и не поддерживаются.
+ */
+export interface DesktopBridge {
+  GetRoot(): Promise<string>;
+  OpenRoot(): Promise<void>;
+  ReadDatabase(): Promise<string | null>;
+  WriteDatabase(json: string): Promise<void>;
+  WriteBinary(relativePath: string, base64: string): Promise<void>;
+  ReadBinary(relativePath: string): Promise<string | null>;
+  List(relativePath: string): Promise<string>;
+  Delete(relativePath: string): Promise<boolean>;
+}
+
+function getDesktopBridge(): DesktopBridge | null {
+  if (typeof window === 'undefined') return null;
+  const host = (
+    window as unknown as {
+      chrome?: { webview?: { hostObjects?: { otDesktop?: DesktopBridge } } };
+    }
+  ).chrome?.webview?.hostObjects?.otDesktop;
+  return host ?? null;
+}
+
+export function isDesktop(): boolean {
+  return getDesktopBridge() !== null;
+}
+
+/** Открыть папку с данными в проводнике (только десктопная версия). */
+export async function openDataFolder(): Promise<boolean> {
+  const bridge = getDesktopBridge();
+  if (!bridge) return false;
+  try {
+    await bridge.OpenRoot();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)));
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(base64: string): ArrayBuffer {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer as ArrayBuffer;
+}
+
 function getPicker(): ((options?: {
   mode?: 'read' | 'readwrite';
   id?: string;
@@ -68,6 +128,7 @@ function getPicker(): ((options?: {
 
 export function isSupported(): boolean {
   if (typeof window === 'undefined') return false;
+  if (getDesktopBridge()) return true;
   if (!getPicker()) return false;
   return window.isSecureContext !== false;
 }
@@ -172,6 +233,10 @@ async function readHandle(): Promise<FsDirectoryHandle | null> {
 
 /** Текущий статус без запроса разрешений (не открывает диалогов). */
 export async function getStatus(): Promise<WorkspaceState> {
+  const bridge = getDesktopBridge();
+  if (bridge) {
+    return { status: 'connected', folderName: 'рядом с программой' };
+  }
   if (!isSupported()) {
     return { status: 'unsupported', folderName: null };
   }
@@ -187,11 +252,13 @@ export async function getStatus(): Promise<WorkspaceState> {
 }
 
 export function isConnected(): boolean {
+  if (getDesktopBridge()) return true;
   return connectedHandle !== null;
 }
 
 /** true, если папка уже подключена и доступ подтверждён в этой сессии. */
 export async function ensureConnected(): Promise<FsDirectoryHandle | null> {
+  if (getDesktopBridge()) return null;
   const state = await getStatus();
   if (state.status !== 'connected') return null;
   return readHandle();
@@ -204,6 +271,10 @@ export async function ensureConnected(): Promise<FsDirectoryHandle | null> {
 export async function connect(): Promise<
   { ok: true; folderName: string } | { ok: false; error: string }
 > {
+  const bridge = getDesktopBridge();
+  if (bridge) {
+    return { ok: true, folderName: 'рядом с программой' };
+  }
   const picker = getPicker();
   if (!picker) {
     return {
@@ -233,6 +304,7 @@ export async function connect(): Promise<
 
 /** Подтвердить доступ к ранее выбранной папке (нужен user gesture). */
 export async function requestAccess(): Promise<{ ok: boolean; error?: string }> {
+  if (getDesktopBridge()) return { ok: true };
   const handle = await readHandle();
   if (!handle) return { ok: false, error: 'Рабочая папка не выбрана.' };
   const granted = await requestPermission(handle);
@@ -244,6 +316,7 @@ export async function requestAccess(): Promise<{ ok: boolean; error?: string }> 
 }
 
 export async function disconnect(): Promise<void> {
+  if (getDesktopBridge()) return;
   connectedHandle = null;
   await idbDelete(IDB_KEY);
 }
@@ -261,6 +334,14 @@ async function getSubdirectory(
 }
 
 export async function readDatabaseText(): Promise<string | null> {
+  const bridge = getDesktopBridge();
+  if (bridge) {
+    try {
+      return await bridge.ReadDatabase();
+    } catch {
+      return null;
+    }
+  }
   const root = await ensureConnected();
   if (!root) return null;
   try {
@@ -281,6 +362,15 @@ export async function readDatabaseText(): Promise<string | null> {
 export async function writeDatabaseText(
   text: string
 ): Promise<{ ok: true } | { ok: false; error: string }> {
+  const bridge = getDesktopBridge();
+  if (bridge) {
+    try {
+      await bridge.WriteDatabase(text);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String((err as { message?: string })?.message || err) };
+    }
+  }
   const root = await ensureConnected();
   if (!root) return { ok: false, error: 'Рабочая папка не подключена' };
   try {
@@ -315,6 +405,16 @@ export async function writeBinaryFile(
   segments: string[],
   data: Blob
 ): Promise<{ ok: true } | { ok: false; error: string }> {
+  const bridge = getDesktopBridge();
+  if (bridge) {
+    try {
+      const buffer = await data.arrayBuffer();
+      await bridge.WriteBinary(segments.join('/'), bytesToBase64(new Uint8Array(buffer)));
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String((err as { message?: string })?.message || err) };
+    }
+  }
   const root = await ensureConnected();
   if (!root) return { ok: false, error: 'Рабочая папка не подключена' };
   try {
@@ -331,6 +431,16 @@ export async function writeBinaryFile(
 }
 
 export async function readBinaryFile(segments: string[]): Promise<Blob | null> {
+  const bridge = getDesktopBridge();
+  if (bridge) {
+    try {
+      const base64 = await bridge.ReadBinary(segments.join('/'));
+      if (!base64) return null;
+      return new Blob([base64ToBytes(base64)]);
+    } catch {
+      return null;
+    }
+  }
   const root = await ensureConnected();
   if (!root) return null;
   try {
@@ -344,6 +454,14 @@ export async function readBinaryFile(segments: string[]): Promise<Blob | null> {
 }
 
 export async function deleteWorkspaceFile(segments: string[]): Promise<boolean> {
+  const bridge = getDesktopBridge();
+  if (bridge) {
+    try {
+      return await bridge.Delete(segments.join('/'));
+    } catch {
+      return false;
+    }
+  }
   const root = await ensureConnected();
   if (!root) return false;
   try {
@@ -357,6 +475,16 @@ export async function deleteWorkspaceFile(segments: string[]): Promise<boolean> 
 }
 
 export async function listWorkspaceFiles(segments: string[]): Promise<string[]> {
+  const bridge = getDesktopBridge();
+  if (bridge) {
+    try {
+      const json = await bridge.List(segments.join('/'));
+      const names = JSON.parse(json) as string[];
+      return names.sort((a, b) => a.localeCompare(b, 'ru'));
+    } catch {
+      return [];
+    }
+  }
   const root = await ensureConnected();
   if (!root) return [];
   try {
@@ -379,6 +507,8 @@ export function __setConnectedHandleForTests(handle: FsDirectoryHandle | null): 
 
 export const workspaceFolderService = {
   isSupported,
+  isDesktop,
+  openDataFolder,
   getStatus,
   isConnected,
   ensureConnected,
