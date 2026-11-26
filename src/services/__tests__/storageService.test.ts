@@ -1,10 +1,17 @@
-﻿import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
+  appendAuditLogEntries,
   applyDatabaseTransition,
   cloneLegalEntity,
+  createAuditLogEntry,
   createIsolatedEmptyEntity,
+  decryptDatabaseBackup,
+  encryptDatabaseBackup,
+  EncryptedBackupRequiredError,
   executeColumnsUpdateTransaction,
+  formatAuditCellValue,
   inspectDatabaseBackupText,
+  MAX_AUDIT_LOG_ENTRIES,
   normalizeDatabaseState,
   PRE_RESTORE_BACKUP_KEY,
   sanitizeDatabaseForExport,
@@ -72,7 +79,9 @@ describe('storageService', () => {
     expect(ent.tabs.every((t) => t.rows.length === 0)).toBe(true);
     const staffTab = ent.tabs.find((t) => t.isMaster);
     expect(staffTab).toBeDefined();
+    expect(staffTab?.moduleId).toBe('staffing');
     const empTab = ent.tabs.find((t) => !t.isMaster);
+    expect(empTab?.moduleId).toBe('employees');
     expect(empTab?.columns.some((c) => c.type === 'relation' && c.relation?.masterTabId === staffTab?.id)).toBe(true);
   });
 
@@ -367,6 +376,43 @@ describe('storageService', () => {
       const explicitExport = sanitizeDatabaseForExport(stateWithSecret, { includeLlmApiKey: true });
       expect(explicitExport.llmConfig.apiKey).toBe('sk-live-secret-987654');
     });
+
+    it('strips LLM API key on saveDatabaseAsync, saveDatabase, and normalizeDatabaseState without mutating live RAM state', async () => {
+      const store = new Map<string, string>();
+      vi.stubGlobal('localStorage', {
+        getItem: (k: string) => store.get(k) ?? null,
+        setItem: (k: string, v: string) => store.set(k, v),
+        removeItem: (k: string) => store.delete(k)
+      });
+      vi.spyOn(localApiClient, 'isNative').mockReturnValue(false);
+
+      const liveState: DatabaseState = {
+        ...JSON.parse(JSON.stringify(INITIAL_DATABASE_STATE)),
+        llmConfig: {
+          ...INITIAL_DATABASE_STATE.llmConfig,
+          providerId: 'openai',
+          apiKey: 'sk-session-only-key'
+        }
+      };
+
+      const asyncRes = await storageService.saveDatabaseAsync(liveState);
+      expect(asyncRes.ok).toBe(true);
+      const savedAsync = JSON.parse(store.get(STORAGE_KEY)!);
+      expect(savedAsync.llmConfig.apiKey).toBe('');
+      expect(liveState.llmConfig.apiKey).toBe('sk-session-only-key');
+
+      store.clear();
+      const syncRes = storageService.saveDatabase(liveState);
+      expect(syncRes.ok).toBe(true);
+      const savedSync = JSON.parse(store.get(STORAGE_KEY)!);
+      expect(savedSync.llmConfig.apiKey).toBe('');
+
+      const legacyNormalized = normalizeDatabaseState(liveState);
+      expect(legacyNormalized.llmConfig.apiKey).toBe('');
+
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    });
   });
 
   describe('T-30: AppSettings tabBarMode normalization', () => {
@@ -489,10 +535,13 @@ describe('storageService', () => {
       delete legacySnapshot.settings.deadlineSettings;
 
       const normalized = normalizeDatabaseState(legacySnapshot);
-      // Нормализация добавляет пустой реестр обязательств — остальная структура не меняется
+      // Нормализация добавляет пустые реестры обязательств, событий и журнала аудита — остальная структура не меняется
       expect(
-        normalized.entities.map(({ employeeObligations: _obligations, employeeEvents: _events, ...rest }) => rest)
+        normalized.entities.map(
+          ({ employeeObligations: _obligations, employeeEvents: _events, auditLog: _auditLog, ...rest }) => rest
+        )
       ).toEqual(legacySnapshot.entities);
+      expect(normalized.auditLog).toEqual([]);
       expect(normalized.tabs).toEqual(legacySnapshot.tabs);
       expect(normalized.settings.deadlineSettings).toEqual({
         holidays: [],
@@ -731,6 +780,75 @@ describe('storageService', () => {
       expect(retryTx.ok).toBe(true);
       expect(retryTx.committedState).toBe(nextState);
       expect(retryTx.backupFileName).toBe('ot_backup_1.json');
+    });
+  });
+
+  describe('B2B hardening: AES-256-GCM encrypted backups, prototype guard & audit log', () => {
+    it('encrypts and decrypts database backups with PBKDF2-SHA256 + AES-256-GCM and rejects wrong passphrase', async () => {
+      const envelope = await encryptDatabaseBackup(INITIAL_DATABASE_STATE, 'SecretPass_2026!');
+      expect(envelope.format).toBe('ot-baza-encrypted-backup');
+      expect(envelope.cipher).toBe('AES-256-GCM');
+      expect(envelope.kdf).toBe('PBKDF2-SHA256');
+      expect(envelope.iterations).toBeGreaterThanOrEqual(210_000);
+      expect(JSON.stringify(envelope)).not.toContain('SecretPass_2026!');
+
+      // inspectDatabaseBackupText signals EncryptedBackupRequiredError on encrypted envelopes
+      let caught: unknown;
+      try {
+        inspectDatabaseBackupText(JSON.stringify(envelope), 'backup.enc.json');
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(EncryptedBackupRequiredError);
+
+      // Wrong passphrase must reject cleanly
+      await expect(decryptDatabaseBackup(envelope, 'WrongPass')).rejects.toThrow(/Неверный пароль/i);
+
+      // Correct passphrase decrypts and passes inspectDatabaseBackupText
+      const preview = await storageService.decryptAndInspectDatabaseBackupText(
+        JSON.stringify(envelope),
+        'SecretPass_2026!',
+        'backup.enc.json'
+      );
+      expect(preview.incomingSummary.entitiesCount).toBe(INITIAL_DATABASE_STATE.entities.length);
+      expect(preview.normalizedState.tabs.length).toBe(INITIAL_DATABASE_STATE.tabs.length);
+    });
+
+    it('rejects backup JSON containing prototype-pollution keys (__proto__/constructor)', () => {
+      const maliciousJson = '{"version":"1.3.0","__proto__":{"polluted":true},"entities":[]}';
+      expect(() => inspectDatabaseBackupText(maliciousJson)).toThrow(/недопустимый ключ/i);
+    });
+
+    it('creates, formats, appends, caps at 1000, and preserves auditLog across transitions & normalization', () => {
+      expect(formatAuditCellValue(undefined)).toBe('—');
+      expect(formatAuditCellValue(true)).toBe('Да');
+      expect(formatAuditCellValue({ actualDate: '2026-02-01', note: 'ОК' })).toContain('2026-02-01');
+
+      const entry = createAuditLogEntry({
+        action: 'update',
+        tabId: 'tab_employees',
+        tabName: 'Список работников',
+        rowId: 'r1',
+        rowIdentifier: 'Иванов И.И.',
+        summary: 'Обновлена строка',
+        changes: [{ field: 'Должность', oldValue: 'Слесарь', newValue: 'Мастер' }]
+      });
+      const many = Array.from({ length: MAX_AUDIT_LOG_ENTRIES + 50 }, (_, idx) =>
+        createAuditLogEntry({ action: 'create', summary: `Запись ${idx}` })
+      );
+      const capped = appendAuditLogEntries([entry], many);
+      expect(capped).toHaveLength(MAX_AUDIT_LOG_ENTRIES);
+
+      const updated = applyDatabaseTransition(INITIAL_DATABASE_STATE, (prev) => ({
+        ...prev,
+        auditLog: appendAuditLogEntries(prev.auditLog, [entry])
+      }));
+      expect(updated.auditLog?.[0].summary).toBe('Обновлена строка');
+      expect(updated.entities[0].auditLog?.[0].summary).toBe('Обновлена строка');
+
+      const renormalized = normalizeDatabaseState(JSON.parse(JSON.stringify(updated)));
+      expect(renormalized.auditLog).toHaveLength(1);
+      expect(renormalized.auditLog?.[0].changes?.[0].newValue).toBe('Мастер');
     });
   });
 });

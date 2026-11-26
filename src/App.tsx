@@ -32,6 +32,7 @@ import { WorkspaceFolderModal } from './components/WorkspaceFolderModal';
 import { ColumnEditorModal } from './components/ColumnEditorModal';
 import { BackupModal } from './components/BackupModal';
 import { HelpModal } from './components/HelpModal';
+import { AuditLogModal } from './components/AuditLogModal';
 import { NewTabModal } from './components/NewTabModal';
 import { MasterDependenciesModal } from './components/MasterDependenciesModal';
 import { LegalEntityModal, LegalEntityModalMode } from './components/LegalEntityModal';
@@ -46,17 +47,21 @@ import {
   useToast
 } from './components/ui';
 
-import { Column, DatabaseState, EmployeeEvent, EmployeeEventType, LegalEntity, LegalEntityProfile, Row, Tab } from './types/database';
+import { AuditLogFieldChange, Column, DatabaseState, EmployeeEvent, EmployeeEventType, LegalEntity, LegalEntityProfile, Row, Tab } from './types/database';
 import {
   CloneEntityMode,
   DatabaseTransitionOptions,
   evaluateRecoveryState,
   NativeBootstrapResult,
   SaveStatusState,
+  appendAuditLogEntries,
   applyDatabaseTransition,
   cloneLegalEntity,
+  createAuditLogEntry,
   createIsolatedEmptyEntity,
   executeColumnsUpdateTransaction,
+  formatAuditCellValue,
+  sanitizeDatabaseForExport,
   storageService
 } from './services/storageService';
 import {
@@ -67,6 +72,8 @@ import {
   StorageMode
 } from './services/localApiClient';
 import { createUniqueId, integrityService } from './services/integrityService';
+import { portablePackageService } from './services/portablePackageService';
+import { base64ToBlob, packageFilesAsZip } from './services/zipExportService';
 import {
   applyDeadlineCompletedTodayInState,
   applyDeadlineNotificationsEnabledInState,
@@ -78,6 +85,7 @@ import {
   getTodayIso,
   normalizeHolidaysList,
   resolveDeadlineEventTarget,
+  resolveSafeRowIdentifier,
   selectTopPopoverNotifications,
   summarizeDeadlineEvents,
   SYSTEM_DEADLINE_TAB_ID
@@ -205,6 +213,7 @@ export default function App() {
   const [obligationsWorking, setObligationsWorking] = useState(false);
   const [employeesViewMode, setEmployeesViewMode] = useState<'cards' | 'grid'>('cards');
   const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [isAuditLogOpen, setIsAuditLogOpen] = useState(false);
   const [isNewTabModalOpen, setIsNewTabModalOpen] = useState(false);
   const [masterDepsTabId, setMasterDepsTabId] = useState<string | null>(null);
   const [pendingDeleteTabId, setPendingDeleteTabId] = useState<string | null>(null);
@@ -713,7 +722,16 @@ export default function App() {
 
     updateDbState((prev) => ({
       ...prev,
-      tabs: prev.tabs.map((t) => (t.id === currentTab.id ? { ...t, rows: [newRow, ...t.rows] } : t))
+      tabs: prev.tabs.map((t) => (t.id === currentTab.id ? { ...t, rows: [newRow, ...t.rows] } : t)),
+      auditLog: appendAuditLogEntries(prev.auditLog, [
+        createAuditLogEntry({
+          action: 'create',
+          tabId: currentTab.id,
+          tabName: currentTab.name,
+          rowId: newRowId,
+          summary: `Добавлена новая строка во вкладке «${currentTab.name}»`
+        })
+      ])
     }));
   }, [currentTab, isAnySystemTab, updateDbState]);
 
@@ -795,10 +813,88 @@ export default function App() {
       patch
     );
 
-    updateDbState((prev) => ({
-      ...prev,
-      tabs: integrityService.applyMasterRowCascade(prev.tabs, currentTab.id, rowId, patch).tabs
-    }));
+    const isEmployeesEdit =
+      currentTab.moduleId === 'employees' || currentTab.id === 'tab_employees';
+    const isStaffingEdit =
+      currentTab.moduleId === 'staffing' ||
+      currentTab.id === 'tab_positions' ||
+      (currentTab.isMaster &&
+        currentTab.columns.some((col) => col.id === 'pos_title' || col.id === 'pos_sout_class'));
+
+    updateDbState((prev) => {
+      const cascadedTabs = integrityService.applyMasterRowCascade(
+        prev.tabs,
+        currentTab.id,
+        rowId,
+        patch
+      ).tabs;
+      let employeeObligations = prev.employeeObligations || [];
+
+      if (isEmployeesEdit) {
+        const empTab = cascadedTabs.find(
+          (tab) => tab.moduleId === 'employees' || tab.id === currentTab.id
+        );
+        const updatedEmp = empTab?.rows.find((r) => r.id === rowId);
+        if (updatedEmp) {
+          const context = obligationService.resolveEmployeeContext(cascadedTabs, updatedEmp);
+          const hireDateIso = obligationService.getEmployeeHireDate(updatedEmp);
+          employeeObligations = obligationService.syncEmployeeObligationsForProfileChange(
+            employeeObligations,
+            { employeeRowId: rowId, hireDateIso, context }
+          );
+        }
+      } else if (isStaffingEdit) {
+        const empTab = cascadedTabs.find(
+          (tab) => tab.moduleId === 'employees' || tab.id === 'tab_employees'
+        );
+        if (empTab) {
+          empTab.rows.forEach((empRow) => {
+            const context = obligationService.resolveEmployeeContext(cascadedTabs, empRow);
+            const hireDateIso = obligationService.getEmployeeHireDate(empRow);
+            employeeObligations = obligationService.syncEmployeeObligationsForProfileChange(
+              employeeObligations,
+              { employeeRowId: empRow.id, hireDateIso, context }
+            );
+          });
+        }
+      }
+
+      const targetTab = prev.tabs.find((t) => t.id === currentTab.id);
+      const targetRow = targetTab?.rows.find((r) => r.id === rowId);
+      const changes: AuditLogFieldChange[] = [];
+      if (targetTab && targetRow) {
+        Object.keys(patch).forEach((colId) => {
+          const oldVal = formatAuditCellValue(targetRow[colId]);
+          const newVal = formatAuditCellValue(patch[colId]);
+          if (oldVal !== newVal) {
+            const colName = targetTab.columns.find((c) => c.id === colId)?.name || colId;
+            changes.push({ field: colName, oldValue: oldVal, newValue: newVal });
+          }
+        });
+      }
+      const rowIdentifier =
+        targetTab && targetRow ? resolveSafeRowIdentifier(targetRow, targetTab) : undefined;
+
+      return {
+        ...prev,
+        tabs: cascadedTabs,
+        employeeObligations,
+        auditLog:
+          changes.length > 0
+            ? appendAuditLogEntries(prev.auditLog, [
+                createAuditLogEntry({
+                  action: 'update',
+                  tabId: currentTab.id,
+                  tabName: currentTab.name,
+                  rowId,
+                  rowIdentifier,
+                  summary: `Изменены поля (${changes.length}) в записи ${rowIdentifier || rowId}`,
+                  changes
+                })
+              ])
+            : prev.auditLog
+      };
+    });
 
     if (previewCascade.ambiguousItems.length > 0) {
       const first = previewCascade.ambiguousItems[0];
@@ -858,12 +954,48 @@ export default function App() {
   // Execute row deletion directly
   const executeRowDelete = (tabId: string, rowIds: string[]) => {
     const rowIdSet = new Set(rowIds);
-    updateDbState((prev) => ({
-      ...prev,
-      tabs: prev.tabs.map((t) =>
-        t.id === tabId ? { ...t, rows: t.rows.filter((r) => !rowIdSet.has(r.id)) } : t
-      )
-    }));
+    updateDbState((prev) => {
+      const targetTab = prev.tabs.find((t) => t.id === tabId);
+      const isEmployeesTab =
+        targetTab?.moduleId === 'employees' || targetTab?.id === 'tab_employees';
+      const deletedIdentifiers = targetTab
+        ? targetTab.rows
+            .filter((r) => rowIdSet.has(r.id))
+            .slice(0, 5)
+            .map((r) => resolveSafeRowIdentifier(r, targetTab))
+        : [];
+      const rowIdentSummary =
+        deletedIdentifiers.length > 0
+          ? `${deletedIdentifiers.join(', ')}${rowIds.length > 5 ? ` и ещё ${rowIds.length - 5}` : ''}`
+          : `${rowIds.length} шт.`;
+      return {
+        ...prev,
+        tabs: prev.tabs.map((t) =>
+          t.id === tabId ? { ...t, rows: t.rows.filter((r) => !rowIdSet.has(r.id)) } : t
+        ),
+        ...(isEmployeesTab
+          ? {
+              employeeObligations: obligationService.removeObligationsForEmployees(
+                prev.employeeObligations,
+                rowIds
+              ),
+              employeeEvents: obligationService.removeEventsForEmployees(
+                prev.employeeEvents,
+                rowIds
+              )
+            }
+          : {}),
+        auditLog: appendAuditLogEntries(prev.auditLog, [
+          createAuditLogEntry({
+            action: 'delete',
+            tabId,
+            tabName: targetTab?.name,
+            rowIdentifier: rowIdentSummary,
+            summary: `Удалено записей (${rowIds.length}) из «${targetTab?.name || tabId}»`
+          })
+        ])
+      };
+    });
     setSelectedRowIds((prev) => {
       const next = new Set(prev);
       rowIds.forEach((id) => next.delete(id));
@@ -1173,7 +1305,19 @@ export default function App() {
           rows: updatedRows
         };
       });
-      return { ...prev, tabs: nextTabs };
+      const targetTab = prev.tabs.find((t) => t.id === tabId);
+      return {
+        ...prev,
+        tabs: nextTabs,
+        auditLog: appendAuditLogEntries(prev.auditLog, [
+          createAuditLogEntry({
+            action: 'structure',
+            tabId,
+            tabName: targetTab?.name,
+            summary: `Добавлен столбец «${newCol.name}» во вкладке «${targetTab?.name || tabId}»`
+          })
+        ])
+      };
     });
   };
 
@@ -1242,18 +1386,96 @@ export default function App() {
 
     updateDbState((prev) => ({
       ...prev,
-      tabs: [...prev.tabs, newTab]
+      tabs: [...prev.tabs, newTab],
+      auditLog: appendAuditLogEntries(prev.auditLog, [
+        createAuditLogEntry({
+          action: 'import',
+          tabId: newTabId,
+          tabName: newTab.name,
+          summary: `Импортирована новая вкладка «${newTab.name}» (${rows.length} строк)`
+        })
+      ])
     }));
     setActiveTabId(newTabId);
     showToast(`Импортирована новая вкладка «${newTab.name}» (${rows.length} строк).`, 'success');
   };
 
   const handleCommitImportExistingTab = (tabId: string, rows: Record<string, any>[]) => {
-    updateDbState((prev) => ({
-      ...prev,
-      tabs: prev.tabs.map((t) => (t.id === tabId ? { ...t, rows: [...t.rows, ...(rows as Row[])] } : t))
-    }));
+    updateDbState((prev) => {
+      const targetTab = prev.tabs.find((t) => t.id === tabId);
+      return {
+        ...prev,
+        tabs: prev.tabs.map((t) => (t.id === tabId ? { ...t, rows: [...t.rows, ...(rows as Row[])] } : t)),
+        auditLog: appendAuditLogEntries(prev.auditLog, [
+          createAuditLogEntry({
+            action: 'import',
+            tabId,
+            tabName: targetTab?.name,
+            summary: `Импорт Excel во вкладку «${targetTab?.name || tabId}»: добавлено строк ${rows.length}`
+          })
+        ])
+      };
+    });
     showToast(`Добавлено строк из Excel: ${rows.length}`, 'success');
+  };
+
+  const handleCommitOneCZupImport = (payload: { createdPositions: Row[]; employeeRows: Row[] }) => {
+    const { createdPositions, employeeRows } = payload;
+    updateDbState((prev) => {
+      const positionsTab =
+        prev.tabs.find((t) => t.moduleId === 'staffing' || t.id === 'tab_positions') ||
+        prev.tabs.find(
+          (t) => t.isMaster && t.columns.some((c) => c.id === 'pos_title' || /должност/i.test(c.name))
+        );
+      const employeesTabRef =
+        prev.tabs.find((t) => t.moduleId === 'employees' || t.id === 'tab_employees') ||
+        prev.tabs.find((t) => t.id === currentTab.id);
+
+      const nextTabs = prev.tabs.map((t) => {
+        if (positionsTab && t.id === positionsTab.id && createdPositions.length > 0) {
+          return { ...t, rows: [...t.rows, ...createdPositions] };
+        }
+        if (employeesTabRef && t.id === employeesTabRef.id) {
+          return { ...t, rows: [...t.rows, ...employeeRows] };
+        }
+        return t;
+      });
+
+      let nextObligations = prev.employeeObligations || [];
+      employeeRows.forEach((empRow) => {
+        const hireDate = obligationService.getEmployeeHireDate(empRow);
+        if (!hireDate) return;
+        const ctx = obligationService.resolveEmployeeContext(nextTabs, empRow);
+        nextObligations = obligationService.ensureHireObligations(nextObligations, {
+          employeeRowId: empRow.id,
+          hireDateIso: hireDate,
+          context: ctx
+        });
+      });
+
+      return {
+        ...prev,
+        tabs: nextTabs,
+        employeeObligations: nextObligations,
+        auditLog: appendAuditLogEntries(prev.auditLog, [
+          createAuditLogEntry({
+            action: 'import',
+            tabId: employeesTabRef?.id,
+            tabName: employeesTabRef?.name || 'Сотрудники',
+            summary: `Импорт 1С:ЗУП: сотрудников ${employeeRows.length}, создано должностей ${createdPositions.length}`
+          })
+        ])
+      };
+    });
+
+    const posNote =
+      createdPositions.length > 0
+        ? `, создано должностей в штатке: ${createdPositions.length}`
+        : '';
+    showToast(
+      `Импорт 1С:ЗУП: добавлено сотрудников ${employeeRows.length}${posNote}, пакеты обязательств рассчитаны.`,
+      'success'
+    );
   };
 
   // ===================== LEGAL ENTITIES OPERATIONS =====================
@@ -1273,6 +1495,9 @@ export default function App() {
           tags: nextTarget.tags,
           templates: nextTarget.templates,
           generatedDocs: nextTarget.generatedDocs || [],
+          employeeObligations: nextTarget.employeeObligations || [],
+          employeeEvents: nextTarget.employeeEvents || [],
+          auditLog: nextTarget.auditLog || [],
           llmLogs: nextTarget.llmLogs || []
         };
       },
@@ -1310,6 +1535,9 @@ export default function App() {
             tags: nextTarget.tags,
             templates: nextTarget.templates,
             generatedDocs: nextTarget.generatedDocs || [],
+            employeeObligations: nextTarget.employeeObligations || [],
+            employeeEvents: nextTarget.employeeEvents || [],
+            auditLog: nextTarget.auditLog || [],
             llmLogs: nextTarget.llmLogs || []
           };
         },
@@ -1331,7 +1559,22 @@ export default function App() {
       return;
     }
 
-    updateDbState((prev) => applyDeadlineCompletedTodayInState(prev, event, todayIso).state);
+    updateDbState((prev) => {
+      const next = applyDeadlineCompletedTodayInState(prev, event, todayIso).state;
+      return {
+        ...next,
+        auditLog: appendAuditLogEntries(next.auditLog, [
+          createAuditLogEntry({
+            action: 'update',
+            tabId: event.tabId,
+            tabName: event.tabName,
+            rowId: event.rowId,
+            rowIdentifier: resolution.rowIdentifier,
+            summary: `Срок «${event.columnName}» отмечен выполненным (${formatIsoToDisplay(todayIso)})`
+          })
+        ])
+      };
+    });
     showToast(
       `Мероприятие «${event.columnName}» (${resolution.rowIdentifier}) отмечено выполненным сегодня.`,
       'success'
@@ -1475,6 +1718,9 @@ export default function App() {
       tags: newEntity.tags,
       templates: newEntity.templates,
       generatedDocs: newEntity.generatedDocs || [],
+      employeeObligations: newEntity.employeeObligations || [],
+      employeeEvents: newEntity.employeeEvents || [],
+      auditLog: newEntity.auditLog || [],
       llmLogs: newEntity.llmLogs
     }));
     setActiveTabId(newEntity.tabs[0]?.id || '');
@@ -1499,6 +1745,9 @@ export default function App() {
       tags: nextActive.tags,
       templates: nextActive.templates,
       generatedDocs: nextActive.generatedDocs || [],
+      employeeObligations: nextActive.employeeObligations || [],
+      employeeEvents: nextActive.employeeEvents || [],
+      auditLog: nextActive.auditLog || [],
       llmLogs: nextActive.llmLogs
     }));
 
@@ -1546,12 +1795,22 @@ export default function App() {
         }
       }
 
-      await documentGenerator.saveAndDownloadBlob(
-        payload.blob,
-        regResult.newRecord.fileName,
-        true,
-        regResult.newRecord.relativePath
-      );
+      if (payload.skipBrowserDownload) {
+        if (localApiClient.isNative()) {
+          await localApiClient.saveFileToBucket(
+            'documents',
+            regResult.newRecord.relativePath,
+            payload.blob
+          );
+        }
+      } else {
+        await documentGenerator.saveAndDownloadBlob(
+          payload.blob,
+          regResult.newRecord.fileName,
+          true,
+          regResult.newRecord.relativePath
+        );
+      }
 
       // Рабочая папка подключена: дублируем документ на диск (documents/<Категория>/<файл>)
       if (workspaceFolderService.isConnected()) {
@@ -1704,7 +1963,7 @@ export default function App() {
       showToast(res.error, 'error');
       return false;
     }
-    const snapshot = latestDbRef.current;
+    const snapshot = sanitizeDatabaseForExport(latestDbRef.current);
     const writeRes = await workspaceFolderService.writeDatabaseText(
       JSON.stringify({ ...snapshot, lastSaved: new Date().toISOString() }, null, 2)
     );
@@ -1790,34 +2049,61 @@ export default function App() {
 
   const handleUpdateEmployee = (employeeRowId: string, patch: Record<string, any>) => {
     updateDbState((prev) => {
-      const tabs = prev.tabs.map((tab) =>
-        tab.moduleId === 'employees'
-          ? {
-              ...tab,
-              rows: tab.rows.map((row) => (row.id === employeeRowId ? { ...row, ...patch } : row))
-            }
-          : tab
-      );
+      const employeesTabBefore = prev.tabs.find((tab) => tab.moduleId === 'employees');
+      const prevRow = employeesTabBefore?.rows.find((r) => r.id === employeeRowId);
+      const changes: AuditLogFieldChange[] = [];
+      if (employeesTabBefore && prevRow) {
+        Object.keys(patch).forEach((colId) => {
+          const oldVal = formatAuditCellValue(prevRow[colId]);
+          const newVal = formatAuditCellValue(patch[colId]);
+          if (oldVal !== newVal) {
+            const colName = employeesTabBefore.columns.find((c) => c.id === colId)?.name || colId;
+            changes.push({ field: colName, oldValue: oldVal, newValue: newVal });
+          }
+        });
+      }
+      const tabs = employeesTabBefore
+        ? integrityService.applyMasterRowCascade(
+            prev.tabs,
+            employeesTabBefore.id,
+            employeeRowId,
+            patch
+          ).tabs
+        : prev.tabs;
       const employeesTabNext = tabs.find((tab) => tab.moduleId === 'employees');
       const updatedRow = employeesTabNext?.rows.find((row) => row.id === employeeRowId);
       let employeeObligations = prev.employeeObligations || [];
       if (updatedRow) {
         const hireDate = obligationService.getEmployeeHireDate(updatedRow);
-        if (hireDate) {
-          const context = obligationService.resolveEmployeeContext(tabs, updatedRow);
-          const ensured = obligationService.ensureHireObligations(employeeObligations, {
-            employeeRowId,
-            hireDateIso: hireDate,
-            context
-          });
-          employeeObligations = obligationService.rescheduleObligationsForHireDate(
-            ensured,
-            employeeRowId,
-            hireDate
-          );
-        }
+        const context = obligationService.resolveEmployeeContext(tabs, updatedRow);
+        employeeObligations = obligationService.syncEmployeeObligationsForProfileChange(
+          employeeObligations,
+          { employeeRowId, hireDateIso: hireDate, context }
+        );
       }
-      return { ...prev, tabs, employeeObligations };
+      const rowIdentifier =
+        employeesTabNext && updatedRow
+          ? resolveSafeRowIdentifier(updatedRow, employeesTabNext)
+          : undefined;
+      return {
+        ...prev,
+        tabs,
+        employeeObligations,
+        auditLog:
+          changes.length > 0
+            ? appendAuditLogEntries(prev.auditLog, [
+                createAuditLogEntry({
+                  action: 'update',
+                  tabId: employeesTabBefore?.id,
+                  tabName: employeesTabBefore?.name || 'Сотрудники',
+                  rowId: employeeRowId,
+                  rowIdentifier,
+                  summary: `Обновлена карточка работника ${rowIdentifier || ''}`.trim(),
+                  changes
+                })
+              ])
+            : prev.auditLog
+      };
     });
     showToast('Данные работника сохранены', 'success');
   };
@@ -1859,10 +2145,11 @@ export default function App() {
     });
     if ('emp_hire_date' in newRow) newRow.emp_hire_date = todayIso;
 
+    const context = obligationService.resolveEmployeeContext(dbState.tabs, newRow as any);
     const nextObligations = obligationService.ensureHireObligations(dbState.employeeObligations || [], {
       employeeRowId: newRow.id,
       hireDateIso: todayIso,
-      context: {}
+      context
     });
 
     updateDbState((prev) => ({
@@ -1870,7 +2157,16 @@ export default function App() {
       tabs: prev.tabs.map((item) =>
         item.id === tab.id ? { ...item, rows: [newRow as any, ...item.rows] } : item
       ),
-      employeeObligations: nextObligations
+      employeeObligations: nextObligations,
+      auditLog: appendAuditLogEntries(prev.auditLog, [
+        createAuditLogEntry({
+          action: 'create',
+          tabId: tab.id,
+          tabName: tab.name,
+          rowId: newRow.id,
+          summary: 'Добавлена карточка нового работника'
+        })
+      ])
     }));
 
     setEmployeeCardRowId(newRow.id);
@@ -1912,10 +2208,21 @@ export default function App() {
           context
         });
       }
+      const rowIdentifier = employeesTabRef ? resolveSafeRowIdentifier(row, employeesTabRef) : undefined;
       return {
         ...prev,
         employeeEvents: [...(prev.employeeEvents || []), event],
-        employeeObligations: obligations
+        employeeObligations: obligations,
+        auditLog: appendAuditLogEntries(prev.auditLog, [
+          createAuditLogEntry({
+            action: 'obligation',
+            tabId: employeesTabRef?.id,
+            tabName: employeesTabRef?.name || 'Сотрудники',
+            rowId: employeeRowId,
+            rowIdentifier,
+            summary: `Событие «${EMPLOYEE_EVENT_LABELS[type]}» (${formatIsoToDisplay(dateIso)})`
+          })
+        ])
       };
     });
 
@@ -1926,44 +2233,81 @@ export default function App() {
   };
 
   const handleCompleteObligation = (obligationId: string) => {
-    updateDbState((prev) => ({
-      ...prev,
-      employeeObligations: obligationService.completeObligation(
+    updateDbState((prev) => {
+      const target = (prev.employeeObligations || []).find((o) => o.id === obligationId);
+      const next = obligationService.completeObligation(
         prev.employeeObligations || [],
         obligationId
-      )
-    }));
+      );
+      return {
+        ...prev,
+        employeeObligations: next,
+        auditLog: target
+          ? appendAuditLogEntries(prev.auditLog, [
+              createAuditLogEntry({
+                action: 'obligation',
+                rowId: target.employeeRowId,
+                summary: `Выполнено обязательство: ${target.title}`
+              })
+            ])
+          : prev.auditLog
+      };
+    });
   };
 
   const handleReopenObligation = (obligationId: string) => {
-    updateDbState((prev) => ({
-      ...prev,
-      employeeObligations: obligationService.reopenObligation(
+    updateDbState((prev) => {
+      const target = (prev.employeeObligations || []).find((o) => o.id === obligationId);
+      const next = obligationService.reopenObligation(
         prev.employeeObligations || [],
         obligationId
-      )
-    }));
+      );
+      return {
+        ...prev,
+        employeeObligations: next,
+        auditLog: target
+          ? appendAuditLogEntries(prev.auditLog, [
+              createAuditLogEntry({
+                action: 'obligation',
+                rowId: target.employeeRowId,
+                summary: `Возобновлено обязательство: ${target.title}`
+              })
+            ])
+          : prev.auditLog
+      };
+    });
   };
 
-  const handleGenerateObligationDocument = async (obligationId: string) => {
+  const generateObligationDocArtifact = async (
+    obligationId: string,
+    options?: { skipBrowserDownload?: boolean; silentToast?: boolean }
+  ): Promise<{ docId: string; fileName: string; blob: Blob; category: string } | null> => {
     const state = latestDbRef.current;
     const obligation = (state.employeeObligations || []).find((item) => item.id === obligationId);
-    if (!obligation) return;
+    if (!obligation) return null;
     const employeesTabRef = state.tabs.find((tab) => tab.moduleId === 'employees');
     const employeeRow = employeesTabRef?.rows.find((row) => row.id === obligation.employeeRowId);
     if (!employeesTabRef || !employeeRow) {
-      showToast('Не найден работник для этого требования', 'error');
-      return;
+      if (!options?.silentToast) showToast('Не найден работник для этого требования', 'error');
+      return null;
     }
     const template = obligation.templateId
-      ? state.templates.find((item) => item.id === obligation.templateId)
+      ? state.templates.find(
+          (item) =>
+            !item.isArchived &&
+            (item.id === obligation.templateId ||
+              item.builtInId === obligation.templateId ||
+              item.id.startsWith(`${obligation.templateId}_`))
+        )
       : undefined;
     if (!template) {
-      showToast(
-        `Для «${obligation.title}» нет шаблона — включите модуль этапа или добавьте шаблон в разделе «Шаблоны»`,
-        'error'
-      );
-      return;
+      if (!options?.silentToast) {
+        showToast(
+          `Для «${obligation.title}» нет шаблона — включите модуль этапа или добавьте шаблон в разделе «Шаблоны»`,
+          'error'
+        );
+      }
+      return null;
     }
 
     const moduleTab =
@@ -1980,7 +2324,8 @@ export default function App() {
         moduleTab,
         employeesTabRef,
         employeeRow,
-        obligationService.getEmployeeHireDate(employeeRow)
+        obligationService.getEmployeeHireDate(employeeRow),
+        state.tabs
       );
       targetRow = linked;
       createdRow = linked;
@@ -2010,16 +2355,19 @@ export default function App() {
     );
     const safeName =
       `${template.name} — ${employeeName}`.replace(/[\\/:*?"<>|]+/g, '_').slice(0, 120) || template.name;
+    const fileName = `${safeName}.docx`;
+    const category = template.category || moduleTab.name;
     const blob = await documentGenerator.generateDocx(template.name, resolvedText);
     const docId = await handleRecordGeneratedDoc({
       title: template.name,
-      fileName: `${safeName}.docx`,
-      category: template.category || moduleTab.name,
+      fileName,
+      category,
       format: 'docx',
       blob,
       sourceTabName: moduleTab.name,
       sourceTabId: moduleTab.id,
-      rowIdentifier: employeeName
+      rowIdentifier: employeeName,
+      skipBrowserDownload: options?.skipBrowserDownload
     });
 
     updateDbState((prev) => {
@@ -2035,7 +2383,14 @@ export default function App() {
       );
       return { ...prev, tabs, employeeObligations };
     });
-    showToast(`Документ «${template.name}» сформирован`, 'success');
+    if (!options?.silentToast) {
+      showToast(`Документ «${template.name}» сформирован`, 'success');
+    }
+    return { docId, fileName, blob, category };
+  };
+
+  const handleGenerateObligationDocument = async (obligationId: string) => {
+    await generateObligationDocArtifact(obligationId);
   };
 
   const handleGenerateEmployeePackage = async (employeeRowId: string) => {
@@ -2054,6 +2409,76 @@ export default function App() {
       }
     } catch (error: any) {
       showToast(error?.message || 'Не удалось сформировать пакет документов', 'error');
+    } finally {
+      setObligationsWorking(false);
+    }
+  };
+
+  const handleDownloadEmployeePackageZip = async (employeeRowId: string) => {
+    setObligationsWorking(true);
+    try {
+      ensureEmployeePackage(employeeRowId);
+      const stateSnapshot = latestDbRef.current;
+      const employeesTabRef = stateSnapshot.tabs.find((tab) => tab.moduleId === 'employees');
+      const empRow = employeesTabRef?.rows.find((r) => r.id === employeeRowId);
+      const empName =
+        employeesTabRef && empRow
+          ? obligationService.getEmployeeDisplayName(empRow, employeesTabRef)
+          : 'Сотрудник';
+
+      const docObligations = (stateSnapshot.employeeObligations || []).filter(
+        (item) => item.employeeRowId === employeeRowId && item.kind === 'document'
+      );
+
+      const entries: Array<{ name: string; data: Blob }> = [];
+      for (const item of docObligations) {
+        const existingDoc = item.generatedDocId
+          ? (latestDbRef.current.generatedDocs || []).find((d) => d.id === item.generatedDocId)
+          : undefined;
+        if (existingDoc) {
+          let blob: Blob | null = null;
+          if (localApiClient.isNative()) {
+            try {
+              blob = await localApiClient.downloadFileFromBucket('documents', existingDoc.relativePath);
+            } catch {
+              blob = null;
+            }
+          } else if (existingDoc.dataBase64) {
+            const mime =
+              existingDoc.format === 'docx'
+                ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                : 'application/pdf';
+            blob = base64ToBlob(existingDoc.dataBase64, mime);
+          }
+          if (blob) {
+            entries.push({ name: existingDoc.relativePath || existingDoc.fileName, data: blob });
+            continue;
+          }
+        }
+        const artifact = await generateObligationDocArtifact(item.id, {
+          skipBrowserDownload: true,
+          silentToast: true
+        });
+        if (artifact) {
+          entries.push({
+            name: `${artifact.category}/${artifact.fileName}`,
+            data: artifact.blob
+          });
+        }
+      }
+
+      if (entries.length === 0) {
+        showToast('Нет шаблонов для формирования ZIP-пакета этого сотрудника.', 'warning');
+        return;
+      }
+
+      const zipBlob = await packageFilesAsZip(entries);
+      const safeEmp = empName.replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 60);
+      const zipName = `Пакет_ОТ_${safeEmp}_${formatIsoToDisplay(todayIso)}.zip`;
+      portablePackageService.triggerBlobDownload(zipBlob, zipName);
+      showToast(`Скачан пакет сотрудника «${zipName}» (${entries.length} файл.)`, 'success');
+    } catch (error: any) {
+      showToast(error?.message || 'Не удалось упаковать документы сотрудника в ZIP', 'error');
     } finally {
       setObligationsWorking(false);
     }
@@ -2140,6 +2565,7 @@ export default function App() {
         onOpenPortableModal={() => setIsWindowsPortableOpen(true)}
         onOpenWorkspaceModal={() => setIsWorkspaceModalOpen(true)}
         onOpenModules={() => setIsModulesOpen(true)}
+        onOpenAuditLog={() => setIsAuditLogOpen(true)}
         workspaceFolderName={workspaceFolderName}
         onAddRow={() => {
           if (isAnySystemTab) {
@@ -2342,6 +2768,18 @@ export default function App() {
           onOpenGeneratedDocs={() => setIsGeneratedDocsOpen(true)}
           onOpenBackup={() => setIsBackupOpen(true)}
           onOpenWorkspaceModal={() => setIsWorkspaceModalOpen(true)}
+          onOpenRelationsAudit={() => {
+            setIsRelationsAuditMode(true);
+            setIsRelationsSchemaOpen(true);
+          }}
+          onOpenEditEntity={() =>
+            setEntityModalState({
+              isOpen: true,
+              mode: 'edit',
+              targetEntity: activeEntity
+            })
+          }
+          onOpenNormativeDocs={() => setIsNormativeDocsOpen(true)}
         />
       ) : isSystemDeadlineTab ? (
         <DeadlineControlView
@@ -2501,6 +2939,7 @@ export default function App() {
         allTabs={dbState.tabs}
         onCommitImportNewTab={handleCommitImportNewTab}
         onCommitImportExistingTab={handleCommitImportExistingTab}
+        onCommitOneCZupImport={handleCommitOneCZupImport}
       />
 
       <RelationsSchemaModal
@@ -2612,6 +3051,7 @@ export default function App() {
             : null
         }
         employeesTab={employeesTab || ({ id: '', name: '', columns: [], rows: [], attachedDocs: [] } as any)}
+        allTabs={dbState.tabs}
         obligations={
           employeeCardRowId
             ? employeeObligations.filter((item) => item.employeeRowId === employeeCardRowId)
@@ -2622,6 +3062,7 @@ export default function App() {
         onEnsurePackage={ensureEmployeePackage}
         onGenerateDocument={handleGenerateObligationDocument}
         onGeneratePackage={handleGenerateEmployeePackage}
+        onDownloadPackageZip={handleDownloadEmployeePackageZip}
         onCompleteObligation={handleCompleteObligation}
         onReopenObligation={handleReopenObligation}
         onUpdateEmployee={handleUpdateEmployee}
@@ -2684,8 +3125,21 @@ export default function App() {
               newCols
             );
             const cleanedTags = integrityService.pruneOrphanedTags(p.tags, cleanedTabs);
+            const targetTab = p.tabs.find((t) => t.id === tabId);
 
-            return { ...p, tabs: cleanedTabs, tags: cleanedTags };
+            return {
+              ...p,
+              tabs: cleanedTabs,
+              tags: cleanedTags,
+              auditLog: appendAuditLogEntries(p.auditLog, [
+                createAuditLogEntry({
+                  action: 'structure',
+                  tabId,
+                  tabName: targetTab?.name,
+                  summary: `Обновлена структура столбцов вкладки «${targetTab?.name || tabId}» (столбцов: ${newCols.length})`
+                })
+              ])
+            };
           });
 
           const txRes = await executeColumnsUpdateTransaction({
@@ -2730,7 +3184,19 @@ export default function App() {
           // Flush pending queued saves first: otherwise a task queued before the restore
           // can land after it and silently revert the restored database.
           await saveQueueRef.current;
-          const res = await storageService.restoreDatabaseSafely(latestDbRef.current, nextState);
+          const stateWithRestoreAudit: DatabaseState = {
+            ...nextState,
+            auditLog: appendAuditLogEntries(nextState.auditLog, [
+              createAuditLogEntry({
+                action: 'restore',
+                summary: 'База данных восстановлена из резервной копии'
+              })
+            ])
+          };
+          const res = await storageService.restoreDatabaseSafely(
+            latestDbRef.current,
+            stateWithRestoreAudit
+          );
           if (res.ok) {
             shownToastKeysRef.current.clear();
             setDbState(res.state);
@@ -2790,6 +3256,13 @@ export default function App() {
       <HelpModal
         isOpen={isHelpOpen}
         onClose={() => setIsHelpOpen(false)}
+      />
+
+      <AuditLogModal
+        isOpen={isAuditLogOpen}
+        onClose={() => setIsAuditLogOpen(false)}
+        entityName={activeEntity.profile.shortName || activeEntity.profile.fullName}
+        entries={dbState.auditLog || []}
       />
 
       <LegalEntityModal

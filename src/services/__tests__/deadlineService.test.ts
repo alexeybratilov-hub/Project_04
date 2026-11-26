@@ -33,6 +33,7 @@ import {
   isStandardWarningPreset,
   markDeadlineCompletedToday,
   MAX_POPOVER_DEADLINE_NOTIFICATIONS,
+  mergePresetHolidays,
   normalizeDeadlineAppSettings,
   normalizeDeadlineCellValue,
   normalizeDeadlineColumnConfig,
@@ -42,6 +43,8 @@ import {
   previewConversionToDeadline,
   previewScalarConversion,
   resolveDeadlineEventTarget,
+  RF_PRODUCTION_CALENDAR_2026,
+  RF_PRODUCTION_CALENDAR_2027,
   selectTopPopoverNotifications,
   summarizeDeadlineEvents,
   SYSTEM_DEADLINE_TAB_ID,
@@ -1593,6 +1596,29 @@ describe('T-49: Notification keys, top-10 popover selection, session deduplicati
     expect(popover.items).toHaveLength(3);
     expect(popover.overdueAlertCount).toBe(2);
     expect(popover.dueSoonAlertCount).toBe(1);
+  });
+
+  it('18. provides RF production calendars for 2026 and 2027 and merges without duplicates', () => {
+    expect(RF_PRODUCTION_CALENDAR_2026).toContain('2026-01-01');
+    expect(RF_PRODUCTION_CALENDAR_2026).toContain('2026-05-11');
+    expect(RF_PRODUCTION_CALENDAR_2026).toContain('2026-12-31');
+    expect(RF_PRODUCTION_CALENDAR_2027).toContain('2027-01-01');
+    expect(RF_PRODUCTION_CALENDAR_2027).toContain('2027-05-10');
+    expect(RF_PRODUCTION_CALENDAR_2027).toContain('2027-11-04');
+
+    const with2026 = mergePresetHolidays(['2026-05-01', '2026-12-25'], 2026);
+    expect(with2026).toContain('2026-12-25');
+    // No duplicate 2026-05-01
+    expect(with2026.filter((d) => d === '2026-05-01')).toHaveLength(1);
+
+    const withBoth = mergePresetHolidays(with2026, 2027);
+    expect(withBoth.length).toBe(
+      new Set(['2026-12-25', ...RF_PRODUCTION_CALENDAR_2026, ...RF_PRODUCTION_CALENDAR_2027]).size
+    );
+
+    // Working day diff across May 2026 holidays skips 2026-05-09 (Sat), 2026-05-10 (Sun), 2026-05-11 (Mon transfer)
+    // Fri 2026-05-08 -> Tue 2026-05-12 = 1 working day (Tue) instead of 2
+    expect(diffWorkingDays('2026-05-08', '2026-05-12', withBoth)).toBe(1);
   });
 });
 

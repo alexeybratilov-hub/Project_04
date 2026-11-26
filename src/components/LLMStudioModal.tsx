@@ -1,10 +1,10 @@
-﻿import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Cpu, Play, Download, RefreshCw, FileText, Sparkles,
-  AlertCircle, CheckCircle2, Eye, EyeOff, Info, Copy, Check
+  AlertCircle, CheckCircle2, Eye, EyeOff, Info, Copy, Check, ShieldCheck
 } from 'lucide-react';
 import { AttachedDoc, LegalEntityProfile, LLMConfig, LLMGenerationLog, Tab, Tag } from '../types/database';
-import { ollamaService } from '../services/ollamaService';
+import { ollamaService, rehydratePiiInText } from '../services/ollamaService';
 import { documentGenerator } from '../services/documentGenerator';
 import { createUniqueId } from '../services/integrityService';
 import { getLLMProviderPreset, LLM_PROVIDER_PRESETS, normalizeLLMConfig } from '../data/llmProviders';
@@ -37,6 +37,7 @@ export interface RecordGeneratedDocPayload {
   sourceTabName?: string;
   sourceTabId?: string;
   rowIdentifier?: string;
+  skipBrowserDownload?: boolean;
 }
 
 interface LLMStudioModalProps {
@@ -91,6 +92,13 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
   const [isTestingConnection, setIsTestingConnection] = useState<boolean>(false);
   const [localConfig, setLocalConfig] = useState<LLMConfig>(normalizedPropConfig);
   const [showApiKey, setShowApiKey] = useState<boolean>(false);
+  const [anonymizePii, setAnonymizePii] = useState<boolean>(
+    normalizedPropConfig.providerKind === 'api'
+  );
+  const [allowUnmaskedCloud, setAllowUnmaskedCloud] = useState<boolean>(false);
+  const [lastRawMaskedText, setLastRawMaskedText] = useState<string | null>(null);
+  const [lastRehydratedCount, setLastRehydratedCount] = useState<number>(0);
+  const [showingMaskedOutput, setShowingMaskedOutput] = useState<boolean>(false);
   const [selectedLog, setSelectedLog] = useState<LLMGenerationLog | null>(null);
   const [copiedLogId, setCopiedLogId] = useState<string | null>(null);
   const [connectionFeedback, setConnectionFeedback] = useState<{
@@ -110,6 +118,11 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
       const norm = normalizeLLMConfig(llmConfig);
       setActiveTab(initialSubTab);
       setLocalConfig(norm);
+      setAnonymizePii(norm.providerKind === 'api');
+      setAllowUnmaskedCloud(false);
+      setLastRawMaskedText(null);
+      setLastRehydratedCount(0);
+      setShowingMaskedOutput(false);
       setSelectedLog(null);
       setCopiedLogId(null);
       setTargetRowId(selectedRowId || currentTab.rows[0]?.id || '');
@@ -168,6 +181,8 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
       errorMessage: undefined
     };
     setLocalConfig(updated);
+    setAnonymizePii(preset.kind === 'api');
+    setAllowUnmaskedCloud(false);
     setConnectionFeedback({ type: 'idle', message: '' });
   };
 
@@ -266,6 +281,13 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
       showToast('Выберите строку таблицы для генерации', 'warning');
       return;
     }
+    if (localConfig.providerKind === 'api' && !anonymizePii && !allowUnmaskedCloud) {
+      showToast(
+        'Включите обезличивание ПДн (152-ФЗ) или подтвердите передачу данных во внешний API',
+        'warning'
+      );
+      return;
+    }
 
     setIsGenerating(true);
     try {
@@ -279,11 +301,15 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
         allTabs,
         entityProfile,
         customInstructions,
-        llmConfig: localConfig
+        llmConfig: localConfig,
+        anonymizePii: localConfig.providerKind === 'api' ? anonymizePii : false
       });
 
       setGeneratedText(result.text);
       setResultModelUsed(result.modelUsed);
+      setLastRawMaskedText(result.rawMaskedText ?? null);
+      setLastRehydratedCount(result.piiRehydratedCount ?? 0);
+      setShowingMaskedOutput(false);
 
       const newLog: LLMGenerationLog = {
         id: createUniqueId('log'),
@@ -594,11 +620,50 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                 />
               </div>
 
+              {localConfig.providerKind === 'api' && (
+                <div className="p-3 bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/60 rounded-xl space-y-2">
+                  <label className="flex items-start justify-between gap-2 cursor-pointer">
+                    <span className="flex items-start gap-1.5 font-semibold text-amber-950 dark:text-amber-200">
+                      <ShieldCheck className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                      <span>Обезличивать ПДн (152-ФЗ) перед отправкой в облако</span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={anonymizePii}
+                      onChange={(e) => {
+                        setAnonymizePii(e.target.checked);
+                        if (e.target.checked) setAllowUnmaskedCloud(false);
+                      }}
+                      className="w-4 h-4 rounded text-amber-600 focus:ring-amber-500 mt-0.5 shrink-0"
+                    />
+                  </label>
+                  <p className="text-[11px] text-amber-900/80 dark:text-amber-300/90 leading-snug">
+                    {anonymizePii
+                      ? 'ФИО, СНИЛС, табельные номера и реквизиты организации заменяются на маркеры до отправки во внешний API.'
+                      : 'Внимание: открытые персональные данные будут отправлены внешнему провайдеру.'}
+                  </p>
+                  {!anonymizePii && (
+                    <label className="flex items-start gap-2 pt-1 border-t border-amber-200/80 dark:border-amber-800/70 cursor-pointer text-[11px] font-medium text-rose-800 dark:text-rose-300">
+                      <input
+                        type="checkbox"
+                        checked={allowUnmaskedCloud}
+                        onChange={(e) => setAllowUnmaskedCloud(e.target.checked)}
+                        className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 mt-0.5 shrink-0"
+                      />
+                      <span>Подтверждаю передачу открытых данных во внешний API провайдера (152-ФЗ)</span>
+                    </label>
+                  )}
+                </div>
+              )}
+
               <AppButton
                 variant="primary"
                 size="md"
                 loading={isGenerating}
-                disabled={!targetRow}
+                disabled={
+                  !targetRow ||
+                  (localConfig.providerKind === 'api' && !anonymizePii && !allowUnmaskedCloud)
+                }
                 onClick={handleRunGeneration}
                 icon={
                   isGenerating ? (
@@ -628,6 +693,42 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                 )}
               </div>
 
+              {lastRehydratedCount > 0 && (
+                <StatusBanner
+                  variant="success"
+                  compact
+                  className="mb-3 shrink-0"
+                  action={
+                    lastRawMaskedText && targetRow ? (
+                      <AppButton
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => {
+                          if (!showingMaskedOutput) {
+                            setGeneratedText(lastRawMaskedText);
+                            setShowingMaskedOutput(true);
+                          } else {
+                            const restored = rehydratePiiInText(lastRawMaskedText, {
+                              tab: currentTab,
+                              row: targetRow,
+                              entityProfile,
+                              allTabs
+                            });
+                            setGeneratedText(restored.text);
+                            setShowingMaskedOutput(false);
+                          }
+                        }}
+                      >
+                        {showingMaskedOutput ? 'Восстановить ПДн локально' : 'Показать обезличенный ответ ИИ'}
+                      </AppButton>
+                    ) : undefined
+                  }
+                >
+                  152-ФЗ: в облако переданы маркеры, ПДн восстановлены локально (подстановок:{' '}
+                  <strong className="font-mono tabular-nums">{lastRehydratedCount}</strong>)
+                </StatusBanner>
+              )}
+
               <textarea
                 value={generatedText}
                 onChange={(e) => setGeneratedText(e.target.value)}
@@ -635,10 +736,36 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                 className="flex-1 w-full p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl font-serif text-slate-800 dark:text-slate-200 text-xs leading-relaxed resize-none focus:outline-hidden focus:ring-1 focus:ring-indigo-500"
               />
 
-              <div className="mt-4 pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3 shrink-0">
-                <span className="text-[11px] text-slate-500 font-mono tabular-nums">
-                  {generatedText ? `Символов: ${generatedText.length}` : 'Готов к генерации'}
-                </span>
+              <div className="mt-4 pt-3 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 shrink-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] text-slate-500 font-mono tabular-nums">
+                    {generatedText ? `Символов: ${generatedText.length}` : 'Готов к генерации'}
+                  </span>
+                  {generatedText && targetRow && /\[[^\]]*(?:скрыт|Организация)[^\]]*\]/.test(generatedText) && (
+                    <AppButton
+                      variant="secondary"
+                      size="xs"
+                      onClick={() => {
+                        const res = rehydratePiiInText(generatedText, {
+                          tab: currentTab,
+                          row: targetRow,
+                          entityProfile,
+                          allTabs
+                        });
+                        if (res.restoredCount > 0) {
+                          setGeneratedText(res.text);
+                          setLastRehydratedCount((c) => c + res.restoredCount);
+                          setShowingMaskedOutput(false);
+                          showToast(`Локально подставлены ПДн/реквизиты (${res.restoredCount})`, 'success');
+                        } else {
+                          showToast('В карточке строки/организации не найдены значения для подстановки', 'info');
+                        }
+                      }}
+                    >
+                      Подставить ПДн локально
+                    </AppButton>
+                  )}
+                </div>
 
                 <div className="flex items-center gap-2">
                   <AppButton
@@ -755,7 +882,7 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                       }
                       placeholder={
                         currentPreset.requiresApiKey
-                          ? 'Вставьте ключ провайдера (хранится локально в конфигурации базы)'
+                          ? 'Вставьте ключ провайдера (действует только в памяти текущей сессии)'
                           : 'Не требуется для стандартного локального запуска'
                       }
                       className="pr-9"
@@ -769,6 +896,9 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                       {showApiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                     </button>
                   </div>
+                  <p className="mt-1 text-[10.5px] text-slate-500 dark:text-slate-400">
+                    Для защиты учётных данных ключ хранится только в оперативной памяти сессии и не записывается на диск или в кэш браузера.
+                  </p>
                 </div>
 
                 {/* Model Preset Selector + Editable Model Name */}

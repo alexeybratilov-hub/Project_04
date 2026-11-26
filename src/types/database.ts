@@ -106,6 +106,7 @@ export interface DocumentTemplate {
   contentTemplate: string;
   tableRepeatField?: string;
   isBuiltIn?: boolean;
+  builtInId?: string;
   isArchived?: boolean;
   archivedAt?: string;
   archivedFromTabName?: string;
@@ -186,6 +187,33 @@ export interface LegalEntityProfile {
   directorFio: string;  // Генеральный директор (директор, ИП) ФИО
 }
 
+export type AuditLogAction =
+  | 'create'
+  | 'update'
+  | 'delete'
+  | 'import'
+  | 'obligation'
+  | 'structure'
+  | 'restore';
+
+export interface AuditLogFieldChange {
+  field: string;
+  oldValue: string;
+  newValue: string;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  timestamp: string;
+  action: AuditLogAction;
+  tabId?: string;
+  tabName?: string;
+  rowId?: string;
+  rowIdentifier?: string;
+  summary: string;
+  changes?: AuditLogFieldChange[];
+}
+
 export interface LegalEntity {
   id: string;
   profile: LegalEntityProfile;
@@ -196,6 +224,7 @@ export interface LegalEntity {
   generatedDocs: GeneratedDocRecord[];
   employeeObligations?: EmployeeObligation[];
   employeeEvents?: EmployeeEvent[];
+  auditLog?: AuditLogEntry[];
   createdAt: string;
   updatedAt: string;
 }
@@ -285,6 +314,7 @@ export interface DatabaseState {
   generatedDocs: GeneratedDocRecord[];
   employeeObligations?: EmployeeObligation[];
   employeeEvents?: EmployeeEvent[];
+  auditLog?: AuditLogEntry[];
   llmConfig: LLMConfig;
   llmLogs: LLMGenerationLog[];
   settings: AppSettings;

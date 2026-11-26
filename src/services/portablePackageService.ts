@@ -24,16 +24,22 @@ echo Проверка окружения...
 :: Запуск нативного сервера OT-Baza.exe, либо автономного app.html
 if exist "%~dp0OT-Baza.exe" (
     start "" "%~dp0OT-Baza.exe"
+    echo [OK] Приложение запущено в рабочем окне.
+    echo Для закрытия этого окна нажмите любую клавишу.
+    pause >nul
+    exit /b 0
 ) else if exist "%~dp0app.html" (
     start "" "%~dp0app.html"
+    echo [OK] Автономная веб-версия app.html открыта в браузере.
+    echo Для закрытия этого окна нажмите любую клавишу.
+    pause >nul
+    exit /b 0
 ) else (
-    start "" "https://ais-dev-kjc2lda7y5kbmffsvubvsw-482909700707.europe-west1.run.app"
+    echo [!] В папке %~dp0 не найдены OT-Baza.exe или app.html.
+    echo Поместите исполняемый файл OT-Baza.exe или автономный файл app.html рядом с этим скриптом и повторите запуск.
+    pause >nul
+    exit /b 1
 )
-
-echo [OK] Приложение запущено в рабочем окне.
-echo Для закрытия этого окна нажмите любую клавишу.
-pause >nul
-exit
 `;
   },
 
@@ -43,7 +49,7 @@ exit
   generateReadme(): string {
     return `======================================================================
   ОТ-БАЗА: РАБОЧЕЕ МЕСТО СПЕЦИАЛИСТА ПО ОХРАНЕ ТРУДА (WINDOWS PORTABLE)
-  Версия 1.1 | Автономная работа без интернета и без прав администратора
+  Версия 1.3 | Автономная работа без интернета и без прав администратора
 ======================================================================
 
 1. НАЗНАЧЕНИЕ:
@@ -153,6 +159,28 @@ exit
       const contentType = (res.headers.get('content-type') || '').toLowerCase();
       if (contentType.includes('text/html')) return false;
       return true;
+    } catch {
+      return false;
+    }
+  },
+
+  async isStandaloneHtmlAvailable(url = '/app.html'): Promise<boolean> {
+    try {
+      const headRes = await fetch(url, { method: 'HEAD', cache: 'no-store', credentials: 'same-origin' });
+      if (!headRes.ok) return false;
+      const lenHeader = headRes.headers.get('content-length');
+      if (lenHeader !== null) {
+        const size = Number(lenHeader);
+        if (Number.isFinite(size) && size < 500_000) return false;
+      }
+      const getRes = await fetch(url, { method: 'GET', cache: 'no-store', credentials: 'same-origin' });
+      if (!getRes.ok) return false;
+      const buffer = await getRes.arrayBuffer();
+      return portablePackageService.validateBinaryPayload(
+        buffer,
+        'appHtml',
+        getRes.headers.get('content-type')
+      ).valid;
     } catch {
       return false;
     }

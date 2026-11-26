@@ -9,7 +9,7 @@
 ### Технологический стек
 - **Frontend**: React 19, TypeScript, Vite 8 (`vite.config.ts`, `vite.offline.config.ts`), Tailwind CSS v4 (`@tailwindcss/vite`), `lucide-react`, `motion`.
 - **Шрифты**: `Manrope` + `JetBrains Mono` подключаются локально через `@fontsource-variable/*` (без внешних CDN — приложение должно выглядеть одинаково офлайн).
-- **Документы и таблицы**: `xlsx` (импорт/экспорт Excel/CSV с поддержкой Win-1251), `docx` (генерация Word `.docx`), `jspdf` (генерация PDF со встроенным кириллическим шрифтом `DejaVuSans` в `src/data/cyrillicFont.ts`), `fflate` (разбор OOXML для готовых `.docx`-шаблонов). `docx`, `jspdf` и шрифты PDF загружаются лениво (`await import()`) и не попадают в стартовый бандл.
+- **Документы и таблицы**: собственный OOXML-парсер и генератор `ooxmlWorkbookService.ts` на базе `fflate` (импорт/экспорт `.xlsx`/`.xlsm`/`.csv` с поддержкой Win-1251, без уязвимого пакета `xlsx`), `docx` (генерация Word `.docx`), `jspdf` (генерация PDF со встроенным кириллическим шрифтом `DejaVuSans` в `src/data/cyrillicFont.ts`), `fflate` (также разбор OOXML для `.docx`-шаблонов и сборка `.zip`-пакетов в `zipExportService.ts`). `docx`, `jspdf` и шрифты PDF загружаются лениво (`await import()`) и не попадают в стартовый бандл.
 - **Нативный Windows-рантайм**: `launcher.c` + `resources.rc` -> кросс-компиляция `x86_64-w64-mingw32-gcc` в 64-битный GUI PE `public/download/OT-Baza.exe` и пакет `public/download/OT-Baza-Windows.zip`.
 - **Тестирование**: Vitest 5.1 (`pnpm test` -> `vitest run`), TypeScript strict (`pnpm lint` -> `tsc --noEmit`).
 
@@ -41,26 +41,31 @@
 
 ### Типы и данные (`src/types/`, `src/data/`)
 - `src/types/database.ts`:
-  - `DatabaseState`: `activeEntityId`, `entities: LegalEntity[]`, общая `normativeDocs: AttachedDoc[]`, зеркала активного юрлица (`tabs`, `tags`, `templates`, `generatedDocs`, `llmConfig`, `llmLogs`, `settings`).
-  - `LegalEntity` + `LegalEntityProfile` (13 реквизитов предприятия).
-  - `Tab`, `Column` (`text | number | date | select | boolean | link | relation`, `width`, `relation: { masterTabId, masterColumnId }`), `Row`.
+  - `DatabaseState`: `activeEntityId`, `entities: LegalEntity[]`, общая `normativeDocs: AttachedDoc[]`, зеркала активного юрлица (`tabs`, `tags`, `templates`, `generatedDocs`, `employeeObligations`, `employeeEvents`, `auditLog`, `llmConfig`, `llmLogs`, `settings`).
+  - `LegalEntity` + `LegalEntityProfile` (13 реквизитов предприятия), `AuditLogEntry` / `AuditLogAction` / `AuditLogFieldChange`.
+  - `Tab`, `Column` (`text | number | date | select | boolean | link | relation | deadline_control`, `width`, `relation: { masterTabId, masterColumnId }`), `Row`.
   - `DocumentTemplate` (`tabId`, `category`, `namingPattern`, `contentTemplate`, `tableRepeatField`, `isArchived`, `archivedAt`, `archivedFromTabName`).
-  - `GeneratedDocRecord` (`category`, `format`, `dateFormatted`, `relativePath`, `isArchived`, `archiveDateFolder`, `sourceTabName`).
+  - `GeneratedDocRecord` (`category`, `format`, `dateFormatted`, `relativePath`, `isArchived`, `archiveDateFolder`, `sourceTabId`, `sourceTabName`).
   - `LLMConfig` (`providerId`, `providerKind`, `apiFormat: 'ollama' | 'openai' | 'anthropic' | 'gemini'`, `endpoint`, `model`, `apiKey`, `status`, `errorMessage`).
 - `src/data/initialDatabase.ts`, `public/initial_db.json` — стартовая структура и пресеты.
-- `src/data/builtInTemplates.ts` — встроенные шаблоны (динамические теги реквизитов юрлица вместо хардкода).
+- `src/data/builtInTemplates.ts` — 10 встроенных шаблонов (8 индивидуальных + 2 групповых протокола/листа ознакомления, динамические теги реквизитов юрлица).
 - `src/data/builtInNormativeDocs.ts` — встроенные нормативные акты.
+- `src/data/occupationNorms.ts` — справочник отраслевых связок `Должность → Вредные факторы (29н) → Нормы СИЗ (766н)`.
 - `src/data/llmProviders.ts` — пресеты локальных серверов (Ollama, LM Studio, vLLM/LocalAI, Custom Local) и облачных API (OpenAI, Claude, Gemini, DeepSeek, OpenRouter, Groq, Custom API).
 - `src/data/cyrillicFont.ts` — локальный `DejaVuSans` (Regular + Bold) в base64 для `jsPDF`.
 
 ### Сервисы (`src/services/`) и тесты (`src/services/__tests__/`)
 - `localApiClient.ts` — HTTP-клиент к локальному API (`GET/PUT /api/database`, `/api/files/*`, `POST /api/files-move/documents`, `/api/heartbeat`, `/api/shutdown`).
-- `storageService.ts` + `storageService.test.ts` — загрузка/сохранение БД, нормализация, клонирование/создание юрлиц, синхронизация зеркал активного юрлица, однократная миграция `localStorage -> file`.
+- `storageService.ts` + `storageService.test.ts` — загрузка/сохранение БД, нормализация, клонирование/создание юрлиц, синхронизация зеркал, однократная миграция, защита JSON от prototype pollution (`parseSafeJson`), шифрованные резервные копии (`PBKDF2-SHA256` + `AES-256-GCM`) и журнал аудита (`MAX_AUDIT_LOG_ENTRIES = 1000`).
 - `integrityService.ts` + `integrityService.test.ts` — аудит связей Мастер↔Подчинённая, проверка влияния удаления строк/столбцов/вкладок (`getTabDeleteImpact` с учётом шаблонов и документов), каскадная очистка висячих `relation` и тегов, генерация уникальных ID.
-- `excelService.ts` + `excelService.test.ts` — экспорт/импорт Excel и CSV (включая Windows-1251), позиционная вставка из буфера Excel (`parseInlineClipboardPaste`: 1 столбец, частичное число столбцов `<= N`, вся таблица, сопоставление по заголовкам или позиционно, транзакционная валидация кортежей Мастер-таблицы, ошибка только при `copiedColCount > totalTabCols`).
-- `documentGenerator.ts` + `documentGenerator.test.ts` — подстановка тегов юрлица и таблиц (включая многокритериальный lookup по Мастеру), экспорт `.docx` и кириллических `.pdf`.
-- `generatedDocsService.ts` + `generatedDocsService.test.ts` — регистрация сформированных документов, автоматическая архивация дублей в `<Категория>/АРХИВ/<дд.мм.гггг>/` (с суффиксами `_v2`, `_v3`).
-- `ollamaService.ts` + `llmProviders.test.ts` — проверка подключения и генерация по 4 форматам (`ollama`, `openai`, `anthropic`, `gemini`).
+- `ooxmlWorkbookService.ts` — чистый TypeScript OOXML-парсер и генератор `.xlsx`/`.xlsm`/`.csv` на базе `fflate` (без зависимости `xlsx`).
+- `excelService.ts` + `excelService.test.ts` — экспорт/импорт Excel и CSV (включая Win-1251), пресет импорта **1С:ЗУП** с автосозданием должностей, позиционная вставка из буфера Excel (`parseInlineClipboardPaste`), обратимый одноколоночный импорт/экспорт `deadline_control`.
+- `documentGenerator.ts` + `documentGenerator.test.ts` — подстановка тегов юрлица и таблиц, экспорт `.docx` и кириллических `.pdf`, групповые документы с разметкой `[ТАБЛИЦА]...[/ТАБЛИЦА]`.
+- `zipExportService.ts` — сборка `.zip`-архивов пакетов документов с санитизацией и дедупликацией путей.
+- `gitReadinessService.ts` + `gitReadinessService.test.ts` — оценка готовности к проверке ГИТ по 9 категориям (100 баллов), ранжирование пробелов и экспорт отчёта в DOCX/PDF/XLSX.
+- `deadlineService.ts` + `deadlineService.test.ts` — расчёт сроков, рабочие дни и предзагруженный производственный календарь РФ (`RF_PRODUCTION_CALENDAR_2026`/`2027`).
+- `generatedDocsService.ts` + `generatedDocsService.test.ts` — регистрация сформированных документов, автоматическая архивация дублей в `<Категория>/АРХИВ/<дд.мм.гггг>/`.
+- `ollamaService.ts` + `llmProviders.test.ts` — проверка подключения, обезличивание ПДн (152-ФЗ) с локальной ре-гидратацией ответа и генерация по 4 форматам (`ollama`, `openai`, `anthropic`, `gemini`).
 - `portablePackageService.ts` + `portablePackageService.test.ts` — экспорт портативного комплекта и HTML/DOCX вспомогательные функции.
 
 ### Интерфейс (`src/components/` и `src/components/ui/`)
@@ -73,20 +78,20 @@
   - `ExcelImportModal.tsx` — импорт из файлов `.xlsx`/`.xls`/`.csv`.
   - `TemplatesModal.tsx` — каталог шаблонов (`Документы -> Шаблоны` по разделам и кнопка `«Шаблоны»` во вкладках для конкретной таблицы + архив).
   - `GeneratedDocsModal.tsx` — реестр сгенерированных документов по категориям + архив `АРХИВ/дд.мм.гггг`.
-  - `TagsModal.tsx`, `NormativeDocsModal.tsx`, `LLMStudioModal.tsx`, `BackupModal.tsx`, `WindowsPortableModal.tsx`, `HelpModal.tsx`.
+  - `TagsModal.tsx`, `NormativeDocsModal.tsx`, `LLMStudioModal.tsx`, `BackupModal.tsx` (обычные и AES-256-GCM бэкапы), `AuditLogModal.tsx` (журнал изменений с диффом полей), `WindowsPortableModal.tsx` (инструкции по Authenticode/SmartScreen), `HelpModal.tsx`.
 
 ---
 
 ## 3. Текущий статус
 
-Функционально реализованы задачи `T-01`–`T-49` (включая «Контроль сроков»), модульный трек `M-01`–`M-10` (модули, обязательства, события, матрица требований) и дизайн-трек `D-1`–`D-5` в объёме v1–v2. Актуальная проверка: **173 теста в 19 файлах** (`pnpm test`), `tsc --noEmit` — 0 ошибок при `strict: true`, `vite build` проходит.
+Функционально реализованы задачи `T-01`–`T-49` (включая «Контроль сроков»), модульный трек `M-01`–`M-12`, дизайн-трек `D-1`–`D-5` в объёме v1–v2 и продуктовый/ИБ-пакет `P-01`–`P-06`. Актуальная проверка: **191 тест в 20 файлах** (`npx vitest run`), `tsc --noEmit` — 0 ошибок при `strict: true`, `vite build` проходит, `npm audit --omit=dev --audit-level=high` — 0 уязвимостей.
 
 Стартовый (web) бандл ≈ 1.35 МБ (≈ 390 КБ gzip); шрифты PDF (`cyrillicFont`, 1.96 МБ) и `jspdf`/`docx` вынесены в отдельные ленивые чанки.
 
 Оставшиеся незакрытые пункты:
 1. **`T-36`** — выполнен (пакетный отчёт генерации с изоляцией сбоев по строкам, `BatchGenerationReportPanel.tsx`).
 2. **Windows-релиз**: `OT-Baza.exe` / `OT-Baza-Windows.zip` не собираются в этой среде (нет MinGW-w64) и намеренно **не хранятся в git**; собираются командой `python build_native_windows.py` на Windows. Живой прогон нативного сервера, DPI 125/150 % и работа с `./templates/` в Word/LibreOffice остаются за пределами автоматических проверок.
-3. **UX/UI Redesign** `D-2`–`D-6` не начат (см. раздел 5).
+3. **UX/UI Redesign** `D-5` (финальная гармонизация таблиц) и `D-6` (матрица 18 комбинаций) не завершены.
 
 ---
 
@@ -94,7 +99,7 @@
 
 ```bash
 pnpm lint                          # tsc --noEmit (strict)
-pnpm test                          # vitest run (173 теста, 19 файлов)
+pnpm test                          # vitest run (191 тест, 20 файлов)
 pnpm build                         # vite build (dist/ + PWA)
 pnpm check                         # lint + test + build
 
@@ -212,3 +217,15 @@ python build_native_windows.py                 # + OT-Baza.exe и ZIP (нуже�
 - **Режим эффектов**: `AppSettings.visualEffects: 'glass' | 'reduced'`; атрибут `data-visual-effects` на `<html>` отключает `backdrop-filter`, тени и hover-трансформации. Системные `prefers-reduced-transparency`/`prefers-reduced-motion` действуют независимо.
 - **Модалки**: панель `AppModal` переведена на полупрозрачную подложку (`bg-white/95`, `backdrop-blur-xl`), радиус 16 px, усиленный оверлей с размытием; содержимое осталось на плотной поверхности.
 - Проверки: `tsc --noEmit` — 0 ошибок, 173 теста, `vite build`; браузерные проверки — сайдбар 236→64 px, навигация, превью с реальными данными, `data-visual-effects="reduced"`, отсутствие горизонтального переполнения на 1440×950 и 1366×768, 0 ошибок консоли.
+
+---
+
+## 11. Продуктовые доработки, готовность к ГИТ и B2B/ИБ-усиление (2026-11-26)
+
+- **152-ФЗ в ИИ-студии (`ollamaService.ts`, `LLMStudioModal.tsx`)**: перед отправкой промпта в облачную модель ПДн (ФИО, СНИЛС, ИНН, контакты) подменяются детерминированными токенами `[ФИО_1]` и др., а полученный ответ локально ре-гидратируется (`rehydrateAnonymizedText`) без отправки исходных ПДн во внешние API.
+- **Связка `Должность → Факторы 29н → СИЗ 766н` (`src/data/occupationNorms.ts`, `obligationService.ts`, `EmployeeCardModal.tsx`)**: справочник типовых должностей с автоподстановкой факторов и норм и пересчётом требований в карточке работника.
+- **Пакетный ZIP-экспорт и групповые документы (`zipExportService.ts`, `documentGenerator.ts`, `builtInTemplates.ts`)**: выгрузка выбранных/пакетных документов в один `.zip`-архив с санитизацией путей и два групповых шаблона (`tpl_group_protocol_knowledge`, `tpl_group_lna_signoff`) с поддержкой `[ТАБЛИЦА]...[/ТАБЛИЦА]` в DOCX и PDF.
+- **Пресет импорта 1С:ЗУП (`excelService.ts`, `ExcelImportModal.tsx`)**: автоматическое сопоставление кадровых колонок 1С и досоздание недостающих должностей в штатном расписании.
+- **Готовность к проверке ГИТ и календарь РФ 2026–2027 (`gitReadinessService.ts`, `DashboardView.tsx`, `deadlineService.ts`, `DeadlineControlView.tsx`)**: скоринг по 9 направлениям (100 баллов), ранжирование пробелов с переходами к проблемным разделам, экспорт отчёта в DOCX/PDF/XLSX и предзагрузка праздников РФ 2026–2027.
+- **Отказ от `xlsx` и ИБ-защита (`ooxmlWorkbookService.ts`, `storageService.ts`, `BackupModal.tsx`, `AuditLogModal.tsx`, `WindowsPortableModal.tsx`, `HelpModal.tsx`)**: уязвимая зависимость `xlsx@0.18.5` удалена (0 уязвимостей по `npm audit`), импорт/экспорт `.xlsx`/`.xlsm`/`.csv` переведён на `ooxmlWorkbookService.ts` поверх `fflate`, парсинг JSON защищён от `__proto__`/`constructor`/`prototype`, бэкапы поддерживают шифрование `PBKDF2-SHA256` (210 000 итераций) + `AES-256-GCM`, добавлен журнал аудита изменений (до 1000 записей с экспортом в `.xlsx`) и документация по подписи Windows EXE (`signtool.exe`).
+- **Проверки**: `npx vitest run` — **191/191 тест** (20 файлов), `tsc --noEmit` — 0 ошибок, `vite build` — успешно, `npm audit --omit=dev --audit-level=high` — 0 уязвимостей.

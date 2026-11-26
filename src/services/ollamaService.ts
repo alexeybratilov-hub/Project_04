@@ -18,6 +18,7 @@ export interface DocumentGenerationParams {
   entityProfile?: LegalEntityProfile;
   customInstructions?: string;
   llmConfig: LLMConfig;
+  anonymizePii?: boolean;
 }
 
 export interface LLMConnectionResult {
@@ -28,6 +29,189 @@ export interface LLMConnectionResult {
 
 function normalizeEndpoint(endpoint: string): string {
   return String(endpoint || '').trim().replace(/\/+$/, '');
+}
+
+const PII_COLUMN_ID_FRAGMENTS = [
+  'fio',
+  'worker',
+  'victim',
+  'instructor',
+  'snils',
+  'inn',
+  'passport',
+  'phone',
+  'email',
+  'address',
+  'tab_num',
+  'birth'
+];
+
+function maskFreeTextPii(input: string): string {
+  return input
+    .replace(/\b\d{3}-\d{3}-\d{3}[-\s]\d{2}\b/g, '[СНИЛС скрыт]')
+    .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, '[Email скрыт]')
+    .replace(/(?:\+7|8)[\s()-]*(?:\d[\s()-]*){10}\b/g, '[Телефон скрыт]')
+    .replace(/\bИНН\s*:?\s*\d{10,12}\b/gi, 'ИНН [скрыт]');
+}
+
+function isPiiColumn(colId: string, colName: string): boolean {
+  const lowerId = colId.toLowerCase();
+  if (PII_COLUMN_ID_FRAGMENTS.some((frag) => lowerId.includes(frag))) return true;
+  return /фио|снилс|паспорт|телефон|почт|e-?mail|адрес|инн|табельный|дата\s*рождения/i.test(
+    colName
+  );
+}
+
+function maskColumnValue(colId: string, colName: string, rawVal: unknown): string {
+  if (rawVal === undefined || rawVal === null || rawVal === '') return '—';
+  const str = String(rawVal);
+  if (isPiiColumn(colId, colName)) {
+    if (/снилс|snils/i.test(colId + ' ' + colName)) return '[СНИЛС скрыт]';
+    if (/таб|tab_num/i.test(colId + ' ' + colName)) return '[Таб.№ скрыт]';
+    if (/телефон|phone/i.test(colId + ' ' + colName)) return '[Телефон скрыт]';
+    if (/email|почт/i.test(colId + ' ' + colName)) return '[Email скрыт]';
+    if (/адрес|address/i.test(colId + ' ' + colName)) return '[Адрес скрыт]';
+    return '[ФИО скрыто (ПДн)]';
+  }
+  return maskFreeTextPii(str);
+}
+
+export function shouldAnonymizePii(params: Pick<DocumentGenerationParams, 'llmConfig' | 'anonymizePii'>): boolean {
+  if (typeof params.anonymizePii === 'boolean') return params.anonymizePii;
+  return normalizeLLMConfig(params.llmConfig).providerKind === 'api';
+}
+
+export interface PiiRehydrationResult {
+  text: string;
+  restoredCount: number;
+  replacedTokens: string[];
+}
+
+export interface RowPiiContext {
+  fio?: string;
+  snils?: string;
+  tabNum?: string;
+  phone?: string;
+  email?: string;
+  address?: string;
+  inn?: string;
+}
+
+export function extractRowPiiContext(
+  tab: Tab,
+  row: Row,
+  entityProfile?: LegalEntityProfile,
+  allTabs?: Tab[]
+): RowPiiContext {
+  const ctx: RowPiiContext = {};
+
+  const inspectRow = (sourceTab: Tab, sourceRow: Row) => {
+    for (const col of sourceTab.columns) {
+      const val = String(sourceRow[col.id] ?? '').trim();
+      if (!val) continue;
+      const key = `${col.id} ${col.name}`.toLowerCase();
+      if (!ctx.snils && /снилс|snils/i.test(key)) ctx.snils = val;
+      else if (!ctx.tabNum && /таб|tab_num/i.test(key)) ctx.tabNum = val;
+      else if (!ctx.phone && /телефон|phone/i.test(key)) ctx.phone = val;
+      else if (!ctx.email && /email|e-mail|почт/i.test(key)) ctx.email = val;
+      else if (!ctx.address && /адрес|address/i.test(key)) ctx.address = val;
+      else if (!ctx.inn && /\bинн\b|inn/i.test(key)) ctx.inn = val;
+      else if (
+        !ctx.fio &&
+        /фио|fio|worker|victim|instructor|сотрудник|работник|пострадавш/i.test(key)
+      ) {
+        ctx.fio = val;
+      }
+    }
+  };
+
+  inspectRow(tab, row);
+
+  // If the target row is from a secondary module (e.g. medical/PPE), enrich missing PII from Employees master row locally.
+  if (allTabs && ctx.fio) {
+    const empTab = allTabs.find((t) => t.moduleId === 'employees' || t.id === 'tab_employees');
+    if (empTab && empTab.id !== tab.id) {
+      const fioColId =
+        empTab.columns.find((c) => c.id === 'emp_fio' || /фио/i.test(c.name))?.id || 'emp_fio';
+      const empMatch = empTab.rows.find(
+        (r) => String(r[fioColId] ?? '').trim().toLowerCase() === ctx.fio!.toLowerCase()
+      );
+      if (empMatch) {
+        inspectRow(empTab, empMatch);
+      }
+    }
+  }
+
+  if (!ctx.phone && entityProfile?.phone) ctx.phone = entityProfile.phone;
+  if (!ctx.email && entityProfile?.email) ctx.email = entityProfile.email;
+  if (!ctx.address && entityProfile?.legalAddress) ctx.address = entityProfile.legalAddress;
+  if (!ctx.inn && entityProfile?.inn) ctx.inn = entityProfile.inn;
+
+  return ctx;
+}
+
+function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export function rehydratePiiInText(
+  text: string,
+  params: {
+    tab: Tab;
+    row: Row;
+    entityProfile?: LegalEntityProfile;
+    allTabs?: Tab[];
+  }
+): PiiRehydrationResult {
+  if (!text) {
+    return { text, restoredCount: 0, replacedTokens: [] };
+  }
+
+  const ctx = extractRowPiiContext(params.tab, params.row, params.entityProfile, params.allTabs);
+  const profile = params.entityProfile;
+
+  const fullOrg = profile?.fullName?.trim() || profile?.shortName?.trim() || '';
+  const shortOrg = profile?.shortName?.trim() || profile?.fullName?.trim() || '';
+  const orgRequisites =
+    profile && (profile.inn || profile.kpp || profile.ogrn)
+      ? `${profile.inn || '—'} / ${profile.kpp || '—'} / ${profile.ogrn || '—'}`
+      : '';
+  const director = profile?.directorFio?.trim() || '';
+
+  const replacements: Array<[string, string]> = [];
+  if (ctx.fio) {
+    replacements.push(['[ФИО скрыто (ПДн)]', ctx.fio]);
+    replacements.push(['[ФИО скрыто]', ctx.fio]);
+  }
+  if (ctx.snils) replacements.push(['[СНИЛС скрыт]', ctx.snils]);
+  if (ctx.tabNum) replacements.push(['[Таб.№ скрыт]', ctx.tabNum]);
+  if (ctx.phone) replacements.push(['[Телефон скрыт]', ctx.phone]);
+  if (ctx.email) replacements.push(['[Email скрыт]', ctx.email]);
+  if (ctx.address) replacements.push(['[Адрес скрыт]', ctx.address]);
+  if (fullOrg) replacements.push(['[Организация скрыта]', fullOrg]);
+  if (shortOrg) replacements.push(['[Организация]', shortOrg]);
+  if (ctx.inn) {
+    replacements.push(['ИНН [скрыт]', `ИНН ${ctx.inn}`]);
+    replacements.push(['[ИНН скрыт]', ctx.inn]);
+  }
+  if (orgRequisites) replacements.push(['[Скрыты]', orgRequisites]);
+  if (director) replacements.push(['[Руководитель скрыт]', director]);
+
+  let result = text;
+  let restoredCount = 0;
+  const replacedTokens: string[] = [];
+
+  for (const [token, value] of replacements) {
+    const regex = new RegExp(escapeRegExp(token), 'g');
+    const matches = result.match(regex);
+    if (matches && matches.length > 0) {
+      result = result.replace(regex, value);
+      restoredCount += matches.length;
+      replacedTokens.push(token);
+    }
+  }
+
+  return { text: result, restoredCount, replacedTokens };
 }
 
 export const ollamaService = {
@@ -93,9 +277,12 @@ export const ollamaService = {
       }
 
       if (config.apiFormat === 'gemini') {
-        const apiKey = encodeURIComponent(String(config.apiKey || '').trim());
-        const response = await fetch(`${cleanEndpoint}/models?key=${apiKey}`, {
+        const rawApiKey = String(config.apiKey || '').trim();
+        const response = await fetch(`${cleanEndpoint}/models`, {
           method: 'GET',
+          headers: {
+            'x-goog-api-key': rawApiKey
+          },
           signal: controller.signal
         });
         clearTimeout(timeout);
@@ -210,10 +397,15 @@ export const ollamaService = {
    */
   buildPrompt(params: DocumentGenerationParams): string {
     const { tab, row, templateTitle, templateRequirements, attachedDocs, entityProfile } = params;
+    const anonymize = shouldAnonymizePii(params);
 
     const fieldLines = tab.columns
       .map((col) => {
-        const val = row[col.id] !== undefined ? row[col.id] : '—';
+        const val = anonymize
+          ? maskColumnValue(col.id, col.name, row[col.id])
+          : row[col.id] !== undefined
+            ? row[col.id]
+            : '—';
         return `• ${col.name}: ${val}`;
       })
       .join('\n');
@@ -224,13 +416,28 @@ export const ollamaService = {
       .join('\n\n');
 
     const orgHeader = entityProfile
-      ? `РЕКВИЗИТЫ ОРГАНИЗАЦИИ-РАБОТОДАТЕЛЯ:
+      ? anonymize
+        ? `РЕКВИЗИТЫ ОРГАНИЗАЦИИ-РАБОТОДАТЕЛЯ (обезличены по 152-ФЗ):
+• Полное наименование: [Организация скрыта]
+• Краткое наименование: [Организация]
+• ИНН / КПП / ОГРН: [Скрыты]
+• Юридический адрес: [Адрес скрыт]
+• Руководитель: [Руководитель скрыт]\n\n`
+        : `РЕКВИЗИТЫ ОРГАНИЗАЦИИ-РАБОТОДАТЕЛЯ:
 • Полное наименование: ${entityProfile.fullName || entityProfile.shortName}
 • Краткое наименование: ${entityProfile.shortName || entityProfile.fullName}
 • ИНН / КПП / ОГРН: ${entityProfile.inn || '—'} / ${entityProfile.kpp || '—'} / ${entityProfile.ogrn || '—'}
 • Юридический адрес: ${entityProfile.legalAddress || '—'}
 • Руководитель: ${entityProfile.directorFio || '—'}\n\n`
       : '';
+
+    const instructionsText = anonymize
+      ? maskFreeTextPii(params.customInstructions || '')
+      : params.customInstructions || '';
+
+    const requirementsText = anonymize
+      ? maskFreeTextPii(templateRequirements || '')
+      : templateRequirements || '';
 
     return `Ты — главный специалист и юридический консультант по охране труда в РФ.
 Твоя задача — составить официальный, юридически выренный локальный нормативный документ: "${templateTitle}".
@@ -243,15 +450,15 @@ ${fieldLines}
 ${normLines || 'Использовать общие стандарты ТК РФ, Приказ Минтруда №772н, Приказ Минздрава №29н.'}
 
 ТРЕБОВАНИЯ К ДОКУМЕНТУ И ШАБЛОН:
-${templateRequirements}
+${requirementsText}
 
 ДОПОЛНИТЕЛЬНЫЕ УКАЗАНИЯ ПОЛЬЗОВАТЕЛЯ:
-${params.customInstructions || 'Сформировать полный текст документа с реквизитами организации, вводной частью, пунктами приказа/инструкции, ссылками на законы и местом для подписей.'}
+${instructionsText || 'Сформировать полный текст документа с реквизитами организации, вводной частью, пунктами приказа/инструкции, ссылками на законы и местом для подписей.'}
 
 ПРАВИЛА ОФОРМЛЕНИЯ:
 1. Пиши строгим деловым канцелярским языком в соответствии с ГОСТ Р 7.0.97-2016.
 2. Не используй вымышленные статьи законов, опирайся на действующее законодательство РФ по охране труда.
-3. Полностью заполни реквизиты, ФИО и должности на основе переданных данных.
+3. ${anonymize ? 'Сохраняй маркеры вида [ФИО скрыто (ПДн)] или оставь поля ФИО/реквизитов как ________________ для последующей подстановки.' : 'Полностью заполни реквизиты, ФИО и должности на основе переданных данных.'}
 4. Выведи готовый текст документа от заголовка до подписей. Без вступительных фраз вроде "Вот ваш документ".`;
   },
 
@@ -260,11 +467,44 @@ ${params.customInstructions || 'Сформировать полный текст
    */
   async generateDocument(
     params: DocumentGenerationParams
-  ): Promise<{ text: string; isSimulated: boolean; modelUsed: string; errorMessage?: string }> {
+  ): Promise<{
+    text: string;
+    rawMaskedText?: string;
+    piiRehydratedCount?: number;
+    isSimulated: boolean;
+    modelUsed: string;
+    errorMessage?: string;
+  }> {
+    const anonymize = shouldAnonymizePii(params);
     const prompt = ollamaService.buildPrompt(params);
     const config = normalizeLLMConfig(params.llmConfig);
     const cleanEndpoint = normalizeEndpoint(config.endpoint);
     const preset = getLLMProviderPreset(config.providerId);
+
+    const finalizeResponse = (rawText: string, modelUsed: string) => {
+      const trimmed = String(rawText || '').trim();
+      if (!anonymize) {
+        return {
+          text: trimmed,
+          piiRehydratedCount: 0,
+          isSimulated: false,
+          modelUsed
+        };
+      }
+      const restored = rehydratePiiInText(trimmed, {
+        tab: params.tab,
+        row: params.row,
+        entityProfile: params.entityProfile,
+        allTabs: params.allTabs
+      });
+      return {
+        text: restored.text,
+        rawMaskedText: trimmed,
+        piiRehydratedCount: restored.restoredCount,
+        isSimulated: false,
+        modelUsed
+      };
+    };
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.timeoutMs || 45000);
@@ -286,21 +526,20 @@ ${params.customInstructions || 'Сформировать полный текст
         if (response.ok) {
           const data = await response.json();
           if (data.response) {
-            return {
-              text: String(data.response).trim(),
-              isSimulated: false,
-              modelUsed: `${preset.name}: ${config.model}`
-            };
+            return finalizeResponse(String(data.response), `${preset.name}: ${config.model}`);
           }
         }
       } else if (config.apiFormat === 'gemini') {
-        const apiKey = encodeURIComponent(String(config.apiKey || '').trim());
-        if (apiKey) {
+        const rawApiKey = String(config.apiKey || '').trim();
+        if (rawApiKey) {
           const response = await fetch(
-            `${cleanEndpoint}/models/${encodeURIComponent(config.model || preset.defaultModel)}:generateContent?key=${apiKey}`,
+            `${cleanEndpoint}/models/${encodeURIComponent(config.model || preset.defaultModel)}:generateContent`,
             {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': rawApiKey
+              },
               body: JSON.stringify({
                 contents: [{ role: 'user', parts: [{ text: prompt }] }],
                 generationConfig: { temperature: config.temperature ?? 0.3 }
@@ -316,11 +555,7 @@ ${params.customInstructions || 'Сформировать полный текст
               .join('')
               .trim();
             if (text) {
-              return {
-                text,
-                isSimulated: false,
-                modelUsed: `${preset.name}: ${config.model}`
-              };
+              return finalizeResponse(text, `${preset.name}: ${config.model}`);
             }
           }
         } else {
@@ -351,11 +586,7 @@ ${params.customInstructions || 'Сформировать полный текст
               ? data.content.map((c: any) => c.text || '').join('').trim()
               : '';
             if (text) {
-              return {
-                text,
-                isSimulated: false,
-                modelUsed: `${preset.name}: ${config.model}`
-              };
+              return finalizeResponse(text, `${preset.name}: ${config.model}`);
             }
           }
         } else {
@@ -384,11 +615,7 @@ ${params.customInstructions || 'Сформировать полный текст
             const data = await response.json();
             const text = data?.choices?.[0]?.message?.content?.trim();
             if (text) {
-              return {
-                text,
-                isSimulated: false,
-                modelUsed: `${preset.name}: ${config.model}`
-              };
+              return finalizeResponse(text, `${preset.name}: ${config.model}`);
             }
           }
         } else {
@@ -403,6 +630,7 @@ ${params.customInstructions || 'Сформировать полный текст
     const simulated = ollamaService.generateDomainDocumentFallback(params);
     return {
       text: simulated,
+      piiRehydratedCount: 0,
       isSimulated: true,
       modelUsed: 'Встроенный теговый генератор ОТ-База (без LLM)'
     };

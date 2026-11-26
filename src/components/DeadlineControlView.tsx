@@ -25,8 +25,11 @@ import {
   formatIsoToDisplay,
   getDeadlineFilterOptions,
   hasAnyDeadlineControlColumn,
+  mergePresetHolidays,
   normalizeHolidaysList,
   parseFlexibleDateToIso,
+  RF_PRODUCTION_CALENDAR_2026,
+  RF_PRODUCTION_CALENDAR_2027,
   summarizeDeadlineEvents
 } from '../services/deadlineService';
 import { getDeadlineStatusToneClasses } from './DeadlineCellPopover';
@@ -800,6 +803,46 @@ export const DeadlineControlView: React.FC<DeadlineControlViewProps> = ({
             Список хранится в базе данных приложения. Добавление или удаление праздничных дат сразу
             пересчитывает количество рабочих дней и статус «Скоро».
           </StatusBanner>
+
+          {/* RF Production Calendar Presets 2026–2027 */}
+          <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/80 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+                  Производственный календарь РФ (ст. 112 ТК РФ и переносы)
+                </div>
+                <div className="text-[10.5px] text-slate-500 dark:text-slate-400">
+                  Добавляет официальные праздничные и перенесённые выходные дни без дублей.
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <AppButton
+                  variant="secondary"
+                  size="xs"
+                  icon={<Calendar className="w-3.5 h-3.5" />}
+                  onClick={() => {
+                    onUpdateHolidays(mergePresetHolidays(holidays, 2026));
+                    setHolidayYearFilter('2026');
+                    setHolidayInputError(null);
+                  }}
+                >
+                  + Праздники РФ 2026 ({RF_PRODUCTION_CALENDAR_2026.length})
+                </AppButton>
+                <AppButton
+                  variant="secondary"
+                  size="xs"
+                  icon={<Calendar className="w-3.5 h-3.5" />}
+                  onClick={() => {
+                    onUpdateHolidays(mergePresetHolidays(holidays, 2027));
+                    setHolidayYearFilter('2027');
+                    setHolidayInputError(null);
+                  }}
+                >
+                  + Праздники РФ 2027 ({RF_PRODUCTION_CALENDAR_2027.length})
+                </AppButton>
+              </div>
+            </div>
+          </div>
 
           {/* Add single date */}
           <div className="space-y-1.5">

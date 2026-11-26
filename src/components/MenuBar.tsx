@@ -1,11 +1,11 @@
-﻿import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   FileText, Download, Upload, Plus, Trash2,
   Search, Link as LinkIcon, Database,
   Settings, HelpCircle, HardDrive, Cpu,
   FileSpreadsheet, ShieldAlert, BookOpen, Layers,
   FolderOpen, AlertCircle, CheckCircle2, AlertTriangle,
-  Bell, BellOff, ArrowUpRight, EyeOff, Clock, X
+  Bell, BellOff, ArrowUpRight, EyeOff, Clock, X, History
 } from 'lucide-react';
 import { LLMConfig } from '../types/database';
 import { getLLMProviderPreset } from '../data/llmProviders';
@@ -29,6 +29,7 @@ interface MenuBarProps {
   onOpenPortableModal: () => void;
   onOpenWorkspaceModal?: () => void;
   onOpenModules?: () => void;
+  onOpenAuditLog?: () => void;
   workspaceFolderName?: string | null;
   onAddRow: () => void;
   onDeleteSelectedRows: () => void;
@@ -91,6 +92,7 @@ export const MenuBar: React.FC<MenuBarProps> = ({
   onOpenPortableModal,
   onOpenWorkspaceModal,
   onOpenModules,
+  onOpenAuditLog,
   workspaceFolderName,
   onAddRow,
   onDeleteSelectedRows,
@@ -434,6 +436,19 @@ export const MenuBar: React.FC<MenuBarProps> = ({
                 <Upload className="w-3.5 h-3.5" />
                 <span>Восстановить из копии...</span>
               </button>
+
+              {onOpenAuditLog && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  tabIndex={-1}
+                  onClick={() => { onOpenAuditLog(); closeMenu(); }}
+                  className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 dark:hover:bg-blue-950/40 focus:bg-blue-50 dark:focus:bg-blue-950/40 text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 focus:text-blue-600 dark:focus:text-blue-400 focus:outline-hidden"
+                >
+                  <History className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Журнал изменений (Аудит)...</span>
+                </button>
+              )}
 
               <div role="separator" className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
 

@@ -1,12 +1,13 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import {
   FolderOpen, FolderArchive, FileText, Download, Trash2,
-  Search, ChevronDown, ChevronRight, Archive, ArchiveRestore
+  Search, ChevronDown, ChevronRight, Archive, ArchiveRestore, FileArchive
 } from 'lucide-react';
 import { GeneratedDocRecord, LegalEntityProfile } from '../types/database';
-import { DOCUMENT_CATEGORIES } from '../services/generatedDocsService';
+import { DOCUMENT_CATEGORIES, formatDateDdMmYyyy } from '../services/generatedDocsService';
 import { localApiClient } from '../services/localApiClient';
 import { portablePackageService } from '../services/portablePackageService';
+import { base64ToBlob, packageFilesAsZip } from '../services/zipExportService';
 import { AppButton, AppInput, AppModal, ConfirmDialog, useToast } from './ui';
 
 interface GeneratedDocsModalProps {
@@ -44,11 +45,14 @@ export const GeneratedDocsModal: React.FC<GeneratedDocsModalProps> = ({
   const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [pendingArchiveDeleteDoc, setPendingArchiveDeleteDoc] = useState<GeneratedDocRecord | null>(null);
+  const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set());
+  const [isZipping, setIsZipping] = useState(false);
 
   useEffect(() => {
     if (!isOpen) return;
     setConfirmDeleteId(null);
     setPendingArchiveDeleteDoc(null);
+    setSelectedDocIds(new Set());
   }, [isOpen]);
 
   const categoriesList = useMemo(() => {
@@ -136,6 +140,97 @@ export const GeneratedDocsModal: React.FC<GeneratedDocsModalProps> = ({
       showToast('Содержимое файла доступно только в папке ./documents/ на ПК (OT-Baza.exe)', 'warning');
     } catch (e: any) {
       showToast(e?.message || 'Не удалось скачать документ', 'error');
+    }
+  };
+
+  const resolveDocBlob = async (doc: GeneratedDocRecord): Promise<Blob | null> => {
+    if (localApiClient.isNative()) {
+      try {
+        return await localApiClient.downloadFileFromBucket('documents', doc.relativePath);
+      } catch {
+        return null;
+      }
+    }
+    if (doc.dataBase64) {
+      const mime =
+        doc.format === 'docx'
+          ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+          : 'application/pdf';
+      return base64ToBlob(doc.dataBase64, mime);
+    }
+    return null;
+  };
+
+  const selectedActiveDocs = useMemo(
+    () => activeDocs.filter((d) => selectedDocIds.has(d.id)),
+    [activeDocs, selectedDocIds]
+  );
+
+  const toggleDocSelection = (docId: string) => {
+    setSelectedDocIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(docId)) next.delete(docId);
+      else next.add(docId);
+      return next;
+    });
+  };
+
+  const toggleAllActiveDocs = () => {
+    if (activeDocs.length > 0 && selectedActiveDocs.length === activeDocs.length) {
+      setSelectedDocIds(new Set());
+    } else {
+      setSelectedDocIds(new Set(activeDocs.map((d) => d.id)));
+    }
+  };
+
+  const handleDownloadZip = async () => {
+    const targetDocs = selectedActiveDocs.length > 0 ? selectedActiveDocs : activeDocs;
+    if (targetDocs.length === 0) {
+      showToast('Нет доступных документов для упаковки в ZIP.', 'warning');
+      return;
+    }
+
+    setIsZipping(true);
+    try {
+      const entries: Array<{ name: string; data: Blob }> = [];
+      let skipped = 0;
+
+      for (const doc of targetDocs) {
+        const blob = await resolveDocBlob(doc);
+        if (!blob) {
+          skipped += 1;
+          continue;
+        }
+        const entryName = doc.relativePath || `${doc.category}/${doc.fileName}`;
+        entries.push({ name: entryName, data: blob });
+      }
+
+      if (entries.length === 0) {
+        showToast(
+          'Файлы отсутствуют в браузерном кэше (>1.5 МБ) и не могут быть упакованы вне OT-Baza.exe.',
+          'warning'
+        );
+        return;
+      }
+
+      const zipBlob = await packageFilesAsZip(entries);
+      const dateStamp = formatDateDdMmYyyy(new Date());
+      const catSlug =
+        selectedCategory !== 'ALL'
+          ? `_${selectedCategory.replace(/[\\/:*?"<>|\s]+/g, '_')}`
+          : '';
+      const zipName = `Документы_ОТ${catSlug}_${dateStamp}.zip`;
+      portablePackageService.triggerBlobDownload(zipBlob, zipName);
+      showToast(
+        skipped > 0
+          ? `Скачан архив ${zipName} (${entries.length} файл., пропущено ${skipped})`
+          : `Скачан архив ${zipName} (${entries.length} файл.)`,
+        skipped > 0 ? 'warning' : 'success'
+      );
+    } catch (e: any) {
+      showToast(e?.message || 'Ошибка формирования ZIP-архива', 'error');
+    } finally {
+      setIsZipping(false);
     }
   };
 
@@ -238,7 +333,7 @@ export const GeneratedDocsModal: React.FC<GeneratedDocsModalProps> = ({
                 />
               </div>
 
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 flex-wrap">
                 {(['all', 'docx', 'pdf'] as const).map((fmt) => (
                   <button
                     key={fmt}
@@ -253,6 +348,19 @@ export const GeneratedDocsModal: React.FC<GeneratedDocsModalProps> = ({
                     {fmt === 'all' ? 'Все' : fmt}
                   </button>
                 ))}
+                <AppButton
+                  variant="secondary"
+                  size="sm"
+                  loading={isZipping}
+                  disabled={activeDocs.length === 0}
+                  onClick={() => void handleDownloadZip()}
+                  icon={<FileArchive className="w-3.5 h-3.5 text-indigo-600" />}
+                  title="Скачать выбранные (или все показанные актуальные) документы одним ZIP-архивом"
+                >
+                  {selectedActiveDocs.length > 0
+                    ? `Скачать выбранные (${selectedActiveDocs.length}) в .ZIP`
+                    : `Скачать .ZIP (${activeDocs.length})`}
+                </AppButton>
               </div>
             </div>
 
@@ -289,7 +397,16 @@ export const GeneratedDocsModal: React.FC<GeneratedDocsModalProps> = ({
                     <table className="w-full border-collapse">
                       <thead className="bg-slate-50 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 font-semibold text-left border-b border-slate-200 dark:border-slate-700">
                         <tr>
-                          <th className="px-3.5 py-2">Наименование документа / Файл</th>
+                          <th className="w-8 px-2.5 py-2 text-center">
+                            <input
+                              type="checkbox"
+                              checked={activeDocs.length > 0 && selectedActiveDocs.length === activeDocs.length}
+                              onChange={toggleAllActiveDocs}
+                              title="Выбрать все актуальные документы"
+                              className="w-3.5 h-3.5 rounded text-blue-600 cursor-pointer"
+                            />
+                          </th>
+                          <th className="px-3 py-2">Наименование документа / Файл</th>
                           <th className="px-3 py-2">Категория</th>
                           <th className="px-3 py-2">Дата</th>
                           <th className="px-3 py-2">Формат · Размер</th>
@@ -302,7 +419,16 @@ export const GeneratedDocsModal: React.FC<GeneratedDocsModalProps> = ({
                             key={doc.id}
                             className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40"
                           >
-                            <td className="px-3.5 py-2.5 max-w-xs">
+                            <td className="px-2.5 py-2.5 text-center">
+                              <input
+                                type="checkbox"
+                                checked={selectedDocIds.has(doc.id)}
+                                onChange={() => toggleDocSelection(doc.id)}
+                                aria-label={`Выбрать ${doc.fileName}`}
+                                className="w-3.5 h-3.5 rounded text-blue-600 cursor-pointer"
+                              />
+                            </td>
+                            <td className="px-3 py-2.5 max-w-xs">
                               <div className="font-medium text-slate-900 dark:text-slate-100 truncate" title={doc.title}>
                                 {doc.title}
                               </div>

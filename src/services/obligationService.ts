@@ -7,6 +7,11 @@ import {
   Tab
 } from '../types/database';
 import { EmployeeContext, OBLIGATION_RULES, ObligationRule, getRulesForEvent } from '../data/modules';
+import {
+  formatOccupationPpeSummary,
+  parsePpeSummaryItem,
+  resolveOccupationNormByTitle
+} from '../data/occupationNorms';
 import { getTodayIso, parseFlexibleDateToIso } from './deadlineService';
 
 export type { EmployeeContext };
@@ -60,20 +65,167 @@ export function normalizeSoutClass(raw: unknown): string | undefined {
   return match ? match[1] : undefined;
 }
 
-/** Должность и класс условий труда работника (из штатного расписания). */
+function findPositionsTab(tabs: Tab[]): Tab | undefined {
+  return (
+    tabs.find((tab) => tab.moduleId === 'staffing' || tab.id === 'tab_positions') ||
+    tabs.find(
+      (tab) =>
+        tab.isMaster &&
+        tab.columns.some((col) => col.id === 'pos_title' || /должность/i.test(col.name))
+    )
+  );
+}
+
+export function getEmployeePositionTitle(row: Row, employeesTab?: Tab, positionsTab?: Tab): string {
+  if (!row) return '';
+  const directCandidates = ['emp_pos', 'emp_position', 'pos_title'];
+  for (const key of directCandidates) {
+    const val = String(row[key] ?? '').trim();
+    if (val) return val;
+  }
+  if (employeesTab) {
+    const relCol = employeesTab.columns.find(
+      (col) =>
+        (col.type === 'relation' &&
+          (col.relation?.masterColumnId === 'pos_title' ||
+            (positionsTab && col.relation?.masterTabId === positionsTab.id))) ||
+        /должность/i.test(col.name)
+    );
+    if (relCol) {
+      const val = String(row[relCol.id] ?? '').trim();
+      if (val) return val;
+    }
+  }
+  return '';
+}
+
+export function getEmployeeDepartment(row: Row, employeesTab?: Tab, allTabs?: Tab[]): string {
+  if (!row) return '';
+  const directCandidates = ['emp_dept', 'pos_dept'];
+  for (const key of directCandidates) {
+    const val = String(row[key] ?? '').trim();
+    if (val) return val;
+  }
+  if (employeesTab) {
+    const deptCol = employeesTab.columns.find(
+      (col) =>
+        col.relation?.masterColumnId === 'pos_dept' || /подразделение/i.test(col.name)
+    );
+    if (deptCol) {
+      const val = String(row[deptCol.id] ?? '').trim();
+      if (val) return val;
+    }
+  }
+  if (allTabs) {
+    const positionsTab = findPositionsTab(allTabs);
+    const posTitle = getEmployeePositionTitle(row, employeesTab, positionsTab);
+    if (positionsTab && posTitle) {
+      const posTitleCol =
+        positionsTab.columns.find((col) => col.id === 'pos_title' || /должность/i.test(col.name))?.id ||
+        'pos_title';
+      const posDeptCol =
+        positionsTab.columns.find((col) => col.id === 'pos_dept' || /подразделение/i.test(col.name))?.id ||
+        'pos_dept';
+      const posRow = positionsTab.rows.find(
+        (candidate) => String(candidate[posTitleCol] ?? '').trim().toLowerCase() === posTitle.toLowerCase()
+      );
+      if (posRow) {
+        return String(posRow[posDeptCol] ?? '').trim();
+      }
+    }
+  }
+  return '';
+}
+
+function findFactorsTab(tabs: Tab[]): Tab | undefined {
+  return (
+    tabs.find((tab) => tab.moduleId === 'sout' || tab.id === 'tab_factors') ||
+    tabs.find((tab) => tab.columns.some((col) => col.id === 'fac_name' || col.id === 'fac_code'))
+  );
+}
+
+/** Должность, класс условий труда, вредные факторы (29н) и нормы СИЗ (766н) работника. */
 export function resolveEmployeeContext(tabs: Tab[], employeeRow: Row): EmployeeContext {
-  const positionTitle = String(employeeRow.emp_position ?? '').trim();
+  const employeesTab = tabs.find((tab) => tab.moduleId === 'employees' || tab.id === 'tab_employees');
+  const positionsTab = findPositionsTab(tabs);
+  const factorsTab = findFactorsTab(tabs);
+  const positionTitle = getEmployeePositionTitle(employeeRow, employeesTab, positionsTab);
   if (!positionTitle) return {};
-  const positionsTab = tabs.find((tab) => tab.moduleId === 'staffing' || tab.id === 'tab_positions');
-  if (!positionsTab) return { positionTitle };
+
+  const catalogPreset = resolveOccupationNormByTitle(positionTitle);
+
+  if (!positionsTab) {
+    return {
+      positionTitle,
+      soutClass: normalizeSoutClass(catalogPreset?.soutClass),
+      harmfulFactor: catalogPreset?.factorName || undefined,
+      factorCode29n: catalogPreset?.factorCode29n || undefined,
+      defaultPpe: catalogPreset?.ppeItems[0],
+      ppeNormSummary: catalogPreset ? formatOccupationPpeSummary(catalogPreset.ppeItems) : undefined
+    };
+  }
+
+  const posTitleColId =
+    positionsTab.columns.find((col) => col.id === 'pos_title' || /должность/i.test(col.name))?.id ||
+    'pos_title';
+  const soutColId =
+    positionsTab.columns.find((col) => col.id === 'pos_sout_class' || /класс.*условий/i.test(col.name))?.id ||
+    'pos_sout_class';
+  const factorsColId =
+    positionsTab.columns.find(
+      (col) => col.id === 'pos_factors' || /фактор/i.test(col.name)
+    )?.id || 'pos_factors';
+  const ppeColId =
+    positionsTab.columns.find(
+      (col) => col.id === 'pos_ppe_norm' || /норма\s*сиз/i.test(col.name)
+    )?.id || 'pos_ppe_norm';
+
   const positionRow = positionsTab.rows.find(
     (row) =>
-      String(row.pos_title ?? '').trim().toLowerCase() === positionTitle.toLowerCase()
+      String(row[posTitleColId] ?? '').trim().toLowerCase() === positionTitle.toLowerCase()
   );
-  if (!positionRow) return { positionTitle };
+  if (!positionRow) {
+    return {
+      positionTitle,
+      soutClass: normalizeSoutClass(catalogPreset?.soutClass),
+      harmfulFactor: catalogPreset?.factorName || undefined,
+      factorCode29n: catalogPreset?.factorCode29n || undefined,
+      defaultPpe: catalogPreset?.ppeItems[0],
+      ppeNormSummary: catalogPreset ? formatOccupationPpeSummary(catalogPreset.ppeItems) : undefined
+    };
+  }
+
+  const rawFactor = String(positionRow[factorsColId] ?? '').trim();
+  const harmfulFactor = rawFactor || catalogPreset?.factorName || undefined;
+
+  let factorCode29n = catalogPreset?.factorCode29n || undefined;
+  if (harmfulFactor && factorsTab) {
+    const facNameCol =
+      factorsTab.columns.find((c) => c.id === 'fac_name' || /фактор/i.test(c.name))?.id || 'fac_name';
+    const facCodeCol =
+      factorsTab.columns.find((c) => c.id === 'fac_code' || /код/i.test(c.name))?.id || 'fac_code';
+    const matchedFactor = factorsTab.rows.find(
+      (fRow) => String(fRow[facNameCol] ?? '').trim().toLowerCase() === harmfulFactor.toLowerCase()
+    );
+    if (matchedFactor && matchedFactor[facCodeCol]) {
+      factorCode29n = String(matchedFactor[facCodeCol]).trim();
+    }
+  }
+
+  const rawPpeSummary = String(positionRow[ppeColId] ?? '').trim();
+  const ppeNormSummary =
+    rawPpeSummary ||
+    (catalogPreset ? formatOccupationPpeSummary(catalogPreset.ppeItems) : undefined);
+  const parsedPpe = rawPpeSummary ? parsePpeSummaryItem(rawPpeSummary) : undefined;
+  const defaultPpe = parsedPpe || catalogPreset?.ppeItems[0];
+
   return {
     positionTitle,
-    soutClass: normalizeSoutClass(positionRow.pos_sout_class)
+    soutClass: normalizeSoutClass(positionRow[soutColId]),
+    harmfulFactor,
+    factorCode29n,
+    ppeNormSummary,
+    defaultPpe
   };
 }
 
@@ -254,6 +406,70 @@ export function rescheduleObligationsForHireDate(
 }
 
 /**
+ * Синхронизирует обязательства работника при изменении должности, класса СОУТ или даты приёма:
+ * добавляет новые применимые правила, убирает невыполненные условные задачи без документов,
+ * обновляет периодичность и сдвигает сроки незакрытых задач приёма.
+ */
+export function syncEmployeeObligationsForProfileChange(
+  existing: EmployeeObligation[],
+  params: {
+    employeeRowId: string;
+    hireDateIso?: string;
+    context?: EmployeeContext;
+  }
+): EmployeeObligation[] {
+  const context = params.context || {};
+  let next = existing.filter((item) => {
+    if (item.employeeRowId !== params.employeeRowId) return true;
+    if (item.status !== 'pending' || item.generatedDocId) return true;
+    const rule = OBLIGATION_RULES.find((candidate) => candidate.id === item.requirementId);
+    if (!rule?.condition) return true;
+    return ruleApplies(rule, context);
+  });
+
+  next = next.map((item) => {
+    if (item.employeeRowId !== params.employeeRowId || item.status !== 'pending') return item;
+    const rule = OBLIGATION_RULES.find((candidate) => candidate.id === item.requirementId);
+    if (!rule) return item;
+    const nextPeriodicity = resolvePeriodicity(rule, context);
+    return nextPeriodicity !== item.periodicityMonths
+      ? { ...item, periodicityMonths: nextPeriodicity }
+      : item;
+  });
+
+  if (params.hireDateIso) {
+    next = ensureHireObligations(next, {
+      employeeRowId: params.employeeRowId,
+      hireDateIso: params.hireDateIso,
+      context
+    });
+    next = rescheduleObligationsForHireDate(next, params.employeeRowId, params.hireDateIso);
+  }
+
+  return next;
+}
+
+export function removeObligationsForEmployees(
+  existing: EmployeeObligation[] | undefined,
+  employeeRowIds: Iterable<string>
+): EmployeeObligation[] {
+  if (!Array.isArray(existing)) return [];
+  const idSet = new Set(employeeRowIds);
+  if (idSet.size === 0) return existing;
+  return existing.filter((item) => !idSet.has(item.employeeRowId));
+}
+
+export function removeEventsForEmployees(
+  events: EmployeeEvent[] | undefined,
+  employeeRowIds: Iterable<string>
+): EmployeeEvent[] {
+  if (!Array.isArray(events)) return [];
+  const idSet = new Set(employeeRowIds);
+  if (idSet.size === 0) return events;
+  return events.filter((event) => !idSet.has(event.employeeRowId));
+}
+
+/**
  * Отметка «Выполнено». Для периодических требований сразу создаётся следующая
  * задача со сроком «дата выполнения + периодичность».
  */
@@ -398,17 +614,29 @@ export function getEmployeeEvents(
 
 /**
  * Создаёт строку в таблице модуля (медосмотр, СИЗ, инструктаж), привязанную к работнику:
- * связи на мастер-таблицу «Сотрудники» заполняются ФИО, даты — датой события.
+ * связи на «Сотрудники» заполняются ФИО/данными работника, связи на «Штатное расписание» —
+ * должностью и подразделением работника, даты — датой события.
  */
 export function buildLinkedRow(
   moduleTab: Tab,
   employeesTab: Tab,
   employeeRow: Row,
-  dateIso?: string
+  dateIso?: string,
+  allTabs?: Tab[]
 ): Row {
   const row: Row = {
     id: `row_auto_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
   };
+  const positionsTab = allTabs ? findPositionsTab(allTabs) : undefined;
+  const positionTitle = getEmployeePositionTitle(employeeRow, employeesTab, positionsTab);
+  const department = getEmployeeDepartment(employeeRow, employeesTab, allTabs);
+  const context = allTabs
+    ? resolveEmployeeContext(allTabs, employeeRow)
+    : resolveEmployeeContext([employeesTab], employeeRow);
+
+  const medPeriodMonths = context.soutClass?.startsWith('3.') ? 12 : 24;
+  const ppeWearMonths = context.defaultPpe?.wearMonths ?? 12;
+
   moduleTab.columns.forEach((column) => {
     if (column.relation?.masterTabId === employeesTab.id) {
       const masterColumn = employeesTab.columns.find(
@@ -417,8 +645,57 @@ export function buildLinkedRow(
       row[column.id] = masterColumn ? employeeRow[masterColumn.id] ?? '' : '';
       return;
     }
+    if (column.relation) {
+      const masterColId = column.relation.masterColumnId;
+      const isPosRel =
+        masterColId === 'pos_title' ||
+        column.id.endsWith('_pos') ||
+        /должность/i.test(column.name);
+      if (isPosRel) {
+        row[column.id] = positionTitle;
+        return;
+      }
+      const isDeptRel =
+        masterColId === 'pos_dept' ||
+        column.id.endsWith('_dept') ||
+        /подразделение/i.test(column.name);
+      if (isDeptRel) {
+        row[column.id] = department;
+        return;
+      }
+      const isFactorRel =
+        masterColId === 'fac_name' ||
+        column.id === 'med_factor' ||
+        /вредн.*фактор/i.test(column.name);
+      if (isFactorRel) {
+        row[column.id] = context.harmfulFactor || '';
+        return;
+      }
+    }
+    if (column.id === 'siz_item' && context.defaultPpe?.name) {
+      row[column.id] = context.defaultPpe.name;
+      return;
+    }
+    if (column.id === 'siz_unit' && context.defaultPpe?.unit) {
+      row[column.id] = context.defaultPpe.unit;
+      return;
+    }
+    if (column.id === 'siz_norm' && context.defaultPpe?.annualNorm !== undefined) {
+      row[column.id] = context.defaultPpe.annualNorm;
+      return;
+    }
+    if (column.id === 'siz_wear_months' && context.defaultPpe?.wearMonths !== undefined) {
+      row[column.id] = ppeWearMonths;
+      return;
+    }
     if (column.type === 'date') {
-      row[column.id] = dateIso || '';
+      if (dateIso && column.id === 'med_next_date') {
+        row[column.id] = addMonthsIso(dateIso, medPeriodMonths);
+      } else if (dateIso && column.id === 'siz_next_date') {
+        row[column.id] = addMonthsIso(dateIso, ppeWearMonths);
+      } else {
+        row[column.id] = dateIso || '';
+      }
       return;
     }
     if (column.type === 'boolean') {
@@ -476,6 +753,8 @@ export const obligationService = {
   addDaysIso,
   addMonthsIso,
   normalizeSoutClass,
+  getEmployeePositionTitle,
+  getEmployeeDepartment,
   resolveEmployeeContext,
   ruleApplies,
   resolvePeriodicity,
@@ -484,6 +763,9 @@ export const obligationService = {
   ensureHireObligations,
   ensureEventObligations,
   rescheduleObligationsForHireDate,
+  syncEmployeeObligationsForProfileChange,
+  removeObligationsForEmployees,
+  removeEventsForEmployees,
   completeObligation,
   reopenObligation,
   summarizeObligations,

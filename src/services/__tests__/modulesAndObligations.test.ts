@@ -13,10 +13,14 @@ import {
   detectControlViolations,
   ensureEventObligations,
   ensureHireObligations,
+  removeEventsForEmployees,
+  removeObligationsForEmployees,
   resolveEmployeeContext,
   rescheduleObligationsForHireDate,
-  summarizeObligations
+  summarizeObligations,
+  syncEmployeeObligationsForProfileChange
 } from '../obligationService';
+import { createIsolatedEmptyEntity } from '../storageService';
 import { DatabaseState, Row, Tab } from '../../types/database';
 
 function baseState(): DatabaseState {
@@ -56,8 +60,40 @@ describe('Модульная архитектура этапов', () => {
     const medTab = installed.tabs.find((tab) => tab.moduleId === 'medical');
     expect(medTab).toBeTruthy();
     expect(medTab!.columns.length).toBeGreaterThan(0);
-    expect(installed.templates.some((tpl) => tpl.tabId === 'tab_med')).toBe(true);
+    // Канонические ID столбцов сохраняются для корректной привязки тегов
+    expect(medTab!.columns.some((col) => col.id === 'med_last_date')).toBe(true);
+    expect(medTab!.columns.some((col) => col.id === 'med_worker')).toBe(true);
+    const referralTpl = installed.templates.find(
+      (tpl) => tpl.id === 'tpl_med_referral' || tpl.builtInId === 'tpl_med_referral'
+    );
+    expect(referralTpl).toBeTruthy();
     expect(getVisibleTabs(installed).some((tab) => tab.moduleId === 'medical')).toBe(true);
+  });
+
+  it('installModule перенастраивает связи и добавляет теги в изолированной организации', () => {
+    const base = baseState();
+    const isolated = createIsolatedEmptyEntity(base.entities[0].profile);
+    const isoState: DatabaseState = {
+      ...base,
+      activeEntityId: isolated.id,
+      entities: [isolated],
+      tabs: isolated.tabs,
+      tags: isolated.tags,
+      templates: isolated.templates,
+      settings: { ...base.settings, installedModules: ['staffing', 'employees'] }
+    };
+
+    const staffTab = isoState.tabs.find((t) => t.moduleId === 'staffing')!;
+    const empTab = isoState.tabs.find((t) => t.moduleId === 'employees')!;
+
+    const withMedical = installModule(isoState, 'medical');
+    const medTab = withMedical.tabs.find((t) => t.moduleId === 'medical')!;
+    const workerCol = medTab.columns.find((c) => c.id === 'med_worker');
+    const posCol = medTab.columns.find((c) => c.id === 'med_pos');
+    expect(workerCol?.relation?.masterTabId).toBe(empTab.id);
+    expect(posCol?.relation?.masterTabId).toBe(staffTab.id);
+    expect(withMedical.tags.some((t) => t.name === '{Дата_последнего_МО}' && t.tabId === medTab.id)).toBe(true);
+    expect(withMedical.tags.some((t) => t.name === '{ФИО}' && t.tabId === empTab.id)).toBe(true);
   });
 
   it('отключение модуля скрывает вкладку, но сохраняет данные', () => {
@@ -180,13 +216,13 @@ describe('Движок обязательств', () => {
     expect(violations.every((item) => item.reason.includes('срок'))).toBe(true);
   });
 
-  it('строка модуля создаётся со связью на работника и датой приёма', () => {
+  it('строка модуля создаётся со связью на работника, должность и датой приёма', () => {
     const state = baseState();
     const employees = employeesTab(state);
     const medTab = state.tabs.find((tab) => tab.moduleId === 'medical') as Tab;
-    const row = employeeRow();
+    const row = employeeRow({ emp_pos: 'Электрогазосварщик 5 разряда' });
 
-    const linked = buildLinkedRow(medTab, employees, row, '2026-02-01');
+    const linked = buildLinkedRow(medTab, employees, row, '2026-02-01', state.tabs);
     const employeeLinkColumns = medTab.columns.filter(
       (col) => col.relation?.masterTabId === employees.id
     );
@@ -194,6 +230,7 @@ describe('Движок обязательств', () => {
     employeeLinkColumns.forEach((col) => {
       expect(linked[col.id]).toBe('Иванов Иван Иванович');
     });
+    expect(linked.med_pos).toBe('Электрогазосварщик 5 разряда');
     const dateColumn = medTab.columns.find((col) => col.type === 'date');
     if (dateColumn) {
       expect(linked[dateColumn.id]).toBe('2026-02-01');
@@ -306,11 +343,70 @@ describe('Матрица требований: должность и класс 
     ).toBe(12);
   });
 
-  it('класс условий труда берётся из штатного расписания по должности работника', () => {
+  it('класс условий труда берётся из штатного расписания по полю emp_pos и legacy emp_position', () => {
     const state = baseState();
-    const row = { ...employeeRow(), emp_position: 'Электрогазосварщик 5 разряда' };
-    const context = resolveEmployeeContext(state.tabs, row);
-    expect(context.positionTitle).toBe('Электрогазосварщик 5 разряда');
-    expect(context.soutClass).toBe('3.2');
+    const rowEmpPos = { ...employeeRow(), emp_pos: 'Электрогазосварщик 5 разряда' };
+    const ctxPrimary = resolveEmployeeContext(state.tabs, rowEmpPos);
+    expect(ctxPrimary.positionTitle).toBe('Электрогазосварщик 5 разряда');
+    expect(ctxPrimary.soutClass).toBe('3.2');
+
+    const rowLegacy = { ...employeeRow(), emp_position: 'Электрогазосварщик 5 разряда' };
+    const ctxLegacy = resolveEmployeeContext(state.tabs, rowLegacy);
+    expect(ctxLegacy.positionTitle).toBe('Электрогазосварщик 5 разряда');
+    expect(ctxLegacy.soutClass).toBe('3.2');
+  });
+
+  it('синхронизирует обязательства при смене должности и удаляет осиротевшие записи при удалении работника', () => {
+    const initial = ensureHireObligations([], {
+      employeeRowId: 'row_sync_1',
+      hireDateIso: '2026-02-01',
+      context: { positionTitle: 'Кладовщик', soutClass: '2.0' }
+    });
+    expect(initial.some((o) => o.requirementId === 'manager_training')).toBe(false);
+    expect(initial.find((o) => o.requirementId === 'med_referral')?.periodicityMonths).toBe(24);
+
+    // Повышение до начальника с вредными условиями 3.2
+    const promoted = syncEmployeeObligationsForProfileChange(initial, {
+      employeeRowId: 'row_sync_1',
+      hireDateIso: '2026-02-01',
+      context: { positionTitle: 'Начальник цеха', soutClass: '3.2' }
+    });
+    expect(promoted.some((o) => o.requirementId === 'manager_training')).toBe(true);
+    expect(promoted.find((o) => o.requirementId === 'med_referral')?.periodicityMonths).toBe(12);
+
+    // Удаление работника очищает обязательства и события
+    const remainingObl = removeObligationsForEmployees(promoted, ['row_sync_1']);
+    expect(remainingObl).toHaveLength(0);
+    const remainingEvents = removeEventsForEmployees(
+      [{ id: 'e1', employeeRowId: 'row_sync_1', type: 'transfer', date: '2026-03-01', createdAt: '' }],
+      ['row_sync_1']
+    );
+    expect(remainingEvents).toHaveLength(0);
+  });
+
+  it('связка Должность → Факторы 29н → Нормы СИЗ 766н автозаполняет медосмотр и карточку СИЗ', () => {
+    const state = baseState();
+    const employees = employeesTab(state);
+    const medTab = state.tabs.find((tab) => tab.moduleId === 'medical') as Tab;
+    const sizTab = state.tabs.find((tab) => tab.moduleId === 'ppe') as Tab;
+    const welderRow = employeeRow({ emp_pos: 'Электрогазосварщик 5 разряда' });
+
+    const ctx = resolveEmployeeContext(state.tabs, welderRow);
+    expect(ctx.factorCode29n).toBe('1.1.4');
+    expect(ctx.harmfulFactor).toContain('сварочный аэрозоль');
+    expect(ctx.defaultPpe?.name).toContain('Костюм сварщика');
+    expect(ctx.defaultPpe?.wearMonths).toBe(12);
+
+    const medRow = buildLinkedRow(medTab, employees, welderRow, '2026-02-01', state.tabs);
+    expect(medRow.med_factor).toContain('сварочный аэрозоль');
+    expect(medRow.med_last_date).toBe('2026-02-01');
+    expect(medRow.med_next_date).toBe('2027-02-01');
+
+    const sizRow = buildLinkedRow(sizTab, employees, welderRow, '2026-02-01', state.tabs);
+    expect(sizRow.siz_item).toContain('Костюм сварщика');
+    expect(sizRow.siz_unit).toBe('комплект');
+    expect(sizRow.siz_norm).toBe(1);
+    expect(sizRow.siz_wear_months).toBe(12);
+    expect(sizRow.siz_next_date).toBe('2027-02-01');
   });
 });

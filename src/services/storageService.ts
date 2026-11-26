@@ -1,5 +1,8 @@
 import {
   AttachedDoc,
+  AuditLogAction,
+  AuditLogEntry,
+  AuditLogFieldChange,
   DatabaseState,
   LegalEntity,
   LegalEntityProfile,
@@ -36,6 +39,8 @@ export const STORAGE_KEY = 'ot_base_database_v1';
 const LEGACY_MIGRATION_DONE_KEY = 'ot_base_migrated_to_native_v1';
 export const PRE_RESTORE_BACKUP_KEY = 'ot_base_pre_restore_backup_v1';
 export const CURRENT_APP_DB_VERSION = '1.3.0';
+export const MAX_AUDIT_LOG_ENTRIES = 1000;
+export const PBKDF2_ITERATIONS = 210_000;
 
 export type CloneEntityMode = 'structure_only' | 'structure_and_masters' | 'full_copy';
 
@@ -240,6 +245,7 @@ export function applyDatabaseTransition(
               generatedDocs: updated.generatedDocs,
               employeeObligations: updated.employeeObligations || [],
               employeeEvents: updated.employeeEvents || [],
+              auditLog: updated.auditLog ?? ent.auditLog ?? [],
               llmLogs: updated.llmLogs,
               ...(now ? { updatedAt: now } : {})
             }
@@ -251,6 +257,258 @@ export function applyDatabaseTransition(
     entities: syncedEntities,
     lastSaved: now ?? updated.lastSaved
   };
+}
+
+export function formatAuditCellValue(value: unknown): string {
+  if (value === undefined || value === null || value === '') return '—';
+  if (typeof value === 'boolean') return value ? 'Да' : 'Нет';
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    if ('actualDate' in obj || 'manualNextDate' in obj || 'note' in obj) {
+      const parts: string[] = [];
+      if (typeof obj.actualDate === 'string' && obj.actualDate) {
+        parts.push(`факт: ${obj.actualDate}`);
+      }
+      if (typeof obj.manualNextDate === 'string' && obj.manualNextDate) {
+        parts.push(`ручн. след.: ${obj.manualNextDate}`);
+      }
+      if (typeof obj.note === 'string' && obj.note) {
+        parts.push(obj.note);
+      }
+      return parts.length > 0 ? parts.join(', ').slice(0, 240) : '—';
+    }
+    try {
+      return JSON.stringify(value).slice(0, 240);
+    } catch {
+      return '[объект]';
+    }
+  }
+  return String(value).replace(/\s+/g, ' ').trim().slice(0, 240) || '—';
+}
+
+export function createAuditLogEntry(params: {
+  action: AuditLogAction;
+  summary: string;
+  tabId?: string;
+  tabName?: string;
+  rowId?: string;
+  rowIdentifier?: string;
+  changes?: AuditLogFieldChange[];
+  timestamp?: string;
+  id?: string;
+}): AuditLogEntry {
+  return {
+    id: params.id || `audit_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: params.timestamp || new Date().toISOString(),
+    action: params.action,
+    ...(params.tabId ? { tabId: params.tabId } : {}),
+    ...(params.tabName ? { tabName: params.tabName } : {}),
+    ...(params.rowId ? { rowId: params.rowId } : {}),
+    ...(params.rowIdentifier ? { rowIdentifier: params.rowIdentifier } : {}),
+    summary: params.summary,
+    ...(params.changes && params.changes.length > 0 ? { changes: params.changes } : {})
+  };
+}
+
+export function appendAuditLogEntries(
+  existing: AuditLogEntry[] | undefined,
+  newEntries: AuditLogEntry[]
+): AuditLogEntry[] {
+  const base = Array.isArray(existing) ? existing : [];
+  if (newEntries.length === 0) return base;
+  return [...newEntries, ...base].slice(0, MAX_AUDIT_LOG_ENTRIES);
+}
+
+const FORBIDDEN_JSON_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+function assertNoForbiddenJsonKeys(node: unknown): void {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node)) {
+    for (let i = 0; i < node.length; i++) {
+      assertNoForbiddenJsonKeys(node[i]);
+    }
+    return;
+  }
+  const keys = Object.keys(node as Record<string, unknown>);
+  for (const key of keys) {
+    if (FORBIDDEN_JSON_KEYS.has(key)) {
+      throw new Error(`Обнаружен недопустимый ключ структуры JSON: «${key}».`);
+    }
+    assertNoForbiddenJsonKeys((node as Record<string, unknown>)[key]);
+  }
+}
+
+export function parseSafeJson(rawText: string): unknown {
+  const parsed = JSON.parse(rawText);
+  assertNoForbiddenJsonKeys(parsed);
+  return parsed;
+}
+
+export interface EncryptedBackupEnvelope {
+  format: 'ot-baza-encrypted-backup';
+  version: 1;
+  kdf: 'PBKDF2-SHA256';
+  iterations: number;
+  cipher: 'AES-256-GCM';
+  saltB64: string;
+  ivB64: string;
+  ciphertextB64: string;
+  createdAt: string;
+}
+
+export class EncryptedBackupRequiredError extends Error {
+  readonly envelope: EncryptedBackupEnvelope;
+
+  constructor(envelope: EncryptedBackupEnvelope) {
+    super('Резервная копия зашифрована паролем. Введите пароль для расшифровки.');
+    this.name = 'EncryptedBackupRequiredError';
+    this.envelope = envelope;
+  }
+}
+
+export function isEncryptedBackupPayload(value: unknown): value is EncryptedBackupEnvelope {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    obj.format === 'ot-baza-encrypted-backup' &&
+    obj.version === 1 &&
+    obj.cipher === 'AES-256-GCM' &&
+    typeof obj.saltB64 === 'string' &&
+    typeof obj.ivB64 === 'string' &&
+    typeof obj.ciphertextB64 === 'string'
+  );
+}
+
+function uint8ToBase64(bytes: Uint8Array): string {
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+function base64ToUint8(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function getWebCrypto(): Crypto {
+  const c = globalThis.crypto;
+  if (!c || !c.subtle || typeof c.getRandomValues !== 'function') {
+    throw new Error('Шифрование Web Crypto API недоступно в текущем окружении.');
+  }
+  return c;
+}
+
+async function deriveAesGcmKey(
+  passphrase: string,
+  salt: Uint8Array,
+  iterations: number,
+  usage: KeyUsage[]
+): Promise<CryptoKey> {
+  const cryptoApi = getWebCrypto();
+  const encoder = new TextEncoder();
+  const keyMaterial = await cryptoApi.subtle.importKey(
+    'raw',
+    encoder.encode(passphrase),
+    'PBKDF2',
+    false,
+    ['deriveKey']
+  );
+  return cryptoApi.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: salt as unknown as BufferSource,
+      iterations,
+      hash: 'SHA-256'
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    usage
+  );
+}
+
+export async function encryptDatabaseBackup(
+  state: DatabaseState,
+  passphrase: string,
+  options?: ExportDatabaseOptions
+): Promise<EncryptedBackupEnvelope> {
+  if (!passphrase || passphrase.length < 4) {
+    throw new Error('Пароль шифрования должен содержать минимум 4 символа.');
+  }
+  const cryptoApi = getWebCrypto();
+  const safeState = sanitizeDatabaseForExport(state, options);
+  const plaintext = JSON.stringify(safeState, null, 2);
+  const salt = cryptoApi.getRandomValues(new Uint8Array(16));
+  const iv = cryptoApi.getRandomValues(new Uint8Array(12));
+  const key = await deriveAesGcmKey(passphrase, salt, PBKDF2_ITERATIONS, ['encrypt']);
+  const encoded = new TextEncoder().encode(plaintext);
+  const encryptedBuf = await cryptoApi.subtle.encrypt(
+    { name: 'AES-GCM', iv: iv as unknown as BufferSource },
+    key,
+    encoded as unknown as BufferSource
+  );
+  return {
+    format: 'ot-baza-encrypted-backup',
+    version: 1,
+    kdf: 'PBKDF2-SHA256',
+    iterations: PBKDF2_ITERATIONS,
+    cipher: 'AES-256-GCM',
+    saltB64: uint8ToBase64(salt),
+    ivB64: uint8ToBase64(iv),
+    ciphertextB64: uint8ToBase64(new Uint8Array(encryptedBuf)),
+    createdAt: new Date().toISOString()
+  };
+}
+
+export async function decryptDatabaseBackup(
+  envelope: EncryptedBackupEnvelope,
+  passphrase: string
+): Promise<string> {
+  if (!passphrase) {
+    throw new Error('Введите пароль для расшифровки резервной копии.');
+  }
+  if (!isEncryptedBackupPayload(envelope)) {
+    throw new Error('Некорректный формат зашифрованной резервной копии.');
+  }
+  if (
+    typeof envelope.iterations !== 'number' ||
+    !Number.isFinite(envelope.iterations) ||
+    envelope.iterations < 100_000 ||
+    envelope.iterations > 2_000_000
+  ) {
+    throw new Error('Недопустимые параметры шифрования (KDF) в файле.');
+  }
+  const cryptoApi = getWebCrypto();
+  let salt: Uint8Array;
+  let iv: Uint8Array;
+  let ciphertext: Uint8Array;
+  try {
+    salt = base64ToUint8(envelope.saltB64);
+    iv = base64ToUint8(envelope.ivB64);
+    ciphertext = base64ToUint8(envelope.ciphertextB64);
+  } catch {
+    throw new Error('Повреждены бинарные данные зашифрованной копии.');
+  }
+
+  try {
+    const key = await deriveAesGcmKey(passphrase, salt, envelope.iterations, ['decrypt']);
+    const plainBuf = await cryptoApi.subtle.decrypt(
+      { name: 'AES-GCM', iv: iv as unknown as BufferSource },
+      key,
+      ciphertext as unknown as BufferSource
+    );
+    return new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(plainBuf));
+  } catch {
+    throw new Error('Неверный пароль или повреждённый зашифрованный файл резервной копии.');
+  }
 }
 
 let persistenceChain: Promise<unknown> = Promise.resolve();
@@ -342,9 +600,16 @@ export function inspectDatabaseBackupText(
 ): DatabaseImportPreview {
   let parsed: any;
   try {
-    parsed = JSON.parse(jsonText);
-  } catch {
+    parsed = parseSafeJson(jsonText);
+  } catch (err: any) {
+    if (err?.message?.includes('недопустимый ключ')) {
+      throw err;
+    }
     throw new Error('Файл не является корректным JSON. Проверьте целостность резервной копии.');
+  }
+
+  if (isEncryptedBackupPayload(parsed)) {
+    throw new EncryptedBackupRequiredError(parsed);
   }
 
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -513,21 +778,23 @@ export function normalizeDatabaseState(raw: any): DatabaseState {
   // иначе аудит целостности справедливо посчитал бы их битыми.
   const ensureRequiredEmployeeTags = (tags: Tag[] | undefined, tabs: Tab[] | undefined): Tag[] => {
     const list = Array.isArray(tags) ? [...tags] : [];
-    const employeesTab = Array.isArray(tabs) ? tabs.find((tab) => tab.id === 'tab_employees') : undefined;
+    const employeesTab = Array.isArray(tabs)
+      ? tabs.find((tab) => tab.moduleId === 'employees' || tab.id === 'tab_employees')
+      : undefined;
     if (!employeesTab) return list;
     const names = new Set(list.map((tag) => tag.name));
     const candidates: Tag[] = [
       {
         id: 'tag_builtin_hire_date',
         name: '{Дата_приёма}',
-        tabId: 'tab_employees',
+        tabId: employeesTab.id,
         columnId: 'emp_hire_date',
         description: 'Дата приёма на работу'
       },
       {
         id: 'tag_builtin_snils',
         name: '{СНИЛС}',
-        tabId: 'tab_employees',
+        tabId: employeesTab.id,
         columnId: 'emp_snils',
         description: 'СНИЛС работника'
       }
@@ -561,6 +828,7 @@ export function normalizeDatabaseState(raw: any): DatabaseState {
         templates: Array.isArray(raw.templates) ? raw.templates : BUILT_IN_TEMPLATES,
         llmLogs: Array.isArray(raw.llmLogs) ? raw.llmLogs : INITIAL_DATABASE_STATE.llmLogs,
         generatedDocs: Array.isArray(raw.generatedDocs) ? raw.generatedDocs : [],
+        auditLog: Array.isArray(raw.auditLog) ? raw.auditLog.slice(0, MAX_AUDIT_LOG_ENTRIES) : [],
         createdAt: now,
         updatedAt: now
       }
@@ -579,7 +847,8 @@ export function normalizeDatabaseState(raw: any): DatabaseState {
         tags: ensureRequiredEmployeeTags(ent.tags, normalizedTabs),
         generatedDocs: Array.isArray(ent.generatedDocs) ? ent.generatedDocs : [],
         employeeObligations: Array.isArray(ent.employeeObligations) ? ent.employeeObligations : [],
-        employeeEvents: Array.isArray(ent.employeeEvents) ? ent.employeeEvents : []
+        employeeEvents: Array.isArray(ent.employeeEvents) ? ent.employeeEvents : [],
+        auditLog: Array.isArray(ent.auditLog) ? ent.auditLog.slice(0, MAX_AUDIT_LOG_ENTRIES) : []
       };
     });
     if (sharedNormatives.length === 0) {
@@ -628,7 +897,13 @@ export function normalizeDatabaseState(raw: any): DatabaseState {
     employeeEvents: Array.isArray(raw.employeeEvents)
       ? raw.employeeEvents
       : activeEntity.employeeEvents || [],
-    llmConfig: normalizeLLMConfig(raw.llmConfig || INITIAL_DATABASE_STATE.llmConfig),
+    auditLog: Array.isArray(raw.auditLog)
+      ? raw.auditLog.slice(0, MAX_AUDIT_LOG_ENTRIES)
+      : activeEntity.auditLog || [],
+    llmConfig: normalizeLLMConfig({
+      ...(raw.llmConfig || INITIAL_DATABASE_STATE.llmConfig),
+      apiKey: ''
+    }),
     llmLogs: activeEntity.llmLogs || [],
     settings: {
       ...INITIAL_DATABASE_STATE.settings,
@@ -654,6 +929,7 @@ export function createIsolatedEmptyEntity(profile: LegalEntityProfile): LegalEnt
     tabs: [
       {
         id: starterTabId,
+        moduleId: 'staffing',
         name: 'Штатное расписание',
         description: `Мастер-таблица должностей для ${profile.shortName || profile.fullName}`,
         isMaster: true,
@@ -673,6 +949,7 @@ export function createIsolatedEmptyEntity(profile: LegalEntityProfile): LegalEnt
       },
       {
         id: `tab_${suffix}_emp`,
+        moduleId: 'employees',
         name: 'Список работников',
         description: 'Персональный состав работников с привязкой к штатному расписанию',
         columns: [
@@ -702,6 +979,7 @@ export function createIsolatedEmptyEntity(profile: LegalEntityProfile): LegalEnt
     templates: JSON.parse(JSON.stringify(BUILT_IN_TEMPLATES)),
     llmLogs: [],
     generatedDocs: [],
+    auditLog: [],
     createdAt: now,
     updatedAt: now
   };
@@ -737,6 +1015,7 @@ export function cloneLegalEntity(
     templates: JSON.parse(JSON.stringify(source.templates || BUILT_IN_TEMPLATES)),
     llmLogs: [],
     generatedDocs: [],
+    auditLog: [],
     createdAt: now,
     updatedAt: now
   };
@@ -793,8 +1072,8 @@ export const storageService = {
               workspaceFolderName: workspace.folderName ?? undefined
             };
           }
-          // Файла ещё нет — переносим текущее состояние браузера в папку.
-          const seed = storageService.loadDatabase();
+          // Файла ещё нет — переносим текущее состояние браузера в папку (без секретов).
+          const seed = sanitizeDatabaseForExport(storageService.loadDatabase());
           await workspaceFolderService.writeDatabaseText(JSON.stringify(seed, null, 2));
           return {
             mode: 'file-handle',
@@ -900,9 +1179,10 @@ export const storageService = {
     options?: { expectedRevision?: number; saveOptions?: SaveDatabaseOptions }
   ): Promise<SaveDatabaseResult> {
     return enqueuePersistenceTask(async () => {
+      const sanitized = sanitizeDatabaseForExport(state);
       const toSave: DatabaseState = {
-        ...state,
-        lastSaved: state.lastSaved || new Date().toISOString()
+        ...sanitized,
+        lastSaved: sanitized.lastSaved || new Date().toISOString()
       };
 
       if (localApiClient.isNativeSessionLost()) {
@@ -959,18 +1239,19 @@ export const storageService = {
   },
 
   saveDatabase(state: DatabaseState): SaveDatabaseResult {
+    const sanitized = sanitizeDatabaseForExport(state);
     if (localApiClient.isNative()) {
       // Trigger async atomic write through serialized persistence queue
       void storageService.saveDatabaseAsync({
-        ...state,
-        lastSaved: state.lastSaved || new Date().toISOString()
+        ...sanitized,
+        lastSaved: sanitized.lastSaved || new Date().toISOString()
       });
       return { ok: true };
     }
     try {
       const toSave: DatabaseState = {
-        ...state,
-        lastSaved: state.lastSaved || new Date().toISOString()
+        ...sanitized,
+        lastSaved: sanitized.lastSaved || new Date().toISOString()
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
       return { ok: true };
@@ -1021,7 +1302,10 @@ export const storageService = {
         if (existingRaw) {
           localStorage.setItem(PRE_RESTORE_BACKUP_KEY, existingRaw);
         } else if (currentState) {
-          localStorage.setItem(PRE_RESTORE_BACKUP_KEY, JSON.stringify(currentState));
+          localStorage.setItem(
+            PRE_RESTORE_BACKUP_KEY,
+            JSON.stringify(sanitizeDatabaseForExport(currentState))
+          );
         }
         localStorage.removeItem(STORAGE_KEY);
       } catch {
@@ -1057,6 +1341,24 @@ export const storageService = {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   },
 
+  async exportEncryptedDatabaseToFile(
+    state: DatabaseState,
+    passphrase: string,
+    filename = 'ot_database_backup.enc.json',
+    options?: ExportDatabaseOptions
+  ): Promise<void> {
+    const envelope = await encryptDatabaseBackup(state, passphrase, options);
+    const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute('href', url);
+    downloadAnchor.setAttribute('download', filename);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  },
+
   async inspectDatabaseBackupFile(file: File): Promise<DatabaseImportPreview> {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -1066,12 +1368,34 @@ export const storageService = {
           const preview = inspectDatabaseBackupText(content, file.name);
           resolve(preview);
         } catch (err: any) {
+          if (err instanceof EncryptedBackupRequiredError) {
+            reject(err);
+            return;
+          }
           reject(new Error(err?.message || 'Ошибка проверки файла резервной копии'));
         }
       };
       reader.onerror = () => reject(new Error('Не удалось прочитать выбранный файл'));
       reader.readAsText(file);
     });
+  },
+
+  async decryptAndInspectDatabaseBackupText(
+    rawText: string,
+    passphrase: string,
+    fileName?: string
+  ): Promise<DatabaseImportPreview> {
+    let parsed: unknown;
+    try {
+      parsed = parseSafeJson(rawText);
+    } catch {
+      throw new Error('Файл не является корректным JSON.');
+    }
+    if (!isEncryptedBackupPayload(parsed)) {
+      return inspectDatabaseBackupText(rawText, fileName);
+    }
+    const plaintext = await decryptDatabaseBackup(parsed, passphrase);
+    return inspectDatabaseBackupText(plaintext, fileName);
   },
 
   async restoreDatabaseSafely(
@@ -1081,7 +1405,9 @@ export const storageService = {
     // Wait for any in-flight persistence write so the pre-restore backup reflects latest disk state
     await persistenceChain;
 
-    const rollbackSnapshot: DatabaseState = JSON.parse(JSON.stringify(currentState));
+    const rollbackSnapshot: DatabaseState = sanitizeDatabaseForExport(
+      JSON.parse(JSON.stringify(currentState))
+    );
     const normalizedNext = normalizeDatabaseState(nextState);
     const toSave: DatabaseState = {
       ...normalizedNext,
@@ -1159,7 +1485,10 @@ export const storageService = {
     }
 
     try {
-      localStorage.setItem(PRE_RESTORE_BACKUP_KEY, JSON.stringify(currentState));
+      localStorage.setItem(
+        PRE_RESTORE_BACKUP_KEY,
+        JSON.stringify(sanitizeDatabaseForExport(currentState))
+      );
       return { ok: true };
     } catch (e: any) {
       const isQuota =

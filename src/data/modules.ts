@@ -1,4 +1,5 @@
 import { EmployeeEventType, ObligationKind } from '../types/database';
+import type { OccupationPpeItem } from './occupationNorms';
 
 /**
  * Модуль = независимый этап/точка контроля. Модуль владеет вкладкой, своими
@@ -16,10 +17,14 @@ export interface ModuleDefinition {
   base?: boolean;
 }
 
-/** Контекст работника, влияющий на состав требований. */
+/** Контекст работника, влияющий на состав требований, вредные факторы 29н и нормы СИЗ 766н. */
 export interface EmployeeContext {
   positionTitle?: string;
   soutClass?: string;
+  harmfulFactor?: string;
+  factorCode29n?: string;
+  ppeNormSummary?: string;
+  defaultPpe?: OccupationPpeItem;
 }
 
 /** Условия применимости требования к работнику. */

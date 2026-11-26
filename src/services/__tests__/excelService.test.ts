@@ -219,7 +219,7 @@ describe('excelService', () => {
   });
 
   it('T-46: exports and re-imports deadline_control via real .xlsx without losing actualDate, manualNextDate, note, or _rawOriginal', async () => {
-    const XLSX = await import('xlsx');
+    const { buildXlsxArrayBuffer } = await import('../ooxmlWorkbookService');
 
     const deadlineTab: Tab = {
       id: 'tab_dl',
@@ -286,10 +286,7 @@ describe('excelService', () => {
     expect(JSON.stringify(exportedRows)).not.toContain('[object Object]');
 
     // Write real XLSX binary and re-parse with parseFile
-    const ws = XLSX.utils.json_to_sheet(exportedRows);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Контроль МО');
-    const xlsxBytes = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+    const xlsxBytes = buildXlsxArrayBuffer([{ name: 'Контроль МО', rows: exportedRows }]);
     const file = new File([xlsxBytes], 'roundtrip.xlsx', {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     });
@@ -374,11 +371,10 @@ describe('excelService', () => {
 
 describe('Регрессии аудита: целостность импорта и вставки', () => {
   it('не сдвигает календарный день при импорте Date-ячейки (локальная полночь)', async () => {
-    const XLSX = await import('xlsx');
-    const ws = XLSX.utils.aoa_to_sheet([['Дата приёма'], [new Date(2026, 1, 1)]]);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Лист1');
-    const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+    const { buildXlsxArrayBuffer } = await import('../ooxmlWorkbookService');
+    const buf = buildXlsxArrayBuffer([
+      { name: 'Лист1', matrix: [['Дата приёма'], [new Date(2026, 1, 1)]] }
+    ]);
 
     const parsed = await excelService.parseFile(new File([buf], 'dates.xlsx'));
     expect(parsed['Лист1'].rawRows).toHaveLength(1);
@@ -386,14 +382,16 @@ describe('Регрессии аудита: целостность импорта
   });
 
   it('не сдвигает колонки при пустом заголовке и разводит дубли заголовков', async () => {
-    const XLSX = await import('xlsx');
-    const ws = XLSX.utils.aoa_to_sheet([
-      ['ФИО', '', 'Должность', 'ФИО'],
-      ['Иванов И.И.', 'служебное', 'Слесарь', 'Петров П.П.']
+    const { buildXlsxArrayBuffer } = await import('../ooxmlWorkbookService');
+    const buf = buildXlsxArrayBuffer([
+      {
+        name: 'Лист1',
+        matrix: [
+          ['ФИО', '', 'Должность', 'ФИО'],
+          ['Иванов И.И.', 'служебное', 'Слесарь', 'Петров П.П.']
+        ]
+      }
     ]);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Лист1');
-    const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
 
     const parsed = await excelService.parseFile(new File([buf], 'headers.xlsx'));
     const sheet = parsed['Лист1'];
@@ -436,5 +434,52 @@ describe('Регрессии аудита: целостность импорта
     expect(res.discrepancies).toHaveLength(1);
     expect(res.discrepancies[0].reason).toContain('не является числом');
     expect(res.discrepancies[0].rowNumber).toBe(2);
+  });
+
+  it('Item 4 + Item 6: блокирует __proto__ в заголовках XLSX и корректно выполняет импорт по пресету 1С:ЗУП с автосозданием должностей', async () => {
+    const { buildXlsxArrayBuffer } = await import('../ooxmlWorkbookService');
+    const { INITIAL_DATABASE_STATE } = await import('../../data/initialDatabase');
+
+    const zupBuf = buildXlsxArrayBuffer([
+      {
+        name: 'Прием_1С',
+        matrix: [
+          ['Сотрудник', 'Таб. №', 'Должность (профессия)', 'Отдел', 'Дата приема на работу', '__proto__'],
+          ['Ковалёв А. Б.', '0199', 'Электрогазосварщик', 'Монтажный участок', '10.03.2026', 'x']
+        ]
+      }
+    ]);
+    const parsed = await excelService.parseFile(new File([zupBuf], 'zup.xlsx'));
+    const sheet = parsed['Прием_1С'];
+    expect(sheet.headers).not.toContain('__proto__');
+    expect(excelService.detectIsOneCZupHeaders(sheet.headers)).toBe(true);
+
+    const entity = INITIAL_DATABASE_STATE.entities[0];
+    const employeesTab = entity.tabs.find((t) => t.id === 'tab_employees')!;
+    const mapping = excelService.autoMapOneCZupColumns(employeesTab.columns, sheet.headers);
+    expect(mapping.emp_fio).toBe('Сотрудник');
+    expect(mapping.emp_tab_num).toBe('Таб. №');
+    expect(mapping.emp_pos).toBe('Должность (профессия)');
+    expect(mapping.emp_dept).toBe('Отдел');
+    expect(mapping.emp_hire_date).toBe('Дата приема на работу');
+
+    const prepared = excelService.prepareOneCZupImport({
+      rawRows: sheet.rawRows,
+      columnMapping: mapping,
+      employeesTab,
+      allTabs: entity.tabs,
+      autoCreatePositions: true
+    });
+    expect(prepared.ok).toBe(true);
+    expect(prepared.createdPositions).toHaveLength(1);
+    expect(prepared.createdPositions[0].pos_title).toBe('Электрогазосварщик');
+    expect(prepared.createdPositions[0].pos_dept).toBe('Монтажный участок');
+    expect(prepared.createdPositions[0].pos_sout_class).toBe('3.2 (вредный 2 ст.)');
+    expect(prepared.createdPositions[0].pos_factors).toContain('сварочный аэрозоль');
+    expect(prepared.createdPositions[0].pos_ppe_norm).toContain('Костюм сварщика');
+    expect(prepared.employeeRows).toHaveLength(1);
+    expect(prepared.employeeRows[0].emp_fio).toBe('Ковалёв А. Б.');
+    expect(prepared.employeeRows[0].emp_pos).toBe('Электрогазосварщик');
+    expect(prepared.employeeRows[0].emp_hire_date).toBe('2026-03-10');
   });
 });

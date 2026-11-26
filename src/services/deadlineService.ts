@@ -2523,4 +2523,62 @@ export function applyDeadlineNotificationsEnabledInState(
   };
 }
 
+/**
+ * Производственный календарь РФ на 2026 год:
+ * нерабочие праздничные дни (ст. 112 ТК РФ) и официальные переносы выходных дней.
+ */
+export const RF_PRODUCTION_CALENDAR_2026: readonly string[] = [
+  '2026-01-01',
+  '2026-01-02',
+  '2026-01-03',
+  '2026-01-04',
+  '2026-01-05',
+  '2026-01-06',
+  '2026-01-07',
+  '2026-01-08',
+  '2026-01-09',
+  '2026-02-23',
+  '2026-03-08',
+  '2026-03-09',
+  '2026-05-01',
+  '2026-05-09',
+  '2026-05-11',
+  '2026-06-12',
+  '2026-11-04',
+  '2026-12-31'
+];
 
+/**
+ * Производственный календарь РФ на 2027 год:
+ * нерабочие праздничные дни (ст. 112 ТК РФ) и переносы выходных дней, приходящихся на праздники.
+ */
+export const RF_PRODUCTION_CALENDAR_2027: readonly string[] = [
+  '2027-01-01',
+  '2027-01-02',
+  '2027-01-03',
+  '2027-01-04',
+  '2027-01-05',
+  '2027-01-06',
+  '2027-01-07',
+  '2027-01-08',
+  '2027-02-23',
+  '2027-03-08',
+  '2027-05-01',
+  '2027-05-03',
+  '2027-05-09',
+  '2027-05-10',
+  '2027-06-12',
+  '2027-06-14',
+  '2027-11-04'
+];
+
+export const RF_PRODUCTION_CALENDARS: Record<2026 | 2027, readonly string[]> = {
+  2026: RF_PRODUCTION_CALENDAR_2026,
+  2027: RF_PRODUCTION_CALENDAR_2027
+};
+
+export function mergePresetHolidays(existing: unknown, year: 2026 | 2027): string[] {
+  const current = normalizeHolidaysList(existing);
+  const preset = RF_PRODUCTION_CALENDARS[year];
+  return normalizeHolidaysList([...current, ...preset]);
+}

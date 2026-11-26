@@ -1,10 +1,18 @@
-import * as XLSX from 'xlsx';
-import { Column, ColumnType, Tab } from '../types/database';
+import { Column, ColumnType, Row, Tab } from '../types/database';
 import {
   formatDeadlineCellForExcel,
   parseDeadlineCellFromExcel,
   parseFlexibleDateToIso
 } from './deadlineService';
+import {
+  buildXlsxArrayBuffer,
+  isSafeObjectKey,
+  parseCsvToMatrix,
+  parseXlsxWorkbook
+} from './ooxmlWorkbookService';
+import { createUniqueId } from './integrityService';
+import { formatOccupationPpeSummary, resolveOccupationNormByTitle } from '../data/occupationNorms';
+import { portablePackageService } from './portablePackageService';
 
 export interface ParsedExcelSheet {
   headers: string[];
@@ -69,7 +77,8 @@ export const excelService = {
    */
   async parseFile(file: File): Promise<Record<string, ParsedExcelSheet>> {
     const arrayBuffer = await file.arrayBuffer();
-    let workbook: XLSX.WorkBook;
+    let sheetMatrices: Array<{ name: string; rows: unknown[][] }>;
+
     if (file.name.toLowerCase().endsWith('.csv')) {
       const bytes = new Uint8Array(arrayBuffer);
       let decoded = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
@@ -81,16 +90,13 @@ export const excelService = {
           // ignore if unavailable
         }
       }
-      workbook = XLSX.read(decoded, { type: 'string', cellDates: true });
+      sheetMatrices = [{ name: 'Лист1', rows: parseCsvToMatrix(decoded) }];
     } else {
-      workbook = XLSX.read(arrayBuffer, { type: 'array', cellDates: true });
+      sheetMatrices = parseXlsxWorkbook(arrayBuffer);
     }
     const result: Record<string, ParsedExcelSheet> = {};
 
-    workbook.SheetNames.forEach((sheetName) => {
-      const sheet = workbook.Sheets[sheetName];
-      // Convert to JSON with headers in 1st row
-      const jsonData: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '', header: 1 });
+    sheetMatrices.forEach(({ name: sheetName, rows: jsonData }) => {
       if (!jsonData || jsonData.length === 0) return;
 
       const headerRow: string[] = (jsonData[0] || []).map((h: any) => String(h ?? '').trim());
@@ -99,7 +105,7 @@ export const excelService = {
       const headerEntries: Array<{ name: string; index: number }> = [];
       const usedHeaderNames = new Set<string>();
       headerRow.forEach((rawName, index) => {
-        if (!rawName) return;
+        if (!rawName || !isSafeObjectKey(rawName)) return;
         let name = rawName;
         let suffix = 2;
         while (usedHeaderNames.has(name.toLowerCase())) {
@@ -116,7 +122,7 @@ export const excelService = {
       for (let i = 1; i < jsonData.length; i++) {
         const rowArr = jsonData[i];
         if (!rowArr || rowArr.length === 0) continue;
-        const rowObj: Record<string, any> = {};
+        const rowObj: Record<string, any> = Object.create(null);
         let hasAnyValue = false;
         headerEntries.forEach(({ name, index }) => {
           let val = rowArr[index];
@@ -601,6 +607,20 @@ export const excelService = {
   },
 
   /**
+   * Export one or multiple sheets to an OOXML `.xlsx` file cleanly without SheetJS/xlsx
+   */
+  exportWorkbookToXlsx(
+    sheets: Array<{ name: string; rows: Record<string, any>[] }>,
+    fileName: string
+  ): void {
+    const buffer = buildXlsxArrayBuffer(sheets);
+    const blob = new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    });
+    portablePackageService.triggerBlobDownload(blob, fileName);
+  },
+
+  /**
    * Export tab to XLSX
    */
   exportTabToXlsx(
@@ -614,12 +634,292 @@ export const excelService = {
       `${tab.name.replace(/[/\\?%*:|"<>]/g, '_')}_${new Date().toISOString().split('T')[0]}.xlsx`;
 
     const exportData = excelService.buildExportRowsForTab(tab, options);
+    excelService.exportWorkbookToXlsx([{ name: tab.name.slice(0, 31), rows: exportData }], finalFileName);
+  },
 
-    const worksheet = XLSX.utils.json_to_sheet(exportData);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, tab.name.slice(0, 31));
+  /**
+   * Detect if file headers resemble a 1C:ZUP personnel / hiring export
+   */
+  detectIsOneCZupHeaders(fileHeaders: string[]): boolean {
+    const normalized = fileHeaders.map(normalizeHeaderName);
+    const hasPerson = normalized.some((h) =>
+      ['фио', 'ф.и.о.', 'сотрудник', 'физическое лицо', 'работник', 'фио сотрудника'].includes(h)
+    );
+    const hasPosOrHire = normalized.some((h) =>
+      [
+        'должность',
+        'должность (профессия)',
+        'профессия',
+        'дата приема',
+        'дата приема на работу',
+        'табельный номер',
+        'таб. №',
+        'таб №',
+        'таб.номер'
+      ].includes(h)
+    );
+    return hasPerson && hasPosOrHire;
+  },
 
-    XLSX.writeFile(workbook, finalFileName);
+  /**
+   * Auto-map employee tab columns using 1С:ЗУП header aliases first, then generic autoMapColumns
+   */
+  autoMapOneCZupColumns(columns: Column[], fileHeaders: string[]): Record<string, string> {
+    const aliasGroups: Array<{ colMatch: (c: Column) => boolean; aliases: string[] }> = [
+      {
+        colMatch: (c) => c.id === 'emp_fio' || /^фио$/i.test(c.name.trim()),
+        aliases: ['фио', 'ф.и.о.', 'сотрудник', 'физическое лицо', 'работник', 'фио работника', 'фио сотрудника']
+      },
+      {
+        colMatch: (c) => c.id === 'emp_tab_num' || /табел/i.test(c.name),
+        aliases: ['табельный номер', 'таб. №', 'таб №', 'таб.номер', 'таб номер', 'код', 'таб. № (код)']
+      },
+      {
+        colMatch: (c) => c.id === 'emp_pos' || c.id === 'emp_position' || /должност/i.test(c.name),
+        aliases: ['должность', 'должность (профессия)', 'профессия', 'штатная должность', 'должность по штатному расписанию']
+      },
+      {
+        colMatch: (c) => c.id === 'emp_dept' || /подраздел/i.test(c.name),
+        aliases: ['подразделение', 'структурное подразделение', 'отдел', 'цех', 'участок']
+      },
+      {
+        colMatch: (c) => c.id === 'emp_hire_date' || /при[её]м/i.test(c.name),
+        aliases: ['дата приема', 'дата приема на работу', 'дата приёма', 'дата приёма на работу', 'принят']
+      },
+      {
+        colMatch: (c) => c.id === 'emp_snils' || /снилс/i.test(c.name),
+        aliases: ['снилс', 'страховой номер', 'номер снилс', 'снилс (пфр)']
+      },
+      {
+        colMatch: (c) => c.id === 'emp_status' || /статус|состояни/i.test(c.name),
+        aliases: ['статус', 'состояние', 'вид занятости', 'статус работы']
+      }
+    ];
+
+    const mapping: Record<string, string> = {};
+    const usedHeaders = new Set<string>();
+
+    aliasGroups.forEach((group) => {
+      const col = columns.find(group.colMatch);
+      if (!col || mapping[col.id]) return;
+      for (const alias of group.aliases) {
+        const matched = fileHeaders.find(
+          (h) => !usedHeaders.has(h) && normalizeHeaderName(h) === alias
+        );
+        if (matched) {
+          mapping[col.id] = matched;
+          usedHeaders.add(matched);
+          break;
+        }
+      }
+    });
+
+    const fallback = excelService.autoMapColumns(
+      columns.filter((c) => !mapping[c.id]),
+      fileHeaders.filter((h) => !usedHeaders.has(h))
+    );
+    return { ...fallback, ...mapping };
+  },
+
+  /**
+   * Prepare 1С:ЗУП employee import:
+   * - Normalizes dates, tab numbers, statuses, and SNILS.
+   * - Optionally auto-creates missing `tab_positions` rows (enriching with СОУТ/29н/766н norms)
+   *   so relational columns stay 100% consistent.
+   */
+  prepareOneCZupImport(params: {
+    rawRows: Record<string, any>[];
+    columnMapping: Record<string, string>;
+    employeesTab: Tab;
+    allTabs: Tab[];
+    autoCreatePositions?: boolean;
+  }): {
+    ok: boolean;
+    error?: string;
+    discrepancies: ValidationDiscrepancy[];
+    employeeRows: Row[];
+    createdPositions: Row[];
+    missingPositionPairs: Array<{ title: string; dept: string }>;
+  } {
+    const {
+      rawRows,
+      columnMapping,
+      employeesTab,
+      allTabs,
+      autoCreatePositions = true
+    } = params;
+
+    const positionsTab =
+      allTabs.find((t) => t.moduleId === 'staffing' || t.id === 'tab_positions') ||
+      allTabs.find(
+        (t) =>
+          t.isMaster &&
+          t.columns.some((c) => c.id === 'pos_title' || /должност/i.test(c.name))
+      );
+
+    const posCol = employeesTab.columns.find(
+      (c) => c.id === 'emp_pos' || c.id === 'emp_position' || c.relation?.masterColumnId === 'pos_title'
+    );
+    const deptCol = employeesTab.columns.find(
+      (c) => c.id === 'emp_dept' || c.relation?.masterColumnId === 'pos_dept'
+    );
+
+    const createdPositions: Row[] = [];
+    const missingPositionPairs: Array<{ title: string; dept: string }> = [];
+
+    if (positionsTab && posCol) {
+      const titleColId =
+        positionsTab.columns.find((c) => c.id === 'pos_title' || /должност/i.test(c.name))?.id ||
+        'pos_title';
+      const deptMasterColId =
+        positionsTab.columns.find((c) => c.id === 'pos_dept' || /подраздел/i.test(c.name))?.id ||
+        'pos_dept';
+
+      const existingKeys = new Set(
+        positionsTab.rows.map(
+          (r) =>
+            `${normalizeHeaderName(String(r[titleColId] ?? ''))}::${normalizeHeaderName(
+              String(r[deptMasterColId] ?? '')
+            )}`
+        )
+      );
+
+      const posHeader = columnMapping[posCol.id];
+      const deptHeader = deptCol ? columnMapping[deptCol.id] : undefined;
+
+      rawRows.forEach((raw) => {
+        const posTitle = posHeader ? String(raw[posHeader] ?? '').trim() : '';
+        const deptName = deptHeader ? String(raw[deptHeader] ?? '').trim() : '';
+        if (!posTitle) return;
+
+        const pairKey = `${normalizeHeaderName(posTitle)}::${normalizeHeaderName(deptName)}`;
+        const titleOnlyMatched =
+          !deptName &&
+          positionsTab.rows.some(
+            (r) => normalizeHeaderName(String(r[titleColId] ?? '')) === normalizeHeaderName(posTitle)
+          );
+
+        if (existingKeys.has(pairKey) || titleOnlyMatched) return;
+        existingKeys.add(pairKey);
+        missingPositionPairs.push({ title: posTitle, dept: deptName || 'Основное подразделение' });
+
+        if (autoCreatePositions) {
+          const norm = resolveOccupationNormByTitle(posTitle);
+          const newPosRow: Row = {
+            id: createUniqueId('pos'),
+            [titleColId]: posTitle,
+            [deptMasterColId]: deptName || 'Основное подразделение',
+            pos_sout_class: norm?.soutClass || '2.0 (допустимый)',
+            pos_factors: norm?.factorName || '',
+            pos_ppe_norm: norm ? formatOccupationPpeSummary(norm.ppeItems) : '',
+            pos_med_period: norm?.medPeriodicityMonths ?? 24
+          };
+          createdPositions.push(newPosRow);
+        }
+      });
+    }
+
+    const simulatedTabs =
+      positionsTab && createdPositions.length > 0
+        ? allTabs.map((t) =>
+            t.id === positionsTab.id ? { ...t, rows: [...t.rows, ...createdPositions] } : t
+          )
+        : allTabs;
+
+    const discrepancies = excelService.validateLinkedColumns(
+      rawRows,
+      columnMapping,
+      employeesTab,
+      simulatedTabs
+    );
+    if (discrepancies.length > 0) {
+      return {
+        ok: false,
+        error: `Обнаружены расхождения в связанных столбцах (${discrepancies.length}).`,
+        discrepancies,
+        employeeRows: [],
+        createdPositions: [],
+        missingPositionPairs
+      };
+    }
+
+    const conversionIssues: ValidationDiscrepancy[] = [];
+    const employeeRows: Row[] = rawRows.map((fileRow, rowIdx) => {
+      const rowObj: Row = { id: createUniqueId('row_imp') };
+      employeesTab.columns.forEach((col) => {
+        const fileHeader = columnMapping[col.id];
+        let rawVal = fileHeader ? fileRow[fileHeader] : undefined;
+
+        if (col.id === 'emp_dept' && (!rawVal || String(rawVal).trim() === '') && posCol && columnMapping[posCol.id]) {
+          const posVal = String(fileRow[columnMapping[posCol.id]] ?? '').trim();
+          const matchedPos = simulatedTabs
+            .find((t) => t.id === positionsTab?.id)
+            ?.rows.find((r) => normalizeHeaderName(String(r.pos_title ?? '')) === normalizeHeaderName(posVal));
+          if (matchedPos?.pos_dept) {
+            rawVal = matchedPos.pos_dept;
+          }
+        }
+
+        if (col.id === 'emp_status') {
+          const s = String(rawVal ?? '').trim().toLowerCase();
+          if (!s || /работает|основн|принят|актив/i.test(s)) {
+            rowObj[col.id] = 'Работает';
+            return;
+          }
+          if (/отпуск/i.test(s)) {
+            rowObj[col.id] = 'В отпуске';
+            return;
+          }
+          if (/больнич|нетрудоспособ/i.test(s)) {
+            rowObj[col.id] = 'На больничном';
+            return;
+          }
+          if (/отстран/i.test(s)) {
+            rowObj[col.id] = 'Отстранен';
+            return;
+          }
+          if (/уволен/i.test(s)) {
+            rowObj[col.id] = 'Уволен';
+            return;
+          }
+        }
+
+        const converted = excelService.convertCellToColumnType(col, rawVal);
+        if (!converted.ok) {
+          conversionIssues.push({
+            rowNumber: rowIdx + 1,
+            columnName: col.name,
+            value: rawVal ?? '',
+            masterTabName: '',
+            expectedValuesSnippet: '',
+            reason: converted.reason
+          });
+          rowObj[col.id] = '';
+          return;
+        }
+        rowObj[col.id] = typeof converted.value === 'string' ? converted.value.trim() : converted.value;
+      });
+      return rowObj;
+    });
+
+    if (conversionIssues.length > 0) {
+      return {
+        ok: false,
+        error: `Обнаружены ошибки формата (${conversionIssues.length}).`,
+        discrepancies: conversionIssues,
+        employeeRows: [],
+        createdPositions: [],
+        missingPositionPairs
+      };
+    }
+
+    return {
+      ok: true,
+      discrepancies: [],
+      employeeRows,
+      createdPositions,
+      missingPositionPairs
+    };
   },
 
   /**

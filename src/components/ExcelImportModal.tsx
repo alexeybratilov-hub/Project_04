@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
-  Upload, FileSpreadsheet, Check, ArrowRight, Table as TableIcon, RefreshCw
+  Upload, FileSpreadsheet, Check, ArrowRight, Table as TableIcon, RefreshCw, Sparkles
 } from 'lucide-react';
-import { Column, Tab } from '../types/database';
+import { Column, Row, Tab } from '../types/database';
 import { excelService, ParsedExcelSheet, ValidationDiscrepancy } from '../services/excelService';
 import { createUniqueId } from '../services/integrityService';
 import {
@@ -35,6 +35,7 @@ interface ExcelImportModalProps {
   allTabs: Tab[];
   onCommitImportNewTab: (sheetName: string, columns: Column[], rows: Record<string, any>[]) => void;
   onCommitImportExistingTab: (tabId: string, rows: Record<string, any>[]) => void;
+  onCommitOneCZupImport?: (payload: { createdPositions: Row[]; employeeRows: Row[] }) => void;
 }
 
 export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
@@ -43,7 +44,8 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
   currentTab,
   allTabs,
   onCommitImportNewTab,
-  onCommitImportExistingTab
+  onCommitImportExistingTab,
+  onCommitOneCZupImport
 }) => {
   const [mode, setMode] = useState<'existing' | 'new'>('existing');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -54,6 +56,10 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
   const [skipDuplicates, setSkipDuplicates] = useState<boolean>(true);
   const [discrepancies, setDiscrepancies] = useState<ValidationDiscrepancy[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [useOneCZupPreset, setUseOneCZupPreset] = useState<boolean>(false);
+  const [autoCreatePositions, setAutoCreatePositions] = useState<boolean>(true);
+
+  const isEmployeesTarget = currentTab.moduleId === 'employees' || currentTab.id === 'tab_employees';
 
   useEffect(() => {
     if (isOpen) {
@@ -64,6 +70,8 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
       setSkipDuplicates(true);
       setDiscrepancies([]);
       setErrorMsg(null);
+      setUseOneCZupPreset(false);
+      setAutoCreatePositions(true);
     }
   }, [isOpen, currentTab?.id]);
 
@@ -74,12 +82,19 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
       setErrorMsg(null);
       const sheet = sheetsMap?.[sheetName];
       if (sheet) {
-        setColumnMapping(excelService.autoMapColumns(currentTab.columns, sheet.headers));
+        const detectedZup = isEmployeesTarget && excelService.detectIsOneCZupHeaders(sheet.headers);
+        setUseOneCZupPreset(detectedZup);
+        setColumnMapping(
+          detectedZup
+            ? excelService.autoMapOneCZupColumns(currentTab.columns, sheet.headers)
+            : excelService.autoMapColumns(currentTab.columns, sheet.headers)
+        );
       } else {
         setColumnMapping({});
+        setUseOneCZupPreset(false);
       }
     },
-    [currentTab.columns, parsedSheets]
+    [currentTab.columns, isEmployeesTarget, parsedSheets]
   );
 
   const processExcelFile = useCallback(
@@ -161,6 +176,31 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
       : currentSheetData.rawRows.length
     : 0;
 
+  const zupPreviewPlan = useMemo(() => {
+    if (!currentSheetData || mode !== 'existing' || !useOneCZupPreset || !isEmployeesTarget) return null;
+    const rowsToImport = skipDuplicates
+      ? duplicateAnalysis.uniqueIndices.map((idx) => currentSheetData.rawRows[idx])
+      : currentSheetData.rawRows;
+    return excelService.prepareOneCZupImport({
+      rawRows: rowsToImport,
+      columnMapping,
+      employeesTab: currentTab,
+      allTabs,
+      autoCreatePositions
+    });
+  }, [
+    currentSheetData,
+    mode,
+    useOneCZupPreset,
+    isEmployeesTarget,
+    skipDuplicates,
+    duplicateAnalysis.uniqueIndices,
+    columnMapping,
+    currentTab,
+    allTabs,
+    autoCreatePositions
+  ]);
+
   const handleCommit = () => {
     if (!currentSheetData) return;
     setErrorMsg(null);
@@ -186,6 +226,33 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
         return rowObj;
       });
       onCommitImportNewTab(activeSheetName || 'Импорт Excel', newColumns, rowsWithIds);
+      onClose();
+    } else if (useOneCZupPreset && isEmployeesTarget) {
+      const zupRes = excelService.prepareOneCZupImport({
+        rawRows: rowsToImport,
+        columnMapping,
+        employeesTab: currentTab,
+        allTabs,
+        autoCreatePositions
+      });
+
+      if (!zupRes.ok) {
+        setDiscrepancies(zupRes.discrepancies);
+        setErrorMsg(
+          zupRes.error ||
+            'Обнаружены расхождения при импорте из 1С:ЗУП. Проверьте данные или включите автосоздание должностей.'
+        );
+        return;
+      }
+
+      if (onCommitOneCZupImport) {
+        onCommitOneCZupImport({
+          createdPositions: zupRes.createdPositions,
+          employeeRows: zupRes.employeeRows
+        });
+      } else {
+        onCommitImportExistingTab(currentTab.id, zupRes.employeeRows);
+      }
       onClose();
     } else {
       // Validate linked columns in existing tab
@@ -463,6 +530,64 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
               </StatusBanner>
             )}
 
+            {/* 1C:ZUP Personnel Import Preset */}
+            {mode === 'existing' && isEmployeesTarget && (
+              <div className="rounded-xl border border-indigo-200 dark:border-indigo-900/60 bg-indigo-50/70 dark:bg-indigo-950/30 p-3.5 space-y-2 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 font-semibold text-indigo-900 dark:text-indigo-200">
+                    <Sparkles className="w-4 h-4 text-indigo-600 shrink-0" />
+                    <span>Пресет «1С:ЗУП» (Кадры и приём на работу)</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <AppButton
+                      variant={useOneCZupPreset ? 'primary' : 'secondary'}
+                      size="xs"
+                      onClick={() => {
+                        const next = !useOneCZupPreset;
+                        setUseOneCZupPreset(next);
+                        if (next && currentSheetData) {
+                          setColumnMapping(
+                            excelService.autoMapOneCZupColumns(
+                              currentTab.columns,
+                              currentSheetData.headers
+                            )
+                          );
+                        }
+                      }}
+                    >
+                      {useOneCZupPreset ? 'Пресет 1С:ЗУП активен' : 'Применить маппинг 1С:ЗУП'}
+                    </AppButton>
+                  </div>
+                </div>
+                {useOneCZupPreset && (
+                  <div className="space-y-1.5 text-[11px] text-indigo-900/90 dark:text-indigo-200/90">
+                    <label className="inline-flex items-center gap-2 cursor-pointer font-medium">
+                      <input
+                        type="checkbox"
+                        checked={autoCreatePositions}
+                        onChange={(e) => setAutoCreatePositions(e.target.checked)}
+                        className="rounded text-indigo-600"
+                      />
+                      <span>
+                        Автоматически создать отсутствующие должности в «Штатном расписании»
+                        (с предзаполнением СОУТ, факторов 29н и норм СИЗ 766н)
+                      </span>
+                    </label>
+                    {zupPreviewPlan && zupPreviewPlan.missingPositionPairs.length > 0 && (
+                      <div className="text-[11px] text-indigo-700 dark:text-indigo-300">
+                        {autoCreatePositions
+                          ? `Будет добавлено новых должностей в справочник: ${zupPreviewPlan.createdPositions.length} (${zupPreviewPlan.missingPositionPairs
+                              .slice(0, 3)
+                              .map((p) => p.title)
+                              .join(', ')}${zupPreviewPlan.missingPositionPairs.length > 3 ? '…' : ''})`
+                          : `Обнаружено должностей, отсутствующих в штатном расписании: ${zupPreviewPlan.missingPositionPairs.length}`}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Column Mapping (in Existing Tab Mode) */}
             {mode === 'existing' && (
               <div className="border border-slate-200 dark:border-slate-800 rounded-lg p-4 bg-slate-50/50 dark:bg-slate-800/40 space-y-3">
@@ -474,7 +599,9 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                     type="button"
                     onClick={() =>
                       setColumnMapping(
-                        excelService.autoMapColumns(currentTab.columns, currentSheetData.headers)
+                        useOneCZupPreset && isEmployeesTarget
+                          ? excelService.autoMapOneCZupColumns(currentTab.columns, currentSheetData.headers)
+                          : excelService.autoMapColumns(currentTab.columns, currentSheetData.headers)
                       )
                     }
                     className="text-[11px] font-medium text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"

@@ -25,16 +25,21 @@ export const WindowsPortableModal: React.FC<WindowsPortableModalProps> = ({
   const [dbDir, setDbDir] = useState(databaseState.settings.databaseDirectory);
   const [isCopied, setIsCopied] = useState(false);
   const [downloading, setDownloading] = useState<'exe' | 'zip' | 'html' | null>(null);
-  const [available, setAvailable] = useState<{ exe: boolean; zip: boolean }>({ exe: true, zip: true });
+  const [available, setAvailable] = useState<{ exe: boolean; zip: boolean; html: boolean }>({
+    exe: false,
+    zip: false,
+    html: false
+  });
 
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
     void Promise.all([
       portablePackageService.isAssetAvailable('/download/OT-Baza.exe'),
-      portablePackageService.isAssetAvailable('/download/OT-Baza-Windows.zip')
-    ]).then(([exe, zip]) => {
-      if (!cancelled) setAvailable({ exe, zip });
+      portablePackageService.isAssetAvailable('/download/OT-Baza-Windows.zip'),
+      portablePackageService.isStandaloneHtmlAvailable('/app.html')
+    ]).then(([exe, zip, html]) => {
+      if (!cancelled) setAvailable({ exe, zip, html });
     });
     return () => {
       cancelled = true;
@@ -217,14 +222,20 @@ export const WindowsPortableModal: React.FC<WindowsPortableModalProps> = ({
             </AppButton>
           </div>
 
-          {(!available.exe || !available.zip) && (
+          {(!available.exe || !available.zip || !available.html) && (
             <p
               role="status"
               className="text-[11px] text-amber-700 dark:text-amber-300 leading-relaxed"
             >
-              Windows-сборка отсутствует в этой поставке: бинарники <code>.exe</code>/<code>.zip</code>
-              собираются отдельно командой <code>python build_native_windows.py</code> на Windows с
-              MinGW-w64. Веб-версия (<code>app.html</code>) и перенос базы через JSON работают без них.
+              Отдельные дистрибутивы Windows (
+              {[
+                !available.exe && 'OT-Baza.exe',
+                !available.zip && 'OT-Baza-Windows.zip',
+                !available.html && 'app.html'
+              ]
+                .filter(Boolean)
+                .join(', ')}
+              ) отсутствуют в этой веб-поставке: они собираются отдельно (<code>build_native_windows.py</code> / offline-сборка). Перенос базы через «Стартовый набор» и JSON-копию доступен всегда.
             </p>
           )}
         </div>
@@ -261,8 +272,13 @@ export const WindowsPortableModal: React.FC<WindowsPortableModalProps> = ({
             <AppButton
               variant="secondary"
               size="sm"
-              disabled={downloading !== null}
+              disabled={downloading !== null || !available.html}
               onClick={handleDownloadHtml}
+              title={
+                available.html
+                  ? undefined
+                  : 'Автономный однофайловый бандл app.html отсутствует в этой веб-поставке'
+              }
             >
               {downloading === 'html' ? 'Загрузка...' : 'app.html'}
             </AppButton>
@@ -290,6 +306,23 @@ export const WindowsPortableModal: React.FC<WindowsPortableModalProps> = ({
           <div className="p-4 bg-slate-900 text-slate-200 font-mono text-[11px] rounded-xl overflow-x-auto leading-relaxed border border-slate-800 select-all max-h-40">
             {portablePackageService.generateBatLauncher()}
           </div>
+        </div>
+
+        {/* Corporate Windows Code Signing (Authenticode / SmartScreen) */}
+        <div className="p-4 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-200 dark:border-slate-800 space-y-2.5">
+          <div className="flex items-center gap-2 font-semibold text-slate-800 dark:text-slate-200">
+            <ShieldCheck className="w-4 h-4 text-blue-600" />
+            <span>Подпись кода Windows (Authenticode / SmartScreen) для корпоративного внедрения</span>
+          </div>
+          <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+            Для устранения предупреждения «Windows защитила ваш компьютер» (SmartScreen) при тиражировании на рабочие места
+            подпишите собранный <code className="font-mono text-blue-600 dark:text-blue-400">OT-Baza.exe</code> корпоративным или публичным сертификатом (OV/EV, например GlobalSign/DigiCert/корпоративный УЦ):
+          </p>
+          <pre className="p-3 bg-slate-900 text-slate-200 font-mono text-[10.5px] rounded-lg overflow-x-auto leading-relaxed border border-slate-800 select-all">
+{`signtool.exe sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f company_cert.pfx /p <PASSWORD> OT-Baza.exe
+signtool.exe verify /pa /v OT-Baza.exe
+powershell -Command "Get-FileHash OT-Baza.exe -Algorithm SHA256"`}
+          </pre>
         </div>
       </div>
     </AppModal>

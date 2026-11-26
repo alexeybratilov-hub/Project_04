@@ -1,4 +1,4 @@
-import { DatabaseState, DocumentTemplate, Tab } from '../types/database';
+import { DatabaseState, DocumentTemplate, Tab, Tag } from '../types/database';
 import {
   DEFAULT_INSTALLED_MODULES,
   MODULE_BY_ID,
@@ -6,29 +6,103 @@ import {
   ModuleDefinition
 } from '../data/modules';
 import { BUILT_IN_TEMPLATES } from '../data/builtInTemplates';
-import { INITIAL_TABS } from '../data/initialDatabase';
+import { INITIAL_TABS, INITIAL_TAGS } from '../data/initialDatabase';
 
-function cloneTabFromInitial(source: Tab, moduleId: string): Tab {
-  const stamp = Date.now().toString(36);
+const BUILT_IN_TEMPLATE_IDS = new Set(BUILT_IN_TEMPLATES.map((tpl) => tpl.id));
+
+function findModuleTab(tabs: Tab[], moduleId: string, defaultTabId: string): Tab | undefined {
+  return tabs.find((tab) => tab.moduleId === moduleId || tab.id === defaultTabId);
+}
+
+function resolveMasterTabId(masterTabId: string, existingTabs: Tab[]): string {
+  if (masterTabId === 'tab_employees') {
+    return findModuleTab(existingTabs, 'employees', 'tab_employees')?.id || masterTabId;
+  }
+  if (masterTabId === 'tab_positions') {
+    return findModuleTab(existingTabs, 'staffing', 'tab_positions')?.id || masterTabId;
+  }
+  if (masterTabId === 'tab_factors') {
+    return findModuleTab(existingTabs, 'sout', 'tab_factors')?.id || masterTabId;
+  }
+  return masterTabId;
+}
+
+function cloneTabFromInitial(source: Tab, moduleId: string, existingTabs: Tab[]): Tab {
+  const clonedColumns = (JSON.parse(JSON.stringify(source.columns)) as Tab['columns']).map((column) => {
+    if (column.relation?.masterTabId) {
+      return {
+        ...column,
+        relation: {
+          ...column.relation,
+          masterTabId: resolveMasterTabId(column.relation.masterTabId, existingTabs)
+        }
+      };
+    }
+    return column;
+  });
+
   return {
     ...source,
     id: source.id,
     moduleId,
     rows: [],
     attachedDocs: [],
-    columns: source.columns.map((column, index) => ({
-      ...column,
-      id: `${column.id}_${stamp}${index}`
-    }))
+    columns: clonedColumns
   };
 }
 
-function cloneTemplate(template: DocumentTemplate, stamp: string): DocumentTemplate {
+function cloneTemplate(
+  template: DocumentTemplate,
+  existingIds: Set<string>,
+  stamp: string
+): DocumentTemplate {
+  const resolvedId = existingIds.has(template.id) ? `${template.id}_${stamp}` : template.id;
+  existingIds.add(resolvedId);
   return {
     ...template,
-    id: `${template.id}_${stamp}`,
+    id: resolvedId,
+    builtInId: template.id,
     contentTemplate: template.contentTemplate
   };
+}
+
+function isBuiltInTemplatePresent(existingTemplates: DocumentTemplate[], builtInId: string): boolean {
+  return existingTemplates.some(
+    (tpl) =>
+      tpl.id === builtInId ||
+      tpl.builtInId === builtInId ||
+      (BUILT_IN_TEMPLATE_IDS.has(builtInId) && tpl.id.startsWith(`${builtInId}_`))
+  );
+}
+
+function seedMissingModuleTags(existingTags: Tag[], tabs: Tab[], installedTabDefaultId: string): Tag[] {
+  const nextTags = [...existingTags];
+  const existingNames = new Set(existingTags.map((tag) => tag.name));
+  const targetDefaultTabIds = new Set([installedTabDefaultId, 'tab_positions', 'tab_employees']);
+
+  const tabByDefaultId: Record<string, Tab | undefined> = {
+    tab_positions: findModuleTab(tabs, 'staffing', 'tab_positions'),
+    tab_employees: findModuleTab(tabs, 'employees', 'tab_employees'),
+    [installedTabDefaultId]:
+      tabs.find((tab) => tab.id === installedTabDefaultId) ||
+      tabs.find((tab) => tab.moduleId === getModuleForTab(installedTabDefaultId)?.id)
+  };
+
+  INITIAL_TAGS.forEach((candidate) => {
+    if (!targetDefaultTabIds.has(candidate.tabId)) return;
+    if (existingNames.has(candidate.name)) return;
+    const targetTab = tabByDefaultId[candidate.tabId];
+    if (!targetTab) return;
+    const hasColumn = targetTab.columns.some((col) => col.id === candidate.columnId);
+    if (!hasColumn) return;
+    existingNames.add(candidate.name);
+    nextTags.push({
+      ...candidate,
+      tabId: targetTab.id
+    });
+  });
+
+  return nextTags;
 }
 
 export function getInstalledModules(state: DatabaseState): string[] {
@@ -67,7 +141,7 @@ export function stampTabModules(tabs: Tab[]): Tab[] {
 
 /**
  * Установка модуля: создаёт отсутствующий таб (структура клонируется из эталонной),
- * добавляет шаблоны документов модуля и включает его. Существующие данные не трогаются.
+ * добавляет шаблоны документов и недостающие теги модуля и включает его. Существующие данные не трогаются.
  */
 export function installModule(state: DatabaseState, moduleId: string): DatabaseState {
   const module = MODULE_BY_ID[moduleId];
@@ -76,16 +150,16 @@ export function installModule(state: DatabaseState, moduleId: string): DatabaseS
   const installed = getInstalledModules(state);
   if (installed.includes(moduleId)) return state;
 
-  const existingTab = state.tabs.find((tab) => tab.id === module.tabId);
+  const existingTab = findModuleTab(state.tabs, module.id, module.tabId);
   let tabs = state.tabs;
   if (existingTab) {
     tabs = state.tabs.map((tab) =>
-      tab.id === module.tabId ? { ...tab, moduleId: module.id, name: tab.name || module.tabName } : tab
+      tab.id === existingTab.id ? { ...tab, moduleId: module.id, name: tab.name || module.tabName } : tab
     );
   } else {
     const templateTab = INITIAL_TABS.find((tab) => tab.id === module.tabId);
     const newTab = templateTab
-      ? cloneTabFromInitial(templateTab, module.id)
+      ? cloneTabFromInitial(templateTab, module.id, state.tabs)
       : {
           id: module.tabId,
           name: module.tabName,
@@ -98,14 +172,17 @@ export function installModule(state: DatabaseState, moduleId: string): DatabaseS
   }
 
   const stamp = Date.now().toString(36);
-  const knownTemplateIds = new Set(state.templates.map((tpl) => tpl.id.replace(/_[a-z0-9]+$/i, '')));
+  const existingTemplateIds = new Set(state.templates.map((tpl) => tpl.id));
   const missingTemplates = BUILT_IN_TEMPLATES.filter(
-    (tpl) => tpl.tabId === module.tabId && !knownTemplateIds.has(tpl.id)
-  ).map((tpl) => cloneTemplate(tpl, stamp));
+    (tpl) => tpl.tabId === module.tabId && !isBuiltInTemplatePresent(state.templates, tpl.id)
+  ).map((tpl) => cloneTemplate(tpl, existingTemplateIds, stamp));
+
+  const nextTags = seedMissingModuleTags(state.tags || [], tabs, module.tabId);
 
   return {
     ...state,
     tabs,
+    tags: nextTags,
     templates: missingTemplates.length ? [...state.templates, ...missingTemplates] : state.templates,
     settings: {
       ...state.settings,
@@ -128,7 +205,7 @@ export function disableModule(state: DatabaseState, moduleId: string): DatabaseS
 }
 
 export function countModuleRows(state: DatabaseState, module: ModuleDefinition): number {
-  const tab = state.tabs.find((item) => item.id === module.tabId);
+  const tab = findModuleTab(state.tabs, module.id, module.tabId);
   return tab ? tab.rows.length : 0;
 }
 

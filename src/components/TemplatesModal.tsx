@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   FileText,
   Download,
@@ -18,7 +18,9 @@ import {
   Upload,
   FileCheck2,
   Tag as TagIcon,
-  Info
+  Info,
+  FileArchive,
+  Users
 } from 'lucide-react';
 import {
   DocumentTemplate,
@@ -29,7 +31,8 @@ import {
 } from '../types/database';
 import {
   BatchGenerationReport,
-  documentGenerator
+  documentGenerator,
+  isGroupTemplate
 } from '../services/documentGenerator';
 import {
   arrayBufferToBase64,
@@ -39,9 +42,12 @@ import {
 import {
   DOCUMENT_CATEGORIES,
   formatBytesReadable,
+  formatDateDdMmYyyy,
   inferDocumentCategory
 } from '../services/generatedDocsService';
 import { localApiClient, sanitizeSafeFilename } from '../services/localApiClient';
+import { portablePackageService } from '../services/portablePackageService';
+import { packageFilesAsZip } from '../services/zipExportService';
 import { RecordGeneratedDocPayload } from './LLMStudioModal';
 import { createUniqueId } from '../services/integrityService';
 import { BatchGenerationReportPanel } from './BatchGenerationReportPanel';
@@ -408,20 +414,38 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
   }, [isOpen, boundTab.id, boundTab.rows, currentTab.id, selectedRowIds, targetRowId]);
 
   const targetRow = boundTab.rows.find((r) => r.id === targetRowId) || boundTab.rows[0];
+  const isCurrentGroup = isGroupTemplate(currentTemplate) && currentTemplate?.templateType !== 'docx';
+  const batchTargetRows = useMemo(() => {
+    if (boundTab.id === currentTab.id && selectedRowIds && selectedRowIds.length > 0) {
+      const selected = boundTab.rows.filter((r) => selectedRowIds.includes(r.id));
+      if (selected.length > 0) return selected;
+    }
+    return boundTab.rows;
+  }, [boundTab.id, boundTab.rows, currentTab.id, selectedRowIds]);
+
   const currentCategory = currentTemplate
     ? getTemplateCategory(currentTemplate)
     : inferDocumentCategory('', boundTab.name);
 
   const previewResolution = useMemo(() => {
     if (!isOpen || !currentTemplate || !targetRow) return null;
-    const bodyRes = documentGenerator.resolveTemplateTagsDetailed(
-      currentTemplate.contentTemplate || '',
-      targetRow,
-      boundTab,
-      allTabs,
-      tags,
-      entityProfile
-    );
+    const bodyRes = isCurrentGroup
+      ? documentGenerator.resolveGroupTemplateDetailed(
+          currentTemplate.contentTemplate || '',
+          batchTargetRows,
+          boundTab,
+          allTabs,
+          tags,
+          entityProfile
+        )
+      : documentGenerator.resolveTemplateTagsDetailed(
+          currentTemplate.contentTemplate || '',
+          targetRow,
+          boundTab,
+          allTabs,
+          tags,
+          entityProfile
+        );
     const namingRes = documentGenerator.resolveTemplateTagsDetailed(
       currentTemplate.namingPattern || '',
       targetRow,
@@ -432,6 +456,7 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
     );
     return {
       text: bodyRes.text,
+      markup: 'markup' in bodyRes ? bodyRes.markup : bodyRes.text,
       issues: [
         ...bodyRes.issues,
         ...namingRes.issues.filter(
@@ -444,7 +469,7 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
         new Set([...bodyRes.emptyProfileTags, ...namingRes.emptyProfileTags])
       )
     };
-  }, [isOpen, currentTemplate, targetRow, boundTab, allTabs, tags, entityProfile]);
+  }, [isOpen, currentTemplate, targetRow, isCurrentGroup, batchTargetRows, boundTab, allTabs, tags, entityProfile]);
 
   const previewIssues = previewResolution?.issues ?? [];
   const previewUnknownTags = previewResolution?.unknownTags ?? [];
@@ -968,8 +993,9 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
     }
   };
 
-  const handleBatchGenerate = async (format: 'docx' | 'pdf') => {
+  const handleBatchGenerate = async (format: 'docx' | 'pdf', options?: { asZip?: boolean }) => {
     if (!currentTemplate) return;
+    const asZip = Boolean(options?.asZip);
 
     if (currentTemplate.templateType === 'docx' && format === 'pdf') {
       showToast(
@@ -979,10 +1005,7 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
       return;
     }
 
-    const rowsToProcess =
-      boundTab.id === currentTab.id && selectedRowIds && selectedRowIds.length > 0
-        ? boundTab.rows.filter((r) => selectedRowIds.includes(r.id))
-        : boundTab.rows;
+    const rowsToProcess = batchTargetRows;
 
     if (rowsToProcess.length === 0) {
       showToast(
@@ -994,6 +1017,7 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
 
     setIsGenerating(true);
     setBatchReport(null);
+    const zipEntries: Array<{ name: string; data: Blob }> = [];
     try {
       const docxSourceBuffer =
         currentTemplate.templateType === 'docx'
@@ -1010,8 +1034,11 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
         entityProfile,
         docxSourceBuffer,
         failOnEmptyRowTags,
-        delayBetweenRowsMs: 120,
+        delayBetweenRowsMs: asZip ? 0 : 120,
         onSaveDocument: async ({ row, fileName, blob }) => {
+          if (asZip) {
+            zipEntries.push({ name: fileName, data: blob });
+          }
           if (onRecordGeneratedDoc) {
             await onRecordGeneratedDoc({
               title: currentTemplate.name,
@@ -1021,9 +1048,10 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
               blob,
               sourceTabName: boundTab.name,
               sourceTabId: boundTab.id,
-              rowIdentifier: getRowLabel(row, boundTab)
+              rowIdentifier: getRowLabel(row, boundTab),
+              skipBrowserDownload: asZip
             });
-          } else {
+          } else if (!asZip) {
             await documentGenerator.saveAndDownloadBlob(blob, fileName, true);
           }
         }
@@ -1031,7 +1059,19 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
 
       setBatchReport(report);
 
-      if (report.errorCount > 0) {
+      if (asZip && zipEntries.length > 0) {
+        const zipBlob = await packageFilesAsZip(zipEntries);
+        const dateStamp = formatDateDdMmYyyy(new Date());
+        const safeTpl = currentTemplate.name.replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 60);
+        const zipName = `Пакет_${safeTpl}_${dateStamp}.zip`;
+        portablePackageService.triggerBlobDownload(zipBlob, zipName);
+        showToast(
+          report.errorCount > 0
+            ? `Скачан ZIP «${zipName}» (${zipEntries.length} файл., ошибок ${report.errorCount})`
+            : `Скачан ZIP-архив «${zipName}» (${zipEntries.length} файл.)`,
+          report.errorCount > 0 ? 'warning' : 'success'
+        );
+      } else if (report.errorCount > 0) {
         showToast(
           `Пакетная генерация завершена: создано ${report.successCount}, ошибок ${report.errorCount}. Подробности в отчёте.`,
           report.successCount > 0 ? 'warning' : 'error'
@@ -1045,6 +1085,72 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
     } catch (e: any) {
       showToast(
         `Ошибка пакетного формирования: ${e?.message || 'неизвестная ошибка'}`,
+        'error'
+      );
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleGenerateGroupDocument = async (format: 'docx' | 'pdf') => {
+    if (!currentTemplate || batchTargetRows.length === 0) {
+      showToast(`В таблице «${boundTab.name}» пока нет строк для сводного документа.`, 'warning');
+      return;
+    }
+
+    setIsGenerating(true);
+    try {
+      const groupRes = documentGenerator.resolveGroupTemplateDetailed(
+        currentTemplate.contentTemplate || '',
+        batchTargetRows,
+        boundTab,
+        allTabs,
+        tags,
+        entityProfile
+      );
+      const fileName = documentGenerator.resolveFileName(
+        currentTemplate.namingPattern,
+        batchTargetRows[0],
+        boundTab,
+        allTabs,
+        tags,
+        format,
+        entityProfile
+      );
+      const blob =
+        format === 'docx'
+          ? await documentGenerator.generateGroupDocx(currentTemplate.name, groupRes.markup)
+          : await documentGenerator.generateGroupPdf(currentTemplate.name, groupRes.markup);
+
+      if (onRecordGeneratedDoc) {
+        await onRecordGeneratedDoc({
+          title: `${currentTemplate.name} (${batchTargetRows.length} чел.)`,
+          fileName,
+          category: currentCategory,
+          format,
+          blob,
+          sourceTabName: boundTab.name,
+          sourceTabId: boundTab.id,
+          rowIdentifier: `Группа: ${batchTargetRows.length} чел.`
+        });
+      } else {
+        await documentGenerator.saveAndDownloadBlob(blob, fileName, true);
+      }
+
+      if (groupRes.issues.length > 0) {
+        showToast(
+          `Сводный документ «${fileName}» создан с предупреждением: ${groupRes.issues[0].reason}`,
+          'warning'
+        );
+      } else {
+        showToast(
+          `Сводный документ «${fileName}» (${batchTargetRows.length} стр.) сформирован`,
+          'success'
+        );
+      }
+    } catch (e: any) {
+      showToast(
+        `Ошибка формирования сводного ${format.toUpperCase()}: ${e?.message || 'неизвестная ошибка'}`,
         'error'
       );
     } finally {
@@ -1298,6 +1404,11 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
                                   {tpl.templateType === 'docx' && (
                                     <span className="px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950/70 border border-indigo-200 dark:border-indigo-800 text-[10px] font-mono font-semibold text-indigo-700 dark:text-indigo-300 shrink-0">
                                       DOCX
+                                    </span>
+                                  )}
+                                  {isGroupTemplate(tpl) && (
+                                    <span className="px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800 text-[10px] font-mono font-semibold text-emerald-700 dark:text-emerald-300 shrink-0">
+                                      ГРУППА
                                     </span>
                                   )}
                                 </div>
@@ -1897,6 +2008,11 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
                         DOCX-шаблон
                       </span>
                     )}
+                    {isCurrentGroup && (
+                      <span className="px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800 text-[10px] font-mono font-semibold text-emerald-700 dark:text-emerald-300 shrink-0">
+                        Сводный ({batchTargetRows.length} стр.)
+                      </span>
+                    )}
                   </div>
                   {currentTemplate && (
                     <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400 truncate max-w-xs">
@@ -2017,9 +2133,67 @@ export const TemplatesModal: React.FC<TemplatesModalProps> = ({
                   </div>
 
                   {currentTemplate && !currentTemplate.isArchived && (
-                    <div className="flex items-center gap-2">
-                      {isBatchMode ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      {isCurrentGroup ? (
                         <>
+                          <AppButton
+                            variant="primary"
+                            size="md"
+                            loading={isGenerating}
+                            disabled={batchTargetRows.length === 0}
+                            onClick={() => void handleGenerateGroupDocument('docx')}
+                            data-testid="group-generate-docx-btn"
+                            icon={
+                              isGenerating ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Users className="w-3.5 h-3.5" />
+                              )
+                            }
+                          >
+                            Сводный .DOCX ({batchTargetRows.length})
+                          </AppButton>
+                          <AppButton
+                            variant="danger"
+                            size="md"
+                            loading={isGenerating}
+                            disabled={batchTargetRows.length === 0}
+                            onClick={() => void handleGenerateGroupDocument('pdf')}
+                            data-testid="group-generate-pdf-btn"
+                            icon={
+                              isGenerating ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <FileDown className="w-3.5 h-3.5" />
+                              )
+                            }
+                          >
+                            Сводный .PDF ({batchTargetRows.length})
+                          </AppButton>
+                        </>
+                      ) : isBatchMode ? (
+                        <>
+                          <AppButton
+                            variant="secondary"
+                            size="md"
+                            loading={isGenerating}
+                            disabled={
+                              boundTab.rows.length === 0 ||
+                              (isCurrentDocx && Boolean(activeDocxState.error))
+                            }
+                            onClick={() => void handleBatchGenerate('docx', { asZip: true })}
+                            data-testid="batch-generate-zip-btn"
+                            title="Сформировать по всем выбранным строкам и скачать единым ZIP-архивом"
+                            icon={
+                              isGenerating ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <FileArchive className="w-3.5 h-3.5 text-indigo-600" />
+                              )
+                            }
+                          >
+                            Пакет .ZIP (.DOCX)
+                          </AppButton>
                           <AppButton
                             variant="primary"
                             size="md"

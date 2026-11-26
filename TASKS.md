@@ -1,4 +1,4 @@
-﻿# TASKS — Рабочий трекер задач ОТ-База
+# TASKS — Рабочий трекер задач ОТ-База
 
 | ID | Приоритет | Задача | Файлы | Статус |
 |---|---|---|---|---|
@@ -116,3 +116,16 @@
 | M-11 | P1 | **Одиночный EXE-лаунчер**: `launcher_web.cs` (встроенный `app.html`, локальный сервер `127.0.0.1:47821`, трей, фиксированный порт для сохранности localStorage), `build_web_exe.ps1`, сборка через `csc.exe` без MinGW | `launcher_web.cs`, `build_web_exe.ps1`, `README.md`, `HANDOFF.md` | Выполнено (проверено: HTTP 200, рендер без ошибок консоли, сохранение данных между перезапусками) |
 
 | M-12 | P1 | **Десктопное приложение на WebView2**: `launcher_desktop.cs` (своё окно, встроенный `app.html` через виртуальный адрес `https://ot-baza.local/`, нативный мост C# для `data/`, `backups/`, `documents/`, портативные `.runtime`/`.webview2`, загрузка SDK из байтов), `build_desktop_exe.ps1`, UI-тексты для десктопа | `launcher_desktop.cs`, `build_desktop_exe.ps1`, `src/services/workspaceFolderService.ts`, `src/components/WorkspaceFolderModal.tsx`, `src/components/TitleBar.tsx`, `README.md`, `HANDOFF.md` | Выполнено (проверено: окно без браузера, HTTP не используется, `data/ot_database.json` рядом с EXE, резервная копия при перезаписи, сохранение между запусками) |
+
+---
+
+## Продуктовые улучшения и B2B-безопасность (2026-11-26) — выполнено
+
+| ID | Приоритет | Задача | Файлы | Статус |
+|---|---|---|---|---|
+| P-01 | P1 | **Обезличивание ПДн для LLM (152-ФЗ)**: обратимая локальная подстановка обезличенных токенов (`[ФИО_1]`, `[СНИЛС_1]`, `[ИНН_1]`) и ре-гидратация ответа в браузере без утечки ПДн в облачные API | `src/services/ollamaService.ts`, `src/components/LLMStudioModal.tsx` | Выполнено + тесты |
+| P-02 | P1 | **Справочник `Должность → Факторы 29н → СИЗ 766н`**: пресеты отраслевых должностей, автоподстановка в «Штатное расписание» и пересчёт обязательств в карточке сотрудника | `src/data/occupationNorms.ts`, `src/services/obligationService.ts`, `src/components/EmployeeCardModal.tsx` | Выполнено + тесты |
+| P-03 | P1 | **Пакетный ZIP-экспорт и групповые документы**: выгрузка пакетов в единый `.zip`, встроенные групповые шаблоны (протокол проверки знаний, лист ознакомления с ЛНА/ИОТ) с рендером `[ТАБЛИЦА]...[/ТАБЛИЦА]` в DOCX и PDF | `src/services/zipExportService.ts`, `src/services/documentGenerator.ts`, `src/data/builtInTemplates.ts`, `src/components/GeneratedDocsModal.tsx`, `src/components/TemplatesModal.tsx` | Выполнено + тесты |
+| P-04 | P1 | **Пресет импорта из 1С:ЗУП**: распознавание колонок кадровых выгрузок 1С и автоматическое создание отсутствующих должностей в штатном расписании | `src/services/excelService.ts`, `src/components/ExcelImportModal.tsx` | Выполнено + тесты |
+| P-05 | P1 | **Оценка готовности к проверке ГИТ и календарь РФ 2026–2027**: индекс по 9 направлениям с приоритетными пробелами и экспортом DOCX/PDF/XLSX на Главной + кнопки предзагрузки праздников РФ 2026/2027 в «Контроле сроков» | `src/services/gitReadinessService.ts`, `src/components/DashboardView.tsx`, `src/services/deadlineService.ts`, `src/components/DeadlineControlView.tsx`, `src/services/__tests__/gitReadinessService.test.ts` | Выполнено + тесты |
+| P-06 | P0/P1 | **B2B/ИБ-усиление**: замена `xlsx@0.18.5` на `ooxmlWorkbookService.ts` (`fflate`), защита JSON от prototype pollution, шифрованные бэкапы (`PBKDF2-SHA256` + `AES-256-GCM`), поуровневый журнал аудита (`AuditLogModal`) и документация подписи кода Windows (`signtool.exe`) | `src/services/ooxmlWorkbookService.ts`, `src/services/storageService.ts`, `src/components/BackupModal.tsx`, `src/components/AuditLogModal.tsx`, `src/components/MenuBar.tsx`, `src/components/WindowsPortableModal.tsx`, `src/components/HelpModal.tsx`, `src/App.tsx`, `package.json` | Выполнено + тесты + 0 CVE |

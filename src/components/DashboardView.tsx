@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -6,13 +6,17 @@ import {
   Blocks,
   Building2,
   CalendarClock,
+  CheckCircle2,
+  ClipboardCheck,
   Clock3,
   Database,
+  Download,
   FileSpreadsheet,
   FileText,
   HardDrive,
   FolderOpen,
   LayoutGrid,
+  ShieldAlert,
   ShieldCheck,
   Sparkles,
   Users
@@ -26,6 +30,14 @@ import {
 } from '../services/deadlineService';
 import type { StorageMode } from '../services/localApiClient';
 import { getEmployeeDisplayName, isEmployeeDismissed, summarizeObligations } from '../services/obligationService';
+import {
+  evaluateGitReadiness,
+  exportGitReadinessDocx,
+  exportGitReadinessPdf,
+  exportGitReadinessXlsx,
+  type GitReadinessActionTarget
+} from '../services/gitReadinessService';
+import { AppButton, AppModal, StatusBanner, useToast } from './ui';
 
 interface DashboardViewProps {
   state: DatabaseState;
@@ -48,6 +60,9 @@ interface DashboardViewProps {
   onOpenEmployees: () => void;
   onOpenModules: () => void;
   onOpenEmployeeCard: (rowId: string) => void;
+  onOpenRelationsAudit?: () => void;
+  onOpenEditEntity?: () => void;
+  onOpenNormativeDocs?: () => void;
 }
 
 const STATUS_TONE: Record<DeadlineStatus, { chip: string; dot: string; label: string }> = {
@@ -136,8 +151,62 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onOpenWorkspaceModal,
   onOpenEmployees,
   onOpenModules,
-  onOpenEmployeeCard
+  onOpenEmployeeCard,
+  onOpenRelationsAudit,
+  onOpenEditEntity,
+  onOpenNormativeDocs
 }) => {
+  const { showToast } = useToast();
+  const [isReadinessModalOpen, setIsReadinessModalOpen] = useState(false);
+  const [exportingFormat, setExportingFormat] = useState<'docx' | 'pdf' | 'xlsx' | null>(null);
+
+  const gitReadiness = useMemo(() => evaluateGitReadiness(state, todayIso), [state, todayIso]);
+
+  const handleGitAction = (target?: GitReadinessActionTarget) => {
+    if (!target) return;
+    setIsReadinessModalOpen(false);
+    switch (target.kind) {
+      case 'entity':
+        onOpenEditEntity?.();
+        break;
+      case 'relations':
+        onOpenRelationsAudit?.();
+        break;
+      case 'deadlines':
+        onOpenDeadlineControl();
+        break;
+      case 'employees':
+        onOpenEmployees();
+        break;
+      case 'normatives':
+        onOpenNormativeDocs?.();
+        break;
+      case 'tab':
+        onSelectTab(target.tabId);
+        break;
+    }
+  };
+
+  const handleExportGitReport = async (fmt: 'docx' | 'pdf' | 'xlsx') => {
+    setExportingFormat(fmt);
+    try {
+      if (fmt === 'docx') {
+        await exportGitReadinessDocx(gitReadiness);
+        showToast('Отчёт готовности ГИТ (.docx) сформирован и скачан', 'success');
+      } else if (fmt === 'pdf') {
+        await exportGitReadinessPdf(gitReadiness);
+        showToast('Отчёт готовности ГИТ (.pdf) сформирован и скачан', 'success');
+      } else {
+        exportGitReadinessXlsx(gitReadiness);
+        showToast('Отчёт готовности ГИТ (.xlsx) выгружен', 'success');
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'Не удалось сформировать отчёт готовности ГИТ', 'error');
+    } finally {
+      setExportingFormat(null);
+    }
+  };
+
   const totalRows = useMemo(() => countRows(state.tabs), [state.tabs]);
 
   const activeEmployees = useMemo(
@@ -366,6 +435,135 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <div className="text-[10.5px] text-slate-500 dark:text-slate-400">{kpi.hint}</div>
               </div>
             ))}
+          </section>
+
+          {/* ГИТ Inspection Readiness */}
+          <section className="col-span-12" data-testid="git-readiness-card">
+            <div className="lg-card p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div
+                    className={`h-11 w-11 rounded-2xl flex items-center justify-center shrink-0 font-bold text-sm tabular-nums ${
+                      gitReadiness.level === 'high'
+                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                        : gitReadiness.level === 'medium'
+                          ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
+                          : 'bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300'
+                    }`}
+                  >
+                    {gitReadiness.scorePercent}%
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-[13.5px] font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                        <ClipboardCheck className="w-4 h-4 text-slate-500" />
+                        <span>Готовность к проверке ГИТ</span>
+                      </h3>
+                      <span
+                        className={`rounded-full px-2.5 py-0.5 text-[10.5px] font-semibold ${
+                          gitReadiness.level === 'high'
+                            ? 'bg-emerald-100/90 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                            : gitReadiness.level === 'medium'
+                              ? 'bg-amber-100/90 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
+                              : 'bg-rose-100/90 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300'
+                        }`}
+                      >
+                        {gitReadiness.levelLabel}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                      <span>Баллов: {gitReadiness.totalPoints} из {gitReadiness.maxPoints}</span>
+                      <span>Без замечаний: {gitReadiness.passedCount}</span>
+                      <span>Предупреждений: {gitReadiness.warningCount}</span>
+                      <span className={gitReadiness.criticalCount > 0 ? 'text-rose-600 dark:text-rose-400 font-semibold' : ''}>
+                        Критических: {gitReadiness.criticalCount}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <AppButton
+                    variant="secondary"
+                    size="xs"
+                    disabled={exportingFormat !== null}
+                    icon={<Download className="w-3.5 h-3.5" />}
+                    onClick={() => void handleExportGitReport('docx')}
+                  >
+                    {exportingFormat === 'docx' ? 'DOCX...' : 'DOCX'}
+                  </AppButton>
+                  <AppButton
+                    variant="secondary"
+                    size="xs"
+                    disabled={exportingFormat !== null}
+                    icon={<Download className="w-3.5 h-3.5" />}
+                    onClick={() => void handleExportGitReport('pdf')}
+                  >
+                    {exportingFormat === 'pdf' ? 'PDF...' : 'PDF'}
+                  </AppButton>
+                  <AppButton
+                    variant="secondary"
+                    size="xs"
+                    disabled={exportingFormat !== null}
+                    icon={<FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />}
+                    onClick={() => void handleExportGitReport('xlsx')}
+                  >
+                    Excel
+                  </AppButton>
+                  <AppButton
+                    variant="primary"
+                    size="xs"
+                    onClick={() => setIsReadinessModalOpen(true)}
+                  >
+                    Подробнее ({gitReadiness.checks.length})
+                  </AppButton>
+                </div>
+              </div>
+
+              {gitReadiness.gaps.length === 0 ? (
+                <div className="rounded-2xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200/70 dark:border-emerald-800/50 px-4 py-3 flex items-center gap-2.5 text-xs text-emerald-800 dark:text-emerald-200">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                  <span>Все обязательные контуры охраны труда (СОУТ, 29н, 766н, обучение, медосмотры, сроки и ЛНА) в порядке.</span>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {gitReadiness.gaps.slice(0, 4).map((gap) => (
+                    <div
+                      key={gap.id}
+                      className="flex items-start justify-between gap-3 rounded-2xl bg-white/60 dark:bg-slate-900/45 border border-white/75 dark:border-slate-700/50 px-3 py-2.5"
+                    >
+                      <div className="flex items-start gap-2 min-w-0">
+                        {gap.severity === 'critical' ? (
+                          <ShieldAlert className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
+                        ) : (
+                          <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                        )}
+                        <div className="min-w-0">
+                          <div className="text-[12px] font-semibold text-slate-800 dark:text-slate-100 truncate">
+                            {gap.title}
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2">
+                            {gap.description}
+                          </div>
+                          <div className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
+                            {gap.legalBasis}
+                          </div>
+                        </div>
+                      </div>
+                      {gap.actionTarget && gap.actionLabel && (
+                        <button
+                          type="button"
+                          onClick={() => handleGitAction(gap.actionTarget)}
+                          className="shrink-0 text-[11px] font-medium text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap cursor-pointer"
+                        >
+                          {gap.actionLabel}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </section>
 
           {/* Deadline feed */}
@@ -671,6 +869,109 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </section>
         </div>
       </div>
+
+      {/* ГИТ Readiness Details Modal */}
+      <AppModal
+        isOpen={isReadinessModalOpen}
+        onClose={() => setIsReadinessModalOpen(false)}
+        size="3xl"
+        heightClass="max-h-[90vh]"
+        icon={<ClipboardCheck className="w-5 h-5" />}
+        iconTone={gitReadiness.level === 'high' ? 'emerald' : gitReadiness.level === 'medium' ? 'amber' : 'red'}
+        title={`Готовность к проверке ГИТ — ${gitReadiness.scorePercent}%`}
+        subtitle={`${gitReadiness.entityName}${gitReadiness.entityInn ? ` (ИНН ${gitReadiness.entityInn})` : ''} · ${gitReadiness.levelLabel}`}
+        footer={
+          <div className="flex flex-wrap items-center justify-between w-full gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <AppButton
+                variant="secondary"
+                size="sm"
+                disabled={exportingFormat !== null}
+                icon={<Download className="w-3.5 h-3.5" />}
+                onClick={() => void handleExportGitReport('docx')}
+              >
+                Скачать Word (.docx)
+              </AppButton>
+              <AppButton
+                variant="secondary"
+                size="sm"
+                disabled={exportingFormat !== null}
+                icon={<Download className="w-3.5 h-3.5" />}
+                onClick={() => void handleExportGitReport('pdf')}
+              >
+                Скачать PDF
+              </AppButton>
+              <AppButton
+                variant="secondary"
+                size="sm"
+                disabled={exportingFormat !== null}
+                icon={<FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />}
+                onClick={() => void handleExportGitReport('xlsx')}
+              >
+                Выгрузить Excel (.xlsx)
+              </AppButton>
+            </div>
+            <AppButton variant="primary" size="sm" onClick={() => setIsReadinessModalOpen(false)}>
+              Закрыть
+            </AppButton>
+          </div>
+        }
+      >
+        <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
+          <StatusBanner
+            variant={gitReadiness.level === 'high' ? 'success' : gitReadiness.level === 'medium' ? 'warning' : 'error'}
+            compact
+          >
+            Итоговый балл: <strong>{gitReadiness.totalPoints} из {gitReadiness.maxPoints}</strong> ({gitReadiness.scorePercent}%).
+            Пройдено разделов: {gitReadiness.passedCount}, замечаний: {gitReadiness.warningCount}, критических пробелов: {gitReadiness.criticalCount}.
+          </StatusBanner>
+
+          <div className="space-y-2">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              Чек-лист по 9 разделам проверки
+            </div>
+            <div className="divide-y divide-slate-200 dark:divide-slate-800 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden bg-white dark:bg-slate-900">
+              {gitReadiness.checks.map((chk) => (
+                <div key={chk.id} className="p-3 flex items-start justify-between gap-3">
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    {chk.status === 'ok' ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                    ) : chk.status === 'warning' ? (
+                      <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                    ) : (
+                      <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    )}
+                    <div className="min-w-0 space-y-0.5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-semibold text-slate-800 dark:text-slate-100">
+                          {chk.title}
+                        </span>
+                        <span className="font-mono text-[10.5px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 tabular-nums">
+                          {chk.score}/{chk.maxScore}
+                        </span>
+                      </div>
+                      <div className="text-slate-600 dark:text-slate-300">{chk.summary}</div>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                        {chk.details} · <span className="italic">{chk.legalBasis}</span>
+                      </div>
+                    </div>
+                  </div>
+                  {chk.actionTarget && chk.actionLabel && (
+                    <AppButton
+                      variant="secondary"
+                      size="xs"
+                      onClick={() => handleGitAction(chk.actionTarget)}
+                      className="shrink-0"
+                    >
+                      {chk.actionLabel}
+                    </AppButton>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </AppModal>
     </div>
   );
 };

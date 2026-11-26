@@ -99,6 +99,17 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
             Формирование приказов, инструкций и направлений в Word (<code className="font-mono">.docx</code>) и PDF по тегам работает автономно через кнопку «Шаблоны» во вкладках и «Документы → Шаблоны», а готовые файлы каталогизируются в «Сгенерированные документы» с автоархивацией повторных версий в <code className="font-mono">АРХИВ/дд.мм.гггг</code>. Дополнительно в меню «LLM-Сервер» можно подключить локальный сервер (Ollama, LM Studio, vLLM) или облачный API (OpenAI, Claude, Gemini, DeepSeek, OpenRouter, Groq).
           </p>
         </div>
+
+        {/* Section 5 */}
+        <div className="space-y-2">
+          <h3 className="font-semibold text-sm text-slate-900 dark:text-slate-100 flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-blue-600" />
+            <span>5. Защита ПДн (152-ФЗ), аудит и подпись Windows</span>
+          </h3>
+          <p>
+            Изменения ячеек, импорт и операции с обязательствами фиксируются в «Файл → Журнал изменений (Аудит)» с экспортом в Excel. Резервные копии можно защищать паролем (шифрование <code className="font-mono">AES-256-GCM</code> + <code className="font-mono">PBKDF2-SHA256</code>), а при работе с облачной LLM персональные данные (ФИО, СНИЛС) обезличиваются локально до отправки. Инструкция по цифровой подписи <code className="font-mono">OT-Baza.exe</code> (<code className="font-mono">signtool.exe</code>) находится в «Файл → Параметры папки и Portable...».
+          </p>
+        </div>
       </div>
     </AppModal>
   );

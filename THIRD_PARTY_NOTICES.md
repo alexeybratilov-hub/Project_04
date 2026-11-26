@@ -8,10 +8,9 @@
 |---|---|---|
 | React, React DOM | MIT | UI |
 | lucide-react | ISC | иконки |
-| xlsx (SheetJS) | Apache-2.0 | импорт/экспорт Excel и CSV |
 | docx | MIT | генерация Word-документов |
 | jspdf | MIT | генерация PDF |
-| fflate | MIT | разбор/сборка OOXML (`.docx`-шаблоны) |
+| fflate | MIT | разбор/сборка OOXML (`.docx`-шаблоны, `.xlsx`/`.xlsm` и ZIP-пакеты) |
 | html2canvas, dompurify | MIT / Apache-2.0 | транзитивные зависимости jsPDF |
 
 ## Шрифты

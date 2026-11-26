@@ -1,9 +1,16 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { portablePackageService } from '../portablePackageService';
 import { INITIAL_DATABASE_STATE } from '../../data/initialDatabase';
 import { DatabaseState } from '../../types/database';
 
 describe('portablePackageService binary payload validation', () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
   it('accepts valid PE32+ (.exe) binary with MZ header and sufficient size', () => {
     const buf = new Uint8Array(150_000);
     buf[0] = 0x4d; // M
@@ -65,5 +72,37 @@ describe('portablePackageService binary payload validation', () => {
     expect(sanitized.llmConfig.apiKey).toBe('');
     expect(sanitized.llmConfig.providerId).toBe('gemini');
     expect(stateWithKey.llmConfig.apiKey).toBe('AIza-secret-portable-test');
+  });
+
+  it('does not leak developer preview URLs in BAT launcher and keeps README version synced', () => {
+    const bat = portablePackageService.generateBatLauncher();
+    expect(bat).not.toContain('ais-dev');
+    expect(bat).not.toContain('.run.app');
+    expect(bat).toContain('OT-Baza.exe');
+    expect(bat).toContain('app.html');
+    expect(portablePackageService.generateReadme()).toContain('Версия 1.3');
+  });
+
+  it('isStandaloneHtmlAvailable rejects SPA fallback and accepts real single-file bundle', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      headers: new Headers({ 'content-type': 'text/html', 'content-length': '2048' })
+    } as any);
+    expect(await portablePackageService.isStandaloneHtmlAvailable('/app.html')).toBe(false);
+
+    const bigHtml = `<!doctype html><html><body>${'x'.repeat(550_000)}</body></html>`;
+    const bigBuf = new TextEncoder().encode(bigHtml).buffer;
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ 'content-type': 'text/html', 'content-length': String(bigBuf.byteLength) })
+      } as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ 'content-type': 'text/html' }),
+        arrayBuffer: async () => bigBuf
+      } as any);
+    expect(await portablePackageService.isStandaloneHtmlAvailable('/app.html')).toBe(true);
   });
 });

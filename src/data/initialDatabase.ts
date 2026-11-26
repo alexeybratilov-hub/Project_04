@@ -15,17 +15,25 @@ export const INITIAL_TABS: Tab[] = [
       { id: 'pos_salary', name: 'Тариф/Оклад (руб)', type: 'number', width: 140 },
       { id: 'pos_code', name: 'Код ОКПДТР', type: 'text', width: 130 },
       { id: 'pos_sout_class', name: 'Класс условий труда', type: 'select', options: ['2.0 (допустимый)', '3.1 (вредный 1 ст.)', '3.2 (вредный 2 ст.)', '3.3 (вредный 3 ст.)'], width: 170 },
-      { id: 'pos_vacation_extra', name: 'Доп. отпуск (дней)', type: 'number', width: 140 }
+      { id: 'pos_vacation_extra', name: 'Доп. отпуск (дней)', type: 'number', width: 140 },
+      {
+        id: 'pos_factors',
+        name: 'Вредные факторы (29н)',
+        type: 'relation',
+        relation: { masterTabId: 'tab_factors', masterColumnId: 'fac_name' },
+        width: 240
+      },
+      { id: 'pos_ppe_norm', name: 'Норма СИЗ (766н)', type: 'text', width: 260 }
     ],
     rows: [
-      { id: 'pos_1', pos_title: 'Электрогазосварщик 5 разряда', pos_dept: 'Производственный цех №1', pos_salary: 82000, pos_code: '19756', pos_sout_class: '3.2 (вредный 2 ст.)', pos_vacation_extra: 7 },
-      { id: 'pos_2', pos_title: 'Слесарь-ремонтник 4 разряда', pos_dept: 'Механический участок', pos_salary: 68000, pos_code: '18559', pos_sout_class: '3.1 (вредный 1 ст.)', pos_vacation_extra: 0 },
-      { id: 'pos_3', pos_title: 'Водитель вилочного погрузчика', pos_dept: 'Складской комплекс', pos_salary: 65000, pos_code: '11453', pos_sout_class: '3.1 (вредный 1 ст.)', pos_vacation_extra: 0 },
-      { id: 'pos_4', pos_title: 'Оператор станков с ЧПУ', pos_dept: 'Механический участок', pos_salary: 76000, pos_code: '16045', pos_sout_class: '2.0 (допустимый)', pos_vacation_extra: 0 },
-      { id: 'pos_5', pos_title: 'Маляр по металлу', pos_dept: 'Производственный цех №1', pos_salary: 72000, pos_code: '13450', pos_sout_class: '3.2 (вредный 2 ст.)', pos_vacation_extra: 7 },
-      { id: 'pos_6', pos_title: 'Электромонтер по ремонту', pos_dept: 'Энергослужба', pos_salary: 70000, pos_code: '19861', pos_sout_class: '3.1 (вредный 1 ст.)', pos_vacation_extra: 0 },
-      { id: 'pos_7', pos_title: 'Кладовщик склада готовой продукции', pos_dept: 'Складской комплекс', pos_salary: 52000, pos_code: '23114', pos_sout_class: '2.0 (допустимый)', pos_vacation_extra: 0 },
-      { id: 'pos_8', pos_title: 'Начальник производственного цеха', pos_dept: 'Производственный цех №1', pos_salary: 110000, pos_code: '24040', pos_sout_class: '2.0 (допустимый)', pos_vacation_extra: 0 }
+      { id: 'pos_1', pos_title: 'Электрогазосварщик 5 разряда', pos_dept: 'Производственный цех №1', pos_salary: 82000, pos_code: '19756', pos_sout_class: '3.2 (вредный 2 ст.)', pos_vacation_extra: 7, pos_factors: 'Аэрозоли фиброгенного действия (сварочный аэрозоль)', pos_ppe_norm: 'Костюм сварщика огнестойкий (1 комплект/12 мес.); Щиток защитный сварочный с автозатемнением (1 шт./24 мес.)' },
+      { id: 'pos_2', pos_title: 'Слесарь-ремонтник 4 разряда', pos_dept: 'Механический участок', pos_salary: 68000, pos_code: '18559', pos_sout_class: '3.1 (вредный 1 ст.)', pos_vacation_extra: 0, pos_factors: 'Шум производственный (свыше 80 дБА)', pos_ppe_norm: 'Ботинки защитные с композитным подноском (1 пара/12 мес.); Перчатки с полимерным покрытием (6 пара/2 мес.)' },
+      { id: 'pos_3', pos_title: 'Водитель вилочного погрузчика', pos_dept: 'Складской комплекс', pos_salary: 65000, pos_code: '11453', pos_sout_class: '3.1 (вредный 1 ст.)', pos_vacation_extra: 0, pos_factors: 'Тяжесть трудового процесса (подъем и перемещение тяжестей)', pos_ppe_norm: 'Жилет сигнальный повышенной видимости (1 шт./12 мес.); Ботинки защитные (1 пара/12 мес.)' },
+      { id: 'pos_4', pos_title: 'Оператор станков с ЧПУ', pos_dept: 'Механический участок', pos_salary: 76000, pos_code: '16045', pos_sout_class: '2.0 (допустимый)', pos_vacation_extra: 0, pos_factors: '', pos_ppe_norm: 'Костюм рабочий (1 комплект/12 мес.); Очки защитные открытые (1 шт./12 мес.)' },
+      { id: 'pos_5', pos_title: 'Маляр по металлу', pos_dept: 'Производственный цех №1', pos_salary: 72000, pos_code: '13450', pos_sout_class: '3.2 (вредный 2 ст.)', pos_vacation_extra: 7, pos_factors: 'Органические растворители и ЛКМ', pos_ppe_norm: 'Полумаска изолирующая с противогазовыми фильтрами (2 комплект/6 мес.); Перчатки химостойкие (6 пара/2 мес.)' },
+      { id: 'pos_6', pos_title: 'Электромонтер по ремонту', pos_dept: 'Энергослужба', pos_salary: 70000, pos_code: '19861', pos_sout_class: '3.1 (вредный 1 ст.)', pos_vacation_extra: 0, pos_factors: 'Шум производственный (свыше 80 дБА)', pos_ppe_norm: 'Перчатки диэлектрические (1 пара/12 мес.); Костюм от термических рисков (1 комплект/24 мес.)' },
+      { id: 'pos_7', pos_title: 'Кладовщик склада готовой продукции', pos_dept: 'Складской комплекс', pos_salary: 52000, pos_code: '23114', pos_sout_class: '2.0 (допустимый)', pos_vacation_extra: 0, pos_factors: '', pos_ppe_norm: 'Костюм рабочий (1 комплект/12 мес.); Перчатки защитные (12 пара/1 мес.)' },
+      { id: 'pos_8', pos_title: 'Начальник производственного цеха', pos_dept: 'Производственный цех №1', pos_salary: 110000, pos_code: '24040', pos_sout_class: '2.0 (допустимый)', pos_vacation_extra: 0, pos_factors: '', pos_ppe_norm: 'Каска защитная (1 шт./24 мес.)' }
     ],
     attachedDocs: BUILT_IN_NORMATIVE_DOCS['tab_positions'] || []
   },
@@ -258,7 +266,9 @@ export const INITIAL_TAGS: Tag[] = [
   { id: 'tag_22', name: '{ФИО_работника}', tabId: 'tab_employees', columnId: 'emp_fio', description: 'Синоним тега ФИО' },
   { id: 'tag_23', name: '{ФИО_инструктируемого}', tabId: 'tab_employees', columnId: 'emp_fio', description: 'Синоним тега ФИО для инструктажей' },
   { id: 'tag_24', name: '{Дата_приёма}', tabId: 'tab_employees', columnId: 'emp_hire_date', description: 'Дата приёма на работу' },
-  { id: 'tag_25', name: '{СНИЛС}', tabId: 'tab_employees', columnId: 'emp_snils', description: 'СНИЛС работника' }
+  { id: 'tag_25', name: '{СНИЛС}', tabId: 'tab_employees', columnId: 'emp_snils', description: 'СНИЛС работника' },
+  { id: 'tag_26', name: '{Фактор_должности}', tabId: 'tab_positions', columnId: 'pos_factors', description: 'Вредный производственный фактор по должности (29н)' },
+  { id: 'tag_27', name: '{Норма_СИЗ_должности}', tabId: 'tab_positions', columnId: 'pos_ppe_norm', description: 'Типовая норма СИЗ по должности (766н)' }
 ];
 
 export const DEFAULT_LEGAL_ENTITY_PROFILE: LegalEntityProfile = {

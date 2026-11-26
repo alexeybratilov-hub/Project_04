@@ -1,4 +1,4 @@
-﻿import { Column, DocumentTemplate, LegalEntityProfile, Row, Tab, Tag } from '../types/database';
+import { Column, DocumentTemplate, LegalEntityProfile, Row, Tab, Tag } from '../types/database';
 import { formatDeadlineCellDisplay, formatIsoToDisplay, resolveSafeRowIdentifier } from './deadlineService';
 import { localApiClient } from './localApiClient';
 import { BUILT_IN_ENTITY_AND_SYSTEM_TAGS } from './integrityService';
@@ -204,7 +204,7 @@ export function createRowTagResolver(
   allTabs: Tab[],
   tags: Tag[],
   entityProfile?: LegalEntityProfile,
-  options?: { holidays?: string[]; todayIso?: string; eventDateIso?: string }
+  options?: { holidays?: string[]; todayIso?: string; eventDateIso?: string; rowNumber?: number; totalRows?: number }
 ): RowTagContextResolver {
   const lookupCache = new Map<string, MasterRowMatchResult>();
   const issues: TemplateResolutionIssue[] = [];
@@ -234,9 +234,15 @@ export function createRowTagResolver(
   const resolveTag = (
     tagName: string
   ): DocxTagResolveOutcome & { isProfileEmpty?: boolean } => {
-    // 0. Системный тег даты события (перевод, увольнение, несчастный случай)
+    // 0. Системные теги события и групповой нумерации
     if (tagName === '{Дата_события}') {
       return { known: true, value: formatIsoToDisplay(options?.eventDateIso || options?.todayIso) };
+    }
+    if (tagName === '{№}') {
+      return { known: true, value: String(options?.rowNumber ?? 1) };
+    }
+    if (tagName === '{Количество_работников}') {
+      return { known: true, value: String(options?.totalRows ?? 1) };
     }
 
     // 1. User-bound Tag pool
@@ -382,6 +388,57 @@ export function createRowTagResolver(
   };
 }
 
+const GROUP_ROW_LOOP_REGEX = /\{#Строки\}([\s\S]*?)\{\/Строки\}/g;
+const TABLE_BLOCK_REGEX = /\[ТАБЛИЦА\]([\s\S]*?)\[\/ТАБЛИЦА\]/g;
+
+export function isGroupTemplate(template?: Pick<DocumentTemplate, 'tableRepeatField' | 'contentTemplate'> | null): boolean {
+  if (!template) return false;
+  return Boolean(template.tableRepeatField?.trim() || /\{#Строки\}/.test(template.contentTemplate || ''));
+}
+
+function stripGroupControlMarkers(text: string): string {
+  return text
+    .replace(/\{#Строки\}/g, '')
+    .replace(/\{\/Строки\}/g, '')
+    .replace(/\[ТАБЛИЦА\]\r?\n?/g, '')
+    .replace(/\r?\n?\[\/ТАБЛИЦА\]/g, '');
+}
+
+export type GroupContentSegment =
+  | { kind: 'text'; text: string }
+  | { kind: 'table'; headers: string[]; rows: string[][] };
+
+export function parseGroupTableSegments(resolvedGroupMarkup: string): GroupContentSegment[] {
+  const segments: GroupContentSegment[] = [];
+  let lastIdx = 0;
+
+  for (const match of resolvedGroupMarkup.matchAll(TABLE_BLOCK_REGEX)) {
+    const start = match.index ?? 0;
+    if (start > lastIdx) {
+      const before = resolvedGroupMarkup.slice(lastIdx, start).trim();
+      if (before) segments.push({ kind: 'text', text: before });
+    }
+    const rawTable = (match[1] || '')
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (rawTable.length > 0) {
+      const parsedRows = rawTable.map((line) => line.split('|').map((cell) => cell.trim()));
+      const headers = parsedRows[0];
+      const rows = parsedRows.slice(1);
+      segments.push({ kind: 'table', headers, rows });
+    }
+    lastIdx = start + match[0].length;
+  }
+
+  if (lastIdx < resolvedGroupMarkup.length) {
+    const tail = resolvedGroupMarkup.slice(lastIdx).trim();
+    if (tail) segments.push({ kind: 'text', text: tail });
+  }
+
+  return segments.length > 0 ? segments : [{ kind: 'text', text: stripGroupControlMarkers(resolvedGroupMarkup) }];
+}
+
 export const documentGenerator = {
   /**
    * Resolve tags in a template string with full diagnostics:
@@ -394,10 +451,11 @@ export const documentGenerator = {
     allTabs: Tab[],
     tags: Tag[],
     entityProfile?: LegalEntityProfile,
-    options?: { holidays?: string[]; todayIso?: string; eventDateIso?: string }
+    options?: { holidays?: string[]; todayIso?: string; eventDateIso?: string; rowNumber?: number; totalRows?: number }
   ): DetailedTemplateResolutionResult {
     const resolver = createRowTagResolver(row, currentTab, allTabs, tags, entityProfile, options);
-    const resolved = templateContent.replace(PLACEHOLDER_REGEX, (fullMatch, inner) => {
+    const cleanedTemplate = stripGroupControlMarkers(templateContent);
+    const resolved = cleanedTemplate.replace(PLACEHOLDER_REGEX, (fullMatch, inner) => {
       if (!String(inner).trim()) return fullMatch;
       const outcome = resolver.resolveTag(fullMatch);
       return outcome.known ? outcome.value : fullMatch;
@@ -409,6 +467,84 @@ export const documentGenerator = {
       unknownTags: diag.unknownTags,
       emptyRowTags: diag.emptyRowTags,
       emptyProfileTags: diag.emptyProfileTags
+    };
+  },
+
+  /**
+   * Resolve a consolidated group document (protocol / sign-off sheet) over multiple rows.
+   * Expands `{#Строки}...{/Строки}` for every row and keeps `[ТАБЛИЦА]...[/ТАБЛИЦА]` delimiters for DOCX/PDF tables.
+   */
+  resolveGroupTemplateDetailed(
+    templateContent: string,
+    rows: Row[],
+    currentTab: Tab,
+    allTabs: Tab[],
+    tags: Tag[],
+    entityProfile?: LegalEntityProfile,
+    options?: { holidays?: string[]; todayIso?: string; eventDateIso?: string }
+  ): DetailedTemplateResolutionResult & { markup: string } {
+    const effectiveRows = rows.length > 0 ? rows : [{ id: '1' } as Row];
+    const totalRows = rows.length;
+    const allIssues: TemplateResolutionIssue[] = [];
+    const issueKeys = new Set<string>();
+    const unknownSet = new Set<string>();
+    const emptyRowSet = new Set<string>();
+    const emptyProfileSet = new Set<string>();
+
+    const collectDiag = (d: ReturnType<RowTagContextResolver['getDiagnostics']>) => {
+      d.issues.forEach((iss) => {
+        const k = `${iss.type}::${iss.tagName}`;
+        if (!issueKeys.has(k)) {
+          issueKeys.add(k);
+          allIssues.push(iss);
+        }
+      });
+      d.unknownTags.forEach((t) => unknownSet.add(t));
+      d.emptyRowTags.forEach((t) => emptyRowSet.add(t));
+      d.emptyProfileTags.forEach((t) => emptyProfileSet.add(t));
+    };
+
+    const withExpandedLoops = templateContent.replace(GROUP_ROW_LOOP_REGEX, (_full, innerBlock: string) => {
+      const normalizedBlock = innerBlock.replace(/^\r?\n/, '').replace(/\r?\n$/, '');
+      const renderedRows = effectiveRows.map((row, idx) => {
+        const resolver = createRowTagResolver(row, currentTab, allTabs, tags, entityProfile, {
+          ...options,
+          rowNumber: idx + 1,
+          totalRows
+        });
+        const rendered = normalizedBlock.replace(PLACEHOLDER_REGEX, (fullMatch, inner) => {
+          if (!String(inner).trim()) return fullMatch;
+          const outcome = resolver.resolveTag(fullMatch);
+          return outcome.known ? outcome.value : fullMatch;
+        });
+        collectDiag(resolver.getDiagnostics());
+        return rendered;
+      });
+      return renderedRows.join('\n');
+    });
+
+    const headerResolver = createRowTagResolver(
+      effectiveRows[0],
+      currentTab,
+      allTabs,
+      tags,
+      entityProfile,
+      { ...options, rowNumber: 1, totalRows }
+    );
+    const resolvedMarkup = withExpandedLoops.replace(PLACEHOLDER_REGEX, (fullMatch, inner) => {
+      if (!String(inner).trim()) return fullMatch;
+      const outcome = headerResolver.resolveTag(fullMatch);
+      return outcome.known ? outcome.value : fullMatch;
+    });
+    collectDiag(headerResolver.getDiagnostics());
+
+    return {
+      markup: resolvedMarkup,
+      text: stripGroupControlMarkers(resolvedMarkup),
+      issues: allIssues,
+      unknownTags: Array.from(unknownSet),
+      emptyRowTags: Array.from(emptyRowSet),
+      emptyProfileTags: Array.from(emptyProfileSet)
     };
   },
 
@@ -930,6 +1066,256 @@ export const documentGenerator = {
         doc.text(wLine, marginX, cursorY);
         cursorY += 5;
       });
+    }
+
+    return doc.output('blob');
+  },
+
+  /**
+   * Generate a consolidated DOCX document supporting [ТАБЛИЦА]...[/ТАБЛИЦА] OOXML tables
+   */
+  async generateGroupDocx(
+    _title: string,
+    resolvedGroupMarkup: string
+  ): Promise<Blob> {
+    const {
+      Document,
+      Packer,
+      Paragraph: DocxParagraph,
+      TextRun,
+      AlignmentType: DocxAlignment,
+      Table,
+      TableRow,
+      TableCell,
+      WidthType,
+      BorderStyle,
+      ShadingType
+    } = await import('docx');
+
+    const segments = parseGroupTableSegments(resolvedGroupMarkup);
+    const children: Array<InstanceType<typeof DocxParagraph> | InstanceType<typeof Table>> = [];
+
+    const pushTextBlock = (blockText: string) => {
+      blockText.split('\n').forEach((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          children.push(new DocxParagraph({ text: '', spacing: { after: 100 } }));
+          return;
+        }
+        const isHeader = trimmed === trimmed.toUpperCase() && trimmed.length < 90 && !trimmed.includes('{');
+        if (isHeader) {
+          children.push(
+            new DocxParagraph({
+              children: [
+                new TextRun({
+                  text: trimmed,
+                  bold: true,
+                  size: 24,
+                  font: 'Times New Roman'
+                })
+              ],
+              alignment: DocxAlignment.CENTER,
+              spacing: { before: 160, after: 100 }
+            })
+          );
+        } else {
+          children.push(
+            new DocxParagraph({
+              children: [
+                new TextRun({
+                  text: line,
+                  size: 21,
+                  font: 'Times New Roman'
+                })
+              ],
+              spacing: { after: 70 }
+            })
+          );
+        }
+      });
+    };
+
+    const thinBorder = { style: BorderStyle.SINGLE, size: 4, color: '64748B' };
+
+    for (const seg of segments) {
+      if (seg.kind === 'text') {
+        pushTextBlock(seg.text);
+        continue;
+      }
+
+      const headerCells = seg.headers.map(
+        (hdr) =>
+          new TableCell({
+            shading: { type: ShadingType.CLEAR, fill: 'E2E8F0' },
+            margins: { top: 80, bottom: 80, left: 100, right: 100 },
+            children: [
+              new DocxParagraph({
+                children: [
+                  new TextRun({
+                    text: hdr,
+                    bold: true,
+                    size: 18,
+                    font: 'Times New Roman'
+                  })
+                ],
+                alignment: DocxAlignment.CENTER
+              })
+            ]
+          })
+      );
+
+      const dataRows = seg.rows.map(
+        (cells) =>
+          new TableRow({
+            children: seg.headers.map((_h, colIdx) => {
+              const cellText = cells[colIdx] ?? '';
+              return new TableCell({
+                margins: { top: 70, bottom: 70, left: 100, right: 100 },
+                children: [
+                  new DocxParagraph({
+                    children: [
+                      new TextRun({
+                        text: cellText,
+                        size: 18,
+                        font: 'Times New Roman'
+                      })
+                    ],
+                    alignment: colIdx === 0 ? DocxAlignment.CENTER : DocxAlignment.LEFT
+                  })
+                ]
+              });
+            })
+          })
+      );
+
+      children.push(
+        new Table({
+          width: { size: 100, type: WidthType.PERCENTAGE },
+          borders: {
+            top: thinBorder,
+            bottom: thinBorder,
+            left: thinBorder,
+            right: thinBorder,
+            insideHorizontal: thinBorder,
+            insideVertical: thinBorder
+          },
+          rows: [new TableRow({ tableHeader: true, children: headerCells }), ...dataRows]
+        })
+      );
+      children.push(new DocxParagraph({ text: '', spacing: { after: 120 } }));
+    }
+
+    const doc = new Document({
+      sections: [
+        {
+          properties: {
+            page: {
+              margin: { top: 900, right: 800, bottom: 900, left: 1200 }
+            }
+          },
+          children
+        }
+      ]
+    });
+
+    return await Packer.toBlob(doc);
+  },
+
+  /**
+   * Generate a consolidated group PDF document supporting [ТАБЛИЦА]...[/ТАБЛИЦА] tables
+   */
+  async generateGroupPdf(
+    _title: string,
+    resolvedGroupMarkup: string
+  ): Promise<Blob> {
+    const [jspdfModule, fonts] = await Promise.all([
+      import('jspdf'),
+      import('../data/cyrillicFont')
+    ]);
+    const JsPDF = jspdfModule.jsPDF ?? jspdfModule.default;
+
+    const doc = new JsPDF({
+      orientation: 'portrait',
+      unit: 'mm',
+      format: 'a4'
+    });
+
+    registerCyrillicFonts(doc, fonts.DEJAVU_SANS_REGULAR_B64, fonts.DEJAVU_SANS_BOLD_B64);
+    const marginX = 14;
+    const marginY = 16;
+    const pageWidth = 210;
+    const maxLineWidth = pageWidth - marginX * 2;
+    const pageHeight = 297;
+    let cursorY = marginY;
+
+    const ensurePageSpace = (neededMm: number) => {
+      if (cursorY + neededMm > pageHeight - 16) {
+        doc.addPage();
+        cursorY = marginY;
+      }
+    };
+
+    const segments = parseGroupTableSegments(resolvedGroupMarkup);
+
+    for (const seg of segments) {
+      if (seg.kind === 'text') {
+        const lines = seg.text.split('\n');
+        for (const rawLine of lines) {
+          if (!rawLine.trim()) {
+            cursorY += 3.5;
+            continue;
+          }
+          const isTitle = rawLine.trim() === rawLine.trim().toUpperCase() && rawLine.trim().length < 85;
+          doc.setFont('DejaVuSans', isTitle ? 'bold' : 'normal');
+          doc.setFontSize(isTitle ? 10 : 9);
+          const wrapped: string[] = doc.splitTextToSize(rawLine, maxLineWidth);
+          wrapped.forEach((wLine) => {
+            ensurePageSpace(5);
+            doc.text(wLine, marginX, cursorY);
+            cursorY += 4.6;
+          });
+        }
+        cursorY += 2;
+        continue;
+      }
+
+      const colCount = Math.max(1, seg.headers.length);
+      const firstColWidth = colCount > 3 ? 10 : maxLineWidth / colCount;
+      const otherColWidth = colCount > 3 ? (maxLineWidth - firstColWidth) / (colCount - 1) : firstColWidth;
+      const colWidths = seg.headers.map((_, idx) => (idx === 0 ? firstColWidth : otherColWidth));
+
+      const drawRow = (cells: string[], isHeaderRow: boolean) => {
+        doc.setFont('DejaVuSans', isHeaderRow ? 'bold' : 'normal');
+        doc.setFontSize(7.5);
+        const wrappedCells = colWidths.map((w, idx) =>
+          doc.splitTextToSize(String(cells[idx] ?? ''), Math.max(6, w - 3)) as string[]
+        );
+        const maxLines = Math.max(1, ...wrappedCells.map((arr) => arr.length));
+        const rowHeight = maxLines * 3.6 + 3;
+        ensurePageSpace(rowHeight + 2);
+
+        let x = marginX;
+        colWidths.forEach((w, idx) => {
+          if (isHeaderRow) {
+            doc.setFillColor(226, 232, 240);
+            doc.rect(x, cursorY, w, rowHeight, 'FD');
+          } else {
+            doc.rect(x, cursorY, w, rowHeight, 'S');
+          }
+          const lines = wrappedCells[idx];
+          lines.forEach((ln, lineIdx) => {
+            doc.text(ln, x + 1.5, cursorY + 3.6 + lineIdx * 3.6);
+          });
+          x += w;
+        });
+        cursorY += rowHeight;
+      };
+
+      doc.setDrawColor(100, 116, 139);
+      doc.setLineWidth(0.2);
+      drawRow(seg.headers, true);
+      seg.rows.forEach((r) => drawRow(r, false));
+      cursorY += 4;
     }
 
     return doc.output('blob');

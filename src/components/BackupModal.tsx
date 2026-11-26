@@ -1,10 +1,14 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
-  Database, Download, Upload, HardDrive, ShieldCheck, ArrowRight
+  Database, Download, Upload, HardDrive, ShieldCheck, ArrowRight, Lock, Unlock, Eye, EyeOff
 } from 'lucide-react';
 import { DatabaseState } from '../types/database';
 import {
   DatabaseImportPreview,
+  decryptDatabaseBackup,
+  EncryptedBackupEnvelope,
+  EncryptedBackupRequiredError,
+  inspectDatabaseBackupText,
   SafeRestoreResult,
   storageService,
   summarizeDatabaseState
@@ -12,6 +16,7 @@ import {
 import { localApiClient } from '../services/localApiClient';
 import {
   AppButton,
+  AppInput,
   AppModal,
   ConfirmDialog,
   FileValidationRule,
@@ -46,8 +51,20 @@ export const BackupModal: React.FC<BackupModalProps> = ({
   onResetDatabase
 }) => {
   const [isInspecting, setIsInspecting] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
   const [includeLlmApiKey, setIncludeLlmApiKey] = useState(false);
+  const [encryptBackup, setEncryptBackup] = useState(false);
+  const [exportPassphrase, setExportPassphrase] = useState('');
+  const [exportPassphraseConfirm, setExportPassphraseConfirm] = useState('');
+  const [showExportPassphrase, setShowExportPassphrase] = useState(false);
+  const [pendingEncrypted, setPendingEncrypted] = useState<{
+    fileName: string;
+    envelope: EncryptedBackupEnvelope;
+  } | null>(null);
+  const [decryptPassphrase, setDecryptPassphrase] = useState('');
+  const [showDecryptPassphrase, setShowDecryptPassphrase] = useState(false);
+  const [isDecrypting, setIsDecrypting] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ text: string; isError?: boolean } | null>(null);
   const [pendingImport, setPendingImport] = useState<DatabaseImportPreview | null>(null);
   const [isConfirmResetOpen, setIsConfirmResetOpen] = useState(false);
@@ -63,36 +80,89 @@ export const BackupModal: React.FC<BackupModalProps> = ({
     if (isOpen) {
       setStatusMessage(null);
       setPendingImport(null);
+      setPendingEncrypted(null);
       setIsInspecting(false);
+      setIsExporting(false);
       setIsRestoring(false);
+      setIsDecrypting(false);
       setIsConfirmResetOpen(false);
       setIncludeLlmApiKey(false);
+      setEncryptBackup(false);
+      setExportPassphrase('');
+      setExportPassphraseConfirm('');
+      setDecryptPassphrase('');
+      setShowExportPassphrase(false);
+      setShowDecryptPassphrase(false);
     }
   }, [isOpen]);
 
-  // Preserve backing out of pendingImport on Escape before closing the modal
+  // Preserve backing out of pendingImport / pendingEncrypted on Escape before closing the modal
   useEffect(() => {
-    if (!isOpen || !pendingImport) return;
+    if (!isOpen || (!pendingImport && !pendingEncrypted)) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !isConfirmResetOpen && !isRestoring) {
+      if (e.key === 'Escape' && !isConfirmResetOpen && !isRestoring && !isDecrypting) {
         e.preventDefault();
-        setPendingImport(null);
+        if (pendingImport) setPendingImport(null);
+        if (pendingEncrypted) {
+          setPendingEncrypted(null);
+          setDecryptPassphrase('');
+        }
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, isConfirmResetOpen, isRestoring, pendingImport]);
+  }, [isOpen, isConfirmResetOpen, isRestoring, isDecrypting, pendingImport, pendingEncrypted]);
 
   const isNative = localApiClient.isNative();
 
-  const handleExportBackup = () => {
-    const filename = `OT_Base_Backup_${new Date().toISOString().split('T')[0]}.json`;
-    storageService.exportDatabaseToFile(databaseState, filename, { includeLlmApiKey });
-    const keyNote =
-      hasConfiguredApiKey && !includeLlmApiKey
-        ? ' (API-ключ LLM исключён по умолчанию)'
-        : '';
-    setStatusMessage({ text: `Резервная копия «${filename}» успешно выгружена${keyNote}` });
+  const handleExportBackup = async () => {
+    const dateStamp = new Date().toISOString().split('T')[0];
+    if (!encryptBackup) {
+      const filename = `OT_Base_Backup_${dateStamp}.json`;
+      storageService.exportDatabaseToFile(databaseState, filename, { includeLlmApiKey });
+      const keyNote =
+        hasConfiguredApiKey && !includeLlmApiKey
+          ? ' (API-ключ LLM исключён по умолчанию)'
+          : '';
+      setStatusMessage({ text: `Резервная копия «${filename}» успешно выгружена${keyNote}` });
+      return;
+    }
+
+    if (exportPassphrase.length < 6) {
+      setStatusMessage({
+        text: 'Для шифрования копии задайте пароль длиной не менее 6 символов.',
+        isError: true
+      });
+      return;
+    }
+    if (exportPassphrase !== exportPassphraseConfirm) {
+      setStatusMessage({
+        text: 'Введённые пароли шифрования не совпадают.',
+        isError: true
+      });
+      return;
+    }
+
+    setIsExporting(true);
+    setStatusMessage(null);
+    try {
+      const filename = `OT_Base_Backup_${dateStamp}.enc.json`;
+      await storageService.exportEncryptedDatabaseToFile(databaseState, exportPassphrase, filename, {
+        includeLlmApiKey
+      });
+      setExportPassphrase('');
+      setExportPassphraseConfirm('');
+      setStatusMessage({
+        text: `Зашифрованная резервная копия (AES-256-GCM) «${filename}» выгружена`
+      });
+    } catch (err: any) {
+      setStatusMessage({
+        text: err?.message || 'Не удалось зашифровать резервную копию',
+        isError: true
+      });
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   const handleDiskSnapshot = async () => {
@@ -108,10 +178,19 @@ export const BackupModal: React.FC<BackupModalProps> = ({
     setIsInspecting(true);
     setStatusMessage(null);
     setPendingImport(null);
+    setPendingEncrypted(null);
+    setDecryptPassphrase('');
     try {
       const preview = await storageService.inspectDatabaseBackupFile(file);
       setPendingImport(preview);
     } catch (err: any) {
+      if (err instanceof EncryptedBackupRequiredError) {
+        setPendingEncrypted({
+          fileName: file.name,
+          envelope: err.envelope
+        });
+        return;
+      }
       setStatusMessage({
         text: err?.message || 'Файл не прошёл проверку структуры или версии',
         isError: true
@@ -121,14 +200,46 @@ export const BackupModal: React.FC<BackupModalProps> = ({
     }
   }, []);
 
+  const handleDecryptPendingBackup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pendingEncrypted) return;
+    if (!decryptPassphrase) {
+      setStatusMessage({ text: 'Введите пароль для расшифровки файла.', isError: true });
+      return;
+    }
+    setIsDecrypting(true);
+    setStatusMessage(null);
+    try {
+      const plaintext = await decryptDatabaseBackup(pendingEncrypted.envelope, decryptPassphrase);
+      const preview = inspectDatabaseBackupText(plaintext, pendingEncrypted.fileName);
+      setDecryptPassphrase('');
+      setPendingEncrypted(null);
+      setPendingImport(preview);
+    } catch (err: any) {
+      setStatusMessage({
+        text: err?.message || 'Неверный пароль или повреждённый зашифрованный файл.',
+        isError: true
+      });
+    } finally {
+      setIsDecrypting(false);
+    }
+  };
+
   const handleRejectBackupFile = useCallback((message: string) => {
     setPendingImport(null);
+    setPendingEncrypted(null);
     setStatusMessage({ text: message, isError: true });
   }, []);
 
   const { isDragOver, dropZoneProps, handleInputChange } = useFileDropZone({
     rule: BACKUP_FILE_RULE,
-    disabled: isInspecting || isRestoring || Boolean(pendingImport) || !isOpen,
+    disabled:
+      isInspecting ||
+      isRestoring ||
+      isDecrypting ||
+      Boolean(pendingImport) ||
+      Boolean(pendingEncrypted) ||
+      !isOpen,
     onFileAccepted: processBackupFile,
     onReject: handleRejectBackupFile
   });
@@ -174,10 +285,10 @@ export const BackupModal: React.FC<BackupModalProps> = ({
       <AppModal
         isOpen={isOpen}
         onClose={() => {
-          if (!isRestoring) onClose();
+          if (!isRestoring && !isDecrypting && !isExporting) onClose();
         }}
-        closeDisabled={isRestoring}
-        closeOnEscape={!pendingImport && !isRestoring}
+        closeDisabled={isRestoring || isDecrypting || isExporting}
+        closeOnEscape={!pendingImport && !pendingEncrypted && !isRestoring && !isDecrypting}
         size="2xl"
         heightClass="max-h-[90vh]"
         icon={<Database className="w-5 h-5" />}
@@ -185,7 +296,7 @@ export const BackupModal: React.FC<BackupModalProps> = ({
         title="Резервное копирование и обслуживание базы"
         subtitle="Снимок всех юридических лиц, таблиц, связей, шаблонов и тегов"
         footer={
-          <AppButton variant="secondary" onClick={onClose} disabled={isRestoring}>
+          <AppButton variant="secondary" onClick={onClose} disabled={isRestoring || isDecrypting || isExporting}>
             Закрыть
           </AppButton>
         }
@@ -197,7 +308,69 @@ export const BackupModal: React.FC<BackupModalProps> = ({
             </StatusBanner>
           )}
 
-          {pendingImport ? (
+          {pendingEncrypted ? (
+            <form onSubmit={(e) => void handleDecryptPendingBackup(e)} className="space-y-4">
+              <StatusBanner
+                variant="info"
+                icon={<Lock className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />}
+                title={`Зашифрованная резервная копия: ${pendingEncrypted.fileName}`}
+              >
+                <p className="text-[11px]">
+                  Файл защищён шифрованием <strong className="font-mono">{pendingEncrypted.envelope.cipher}</strong> (KDF:{' '}
+                  <span className="font-mono">{pendingEncrypted.envelope.kdf}</span>). Введите пароль, который использовался при выгрузке.
+                </p>
+              </StatusBanner>
+
+              <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 space-y-3">
+                <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+                  Пароль расшифровки
+                </label>
+                <div className="flex items-center gap-2">
+                  <AppInput
+                    type={showDecryptPassphrase ? 'text' : 'password'}
+                    autoFocus
+                    value={decryptPassphrase}
+                    onChange={(e) => setDecryptPassphrase(e.target.value)}
+                    placeholder="Введите пароль от резервной копии..."
+                    disabled={isDecrypting}
+                  />
+                  <AppButton
+                    type="button"
+                    variant="secondary"
+                    size="md"
+                    onClick={() => setShowDecryptPassphrase((v) => !v)}
+                    title={showDecryptPassphrase ? 'Скрыть пароль' : 'Показать пароль'}
+                  >
+                    {showDecryptPassphrase ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </AppButton>
+                </div>
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  <AppButton
+                    type="button"
+                    variant="secondary"
+                    size="md"
+                    disabled={isDecrypting}
+                    onClick={() => {
+                      setPendingEncrypted(null);
+                      setDecryptPassphrase('');
+                      setStatusMessage(null);
+                    }}
+                  >
+                    Отмена
+                  </AppButton>
+                  <AppButton
+                    type="submit"
+                    variant="primary"
+                    size="md"
+                    disabled={isDecrypting || !decryptPassphrase}
+                    icon={<Unlock className="w-3.5 h-3.5" />}
+                  >
+                    {isDecrypting ? 'Расшифровка...' : 'Расшифровать и проверить'}
+                  </AppButton>
+                </div>
+              </div>
+            </form>
+          ) : pendingImport ? (
             <div className="space-y-4">
               <StatusBanner
                 variant="warning"
@@ -353,13 +526,73 @@ export const BackupModal: React.FC<BackupModalProps> = ({
                   <AppButton
                     variant="primary"
                     size="md"
-                    onClick={handleExportBackup}
-                    icon={<Download className="w-3.5 h-3.5" />}
+                    disabled={isExporting}
+                    onClick={() => void handleExportBackup()}
+                    icon={encryptBackup ? <Lock className="w-3.5 h-3.5" /> : <Download className="w-3.5 h-3.5" />}
                     className="shrink-0"
                   >
-                    Сохранить файл
+                    {isExporting
+                      ? 'Шифрование...'
+                      : encryptBackup
+                        ? 'Сохранить зашифрованный (.enc.json)'
+                        : 'Сохранить файл'}
                   </AppButton>
                 </div>
+
+                {/* Encryption option (PBKDF2-SHA256 + AES-256-GCM) */}
+                <div className="pt-2 border-t border-slate-200/80 dark:border-slate-700/70 space-y-2">
+                  <label className="flex items-center gap-2 text-[11px] font-medium text-slate-700 dark:text-slate-200 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={encryptBackup}
+                      onChange={(e) => {
+                        setEncryptBackup(e.target.checked);
+                        setStatusMessage(null);
+                      }}
+                      className="rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+                    />
+                    <span className="flex items-center gap-1.5">
+                      <Lock className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                      Зашифровать копию паролем (AES-256-GCM + PBKDF2, защита ПДн 152-ФЗ)
+                    </span>
+                  </label>
+
+                  {encryptBackup && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pl-5">
+                      <div className="flex items-center gap-1">
+                        <AppInput
+                          compact
+                          type={showExportPassphrase ? 'text' : 'password'}
+                          value={exportPassphrase}
+                          onChange={(e) => setExportPassphrase(e.target.value)}
+                          placeholder="Пароль (минимум 6 символов)"
+                        />
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <AppInput
+                          compact
+                          type={showExportPassphrase ? 'text' : 'password'}
+                          value={exportPassphraseConfirm}
+                          onChange={(e) => setExportPassphraseConfirm(e.target.value)}
+                          placeholder="Повторите пароль"
+                        />
+                        <AppButton
+                          type="button"
+                          variant="secondary"
+                          size="xs"
+                          onClick={() => setShowExportPassphrase((v) => !v)}
+                          title={showExportPassphrase ? 'Скрыть пароль' : 'Показать пароль'}
+                        >
+                          {showExportPassphrase ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </AppButton>
+                      </div>
+                      <p className="sm:col-span-2 text-[10.5px] text-amber-700 dark:text-amber-300">
+                        Пароль не сохраняется в системе — при утере расшифровка файла невозможна.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
                 {hasConfiguredApiKey ? (
                   <label className="flex items-center gap-2 pt-2 border-t border-slate-200/80 dark:border-slate-700/70 text-[11px] text-slate-600 dark:text-slate-300 cursor-pointer select-none">
                     <input

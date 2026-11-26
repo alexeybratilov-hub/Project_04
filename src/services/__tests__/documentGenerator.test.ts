@@ -643,4 +643,54 @@ describe('documentGenerator', () => {
     expect(currentTabSection.items.find((i) => i.tag === '{Следующий медосмотр}')?.exampleValue).toBe('01.05.2026');
     expect(userTagsSection.items.find((i) => i.tag === '{Дата_следующего_МО}')?.exampleValue).toBe('01.05.2026');
   });
+
+  it('Item 3: packages multiple files into ZIP with path sanitization and deduplication, and renders group protocols in DOCX & PDF', async () => {
+    const { unzipSync, strFromU8 } = await import('fflate');
+    const { packageFilesAsZip } = await import('../zipExportService');
+    const { BUILT_IN_TEMPLATES } = await import('../../data/builtInTemplates');
+
+    // 1. ZIP export with duplicate paths and traversal protection
+    const zipBlob = await packageFilesAsZip([
+      { name: '../Приказы/Приказ_Иванов.docx', data: 'doc-1' },
+      { name: 'Приказы/Приказ_Иванов.docx', data: 'doc-2' },
+      { name: 'Медосмотры/МО:Петров?.pdf', data: 'pdf-1' }
+    ]);
+    const unpacked = unzipSync(new Uint8Array(await zipBlob.arrayBuffer()));
+    expect(Object.keys(unpacked).sort()).toEqual([
+      'Медосмотры/МО_Петров_.pdf',
+      'Приказы/Приказ_Иванов (2).docx',
+      'Приказы/Приказ_Иванов.docx'
+    ]);
+    expect(strFromU8(unpacked['Приказы/Приказ_Иванов.docx'])).toBe('doc-1');
+    expect(strFromU8(unpacked['Приказы/Приказ_Иванов (2).docx'])).toBe('doc-2');
+
+    // 2. Group protocol template expansion & structured Word table + PDF generation
+    const entity = INITIAL_DATABASE_STATE.entities[0];
+    const instTab = entity.tabs.find((t) => t.id === 'tab_instructions')!;
+    const groupTpl = BUILT_IN_TEMPLATES.find((t) => t.id === 'tpl_group_protocol_knowledge')!;
+    expect(groupTpl).toBeDefined();
+
+    const groupRes = documentGenerator.resolveGroupTemplateDetailed(
+      groupTpl.contentTemplate,
+      instTab.rows,
+      instTab,
+      entity.tabs,
+      entity.tags,
+      TEST_PROFILE
+    );
+    expect(groupRes.issues).toEqual([]);
+    expect(groupRes.text).toContain(`Всего работников в группе: ${instTab.rows.length}`);
+    expect(groupRes.text).toContain('1 | Иванов Сергей Петрович');
+    expect(groupRes.text).toContain('2 | Смирнов Алексей Викторович');
+
+    const groupDocxBlob = await documentGenerator.generateGroupDocx(groupTpl.name, groupRes.markup);
+    const docxFiles = unzipSync(new Uint8Array(await groupDocxBlob.arrayBuffer()));
+    const docxXml = strFromU8(docxFiles['word/document.xml']);
+    expect(docxXml).toContain('<w:tbl>');
+    expect(docxXml).toContain('Иванов Сергей Петрович');
+    expect(docxXml).toContain('Смирнов Алексей Викторович');
+
+    const groupPdfBlob = await documentGenerator.generateGroupPdf(groupTpl.name, groupRes.markup);
+    expect(groupPdfBlob.size).toBeGreaterThan(10_000);
+  });
 });
