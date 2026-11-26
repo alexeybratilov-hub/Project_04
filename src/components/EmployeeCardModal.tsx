@@ -14,6 +14,7 @@ import {
 import { EmployeeEvent, EmployeeEventType, EmployeeObligation, Row, Tab } from '../types/database';
 import { AppModal, AppButton, StatusBanner } from './ui';
 import { EMPLOYEE_EVENT_LABELS, MODULE_BY_ID } from '../data/modules';
+import { OCCUPATION_NORMS_DISCLAIMER } from '../data/occupationNorms';
 import {
   getEmployeeDisplayName,
   getEmployeeEvents,
@@ -409,6 +410,9 @@ export const EmployeeCardModal: React.FC<EmployeeCardModalProps> = ({
                   <span>{resolvedContext.ppeNormSummary}</span>
                 </div>
               )}
+              <div className="text-[10.5px] leading-snug text-amber-700 dark:text-amber-300/90 pt-1 border-t border-slate-200/80 dark:border-slate-700/60">
+                {OCCUPATION_NORMS_DISCLAIMER}
+              </div>
             </div>
           )}
 

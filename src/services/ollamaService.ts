@@ -46,6 +46,14 @@ const PII_COLUMN_ID_FRAGMENTS = [
   'birth'
 ];
 
+/**
+ * Что именно скрывается перед отправкой в облачную LLM и чего эта защита НЕ делает.
+ * Текст показывается в ИИ-студии и в README, чтобы не создавать ложного чувства
+ * полной анонимности.
+ */
+export const PII_MASKING_NOTES =
+  'Скрываются: ФИО и контакты в колонках, распознанных как персональные данные (ФИО, сотрудник, СНИЛС, таб. №, телефон, e-mail, адрес, ИНН), а также СНИЛС, e-mail, телефон и ИНН внутри текста. НЕ скрываются: имена, вписанные в свободный текст или в колонки с нестандартными названиями, и данные самой организации. Если это критично — используйте локальную модель (Ollama): данные не покидают компьютер.';
+
 function maskFreeTextPii(input: string): string {
   return input
     .replace(/\b\d{3}-\d{3}-\d{3}[-\s]\d{2}\b/g, '[СНИЛС скрыт]')
@@ -57,12 +65,12 @@ function maskFreeTextPii(input: string): string {
 function isPiiColumn(colId: string, colName: string): boolean {
   const lowerId = colId.toLowerCase();
   if (PII_COLUMN_ID_FRAGMENTS.some((frag) => lowerId.includes(frag))) return true;
-  return /фио|снилс|паспорт|телефон|почт|e-?mail|адрес|инн|табельный|дата\s*рождения/i.test(
+  return /фио|снилс|паспорт|телефон|почт|e-?mail|адрес|инн|табельный|дата\s*рождения|сотрудник|работник|пострадавш|физлицо|пациент/i.test(
     colName
   );
 }
 
-function maskColumnValue(colId: string, colName: string, rawVal: unknown): string {
+export function maskPiiColumnValue(colId: string, colName: string, rawVal: unknown): string {
   if (rawVal === undefined || rawVal === null || rawVal === '') return '—';
   const str = String(rawVal);
   if (isPiiColumn(colId, colName)) {
@@ -75,6 +83,8 @@ function maskColumnValue(colId: string, colName: string, rawVal: unknown): strin
   }
   return maskFreeTextPii(str);
 }
+
+const maskColumnValue = maskPiiColumnValue;
 
 export function shouldAnonymizePii(params: Pick<DocumentGenerationParams, 'llmConfig' | 'anonymizePii'>): boolean {
   if (typeof params.anonymizePii === 'boolean') return params.anonymizePii;

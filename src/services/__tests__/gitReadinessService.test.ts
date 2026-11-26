@@ -175,13 +175,13 @@ describe('gitReadinessService (ГИТ inspection readiness evaluation & export)'
     expect(groupMarkup).toContain('[/ТАБЛИЦА]');
 
     const sheets = buildGitReadinessWorkbookSheets(report);
-    expect(sheets).toHaveLength(2);
+    expect(sheets).toHaveLength(3);
     expect(sheets[0].name).toBe('Сводка ГИТ');
     expect(sheets[0].rows).toHaveLength(9);
 
     const xlsxBuf = buildXlsxArrayBuffer(sheets);
     const parsedSheets = parseXlsxWorkbook(xlsxBuf);
-    expect(parsedSheets.map((s) => s.name)).toEqual(['Сводка ГИТ', 'Выявленные пробелы']);
+    expect(parsedSheets.map((s) => s.name)).toEqual(['Сводка ГИТ', 'Выявленные пробелы', 'Методика']);
 
     const docxBlob = await exportGitReadinessDocx(report, { download: false });
     expect(docxBlob.size).toBeGreaterThan(1000);

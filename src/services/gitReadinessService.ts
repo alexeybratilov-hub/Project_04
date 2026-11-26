@@ -12,6 +12,14 @@ import { excelService } from './excelService';
 
 export type GitReadinessStatus = 'ok' | 'warning' | 'critical';
 
+/**
+ * Ограничение методики: отчёт формируется по данным базы и не заменяет
+ * заключение инспектора. Текст выводится в интерфейсе и во всех выгрузках,
+ * чтобы оценка не воспринималась как гарантия.
+ */
+export const GIT_READINESS_DISCLAIMER =
+  'Самопроверка по данным базы. Это не заключение Государственной инспекции труда и не гарантия отсутствия замечаний: состав и веса критериев заданы приложением, спорные ситуации проверяйте по актуальным НПА и документам.';
+
 export type GitReadinessActionTarget =
   | { kind: 'entity' }
   | { kind: 'relations' }
@@ -759,6 +767,8 @@ export function formatGitReadinessGroupMarkup(report: GitReadinessReport): strin
     lines.push('КРИТИЧЕСКИХ И ПРЕДУПРЕДИТЕЛЬНЫХ ЗАМЕЧАНИЙ НЕ ВЫЯВЛЕНО.');
   }
 
+  lines.push('', 'ОГРАНИЧЕНИЕ МЕТОДИКИ', GIT_READINESS_DISCLAIMER);
+
   return lines.join('\n');
 }
 
@@ -786,6 +796,8 @@ export function formatGitReadinessReportText(report: GitReadinessReport): string
       );
     });
   }
+
+  out.push('', GIT_READINESS_DISCLAIMER);
 
   return out.join('\n');
 }
@@ -858,9 +870,22 @@ export function buildGitReadinessWorkbookSheets(
           }
         ];
 
+  const methodRows = [
+    {
+      'Показатель': 'Индекс готовности',
+      'Значение': `${report.scorePercent}% (${report.totalPoints} из ${report.maxPoints} баллов)`
+    },
+    { 'Показатель': 'Уровень', 'Значение': report.levelLabel },
+    { 'Показатель': 'Дата оценки', 'Значение': formatIsoToDisplay(report.evaluatedAtIso) },
+    { 'Показатель': 'Пройдено / предупреждений / критично', 'Значение': `${report.passedCount} / ${report.warningCount} / ${report.criticalCount}` },
+    { 'Показатель': 'Как считается', 'Значение': 'Сумма баллов по критериям, каждый критерий имеет вес и нормативное основание; баллы и веса заданы в приложении.' },
+    { 'Показатель': 'Ограничение методики', 'Значение': GIT_READINESS_DISCLAIMER }
+  ];
+
   return [
     { name: 'Сводка ГИТ', rows: summaryRows },
-    { name: 'Выявленные пробелы', rows: gapRows }
+    { name: 'Выявленные пробелы', rows: gapRows },
+    { name: 'Методика', rows: methodRows }
   ];
 }
 

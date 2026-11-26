@@ -3,6 +3,14 @@ import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import { defineConfig } from 'vite';
 
+// Dev-сервер по умолчанию доступен только локально.
+// Для проверки с другого устройства задайте DEV_HOST=0.0.0.0 и DEV_ALLOWED_HOSTS=*.
+const devHost = process.env.DEV_HOST || 'localhost';
+const allowedHosts: true | string[] =
+  process.env.DEV_ALLOWED_HOSTS === '*'
+    ? true
+    : (process.env.DEV_ALLOWED_HOSTS || 'localhost,127.0.0.1').split(',');
+
 export default defineConfig(() => {
   return {
     plugins: [
@@ -37,13 +45,11 @@ export default defineConfig(() => {
       }),
     ],
     server: {
-      host: '0.0.0.0',
+      host: devHost,
       port: 3000,
-      allowedHosts: true as const,
-      // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modify—file watching is disabled to prevent flickering during agent edits.
+      allowedHosts,
+      // HMR можно отключить переменной DISABLE_HMR=true (полезно при работе агентов).
       hmr: process.env.DISABLE_HMR !== 'true',
-      // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
   };

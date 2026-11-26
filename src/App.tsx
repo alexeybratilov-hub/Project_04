@@ -614,6 +614,18 @@ export default function App() {
     [persistState]
   );
 
+  /** Очистка журнала аудита: только по явному подтверждению в модалке. */
+  const handleClearAuditLog = useCallback(() => {
+    updateDbState((prev) => ({
+      ...prev,
+      auditLog: [],
+      entities: prev.entities.map((entity) =>
+        entity.id === prev.activeEntityId ? { ...entity, auditLog: [] } : entity
+      )
+    }));
+    showToast('Журнал изменений очищен', 'success');
+  }, [showToast, updateDbState]);
+
   // Sync theme with document element
   useEffect(() => {
     if (dbState.settings.theme === 'dark') {
@@ -3263,6 +3275,7 @@ export default function App() {
         onClose={() => setIsAuditLogOpen(false)}
         entityName={activeEntity.profile.shortName || activeEntity.profile.fullName}
         entries={dbState.auditLog || []}
+        onClear={handleClearAuditLog}
       />
 
       <LegalEntityModal

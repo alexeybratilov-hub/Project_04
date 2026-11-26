@@ -4,7 +4,7 @@ import {
   AlertCircle, CheckCircle2, Eye, EyeOff, Info, Copy, Check, ShieldCheck
 } from 'lucide-react';
 import { AttachedDoc, LegalEntityProfile, LLMConfig, LLMGenerationLog, Tab, Tag } from '../types/database';
-import { ollamaService, rehydratePiiInText } from '../services/ollamaService';
+import { ollamaService, PII_MASKING_NOTES, rehydratePiiInText } from '../services/ollamaService';
 import { documentGenerator } from '../services/documentGenerator';
 import { createUniqueId } from '../services/integrityService';
 import { getLLMProviderPreset, LLM_PROVIDER_PRESETS, normalizeLLMConfig } from '../data/llmProviders';
@@ -642,6 +642,11 @@ export const LLMStudioModal: React.FC<LLMStudioModalProps> = ({
                       ? 'ФИО, СНИЛС, табельные номера и реквизиты организации заменяются на маркеры до отправки во внешний API.'
                       : 'Внимание: открытые персональные данные будут отправлены внешнему провайдеру.'}
                   </p>
+                  {anonymizePii && (
+                    <p className="text-[10.5px] leading-snug text-amber-900/70 dark:text-amber-300/70">
+                      {PII_MASKING_NOTES}
+                    </p>
+                  )}
                   {!anonymizePii && (
                     <label className="flex items-start gap-2 pt-1 border-t border-amber-200/80 dark:border-amber-800/70 cursor-pointer text-[11px] font-medium text-rose-800 dark:text-rose-300">
                       <input

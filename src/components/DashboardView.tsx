@@ -35,6 +35,7 @@ import {
   exportGitReadinessDocx,
   exportGitReadinessPdf,
   exportGitReadinessXlsx,
+  GIT_READINESS_DISCLAIMER,
   type GitReadinessActionTarget
 } from '../services/gitReadinessService';
 import { AppButton, AppModal, StatusBanner, useToast } from './ui';
@@ -478,6 +479,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <span className={gitReadiness.criticalCount > 0 ? 'text-rose-600 dark:text-rose-400 font-semibold' : ''}>
                         Критических: {gitReadiness.criticalCount}
                       </span>
+                    </div>
+                    <div className="text-[10.5px] text-slate-400 dark:text-slate-500 mt-1">
+                      Самопроверка по данным базы, не заключение ГИТ
                     </div>
                   </div>
                 </div>
@@ -924,6 +928,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           >
             Итоговый балл: <strong>{gitReadiness.totalPoints} из {gitReadiness.maxPoints}</strong> ({gitReadiness.scorePercent}%).
             Пройдено разделов: {gitReadiness.passedCount}, замечаний: {gitReadiness.warningCount}, критических пробелов: {gitReadiness.criticalCount}.
+          </StatusBanner>
+
+          <StatusBanner variant="info" compact>
+            {GIT_READINESS_DISCLAIMER}
           </StatusBanner>
 
           <div className="space-y-2">

@@ -1,14 +1,16 @@
 import React, { useMemo, useState } from 'react';
-import { History, Search, FileSpreadsheet, X } from 'lucide-react';
+import { History, Search, FileSpreadsheet, Trash2, X } from 'lucide-react';
 import { AuditLogAction, AuditLogEntry } from '../types/database';
 import { excelService } from '../services/excelService';
-import { AppButton, AppInput, AppModal, AppSelect, StatusBanner, useToast } from './ui';
+import { AppButton, AppInput, AppModal, AppSelect, InlineConfirm, StatusBanner, useToast } from './ui';
 
 interface AuditLogModalProps {
   isOpen: boolean;
   onClose: () => void;
   entityName: string;
   entries: AuditLogEntry[];
+  /** Очистка журнала; вызывается только после подтверждения в модалке. */
+  onClear?: () => void;
 }
 
 const ACTION_META: Record<AuditLogAction, { label: string; badgeClass: string }> = {
@@ -59,11 +61,13 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
   isOpen,
   onClose,
   entityName,
-  entries
+  entries,
+  onClear
 }) => {
   const { showToast } = useToast();
   const [search, setSearch] = useState('');
   const [actionFilter, setActionFilter] = useState<AuditLogAction | 'all'>('all');
+  const [isConfirmingClear, setIsConfirmingClear] = useState(false);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -114,15 +118,27 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
       subtitle={`Организация: ${entityName} · записей в журнале: ${entries.length} (хранится до 1000 последних)`}
       footer={
         <div className="flex items-center justify-between w-full gap-2">
-          <AppButton
-            variant="secondary"
-            size="sm"
-            onClick={handleExportXlsx}
-            disabled={filtered.length === 0}
-            icon={<FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />}
-          >
-            Экспорт в Excel (.xlsx)
-          </AppButton>
+          <div className="flex flex-wrap items-center gap-2">
+            <AppButton
+              variant="secondary"
+              size="sm"
+              onClick={handleExportXlsx}
+              disabled={filtered.length === 0}
+              icon={<FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />}
+            >
+              Экспорт в Excel (.xlsx)
+            </AppButton>
+            {onClear && entries.length > 0 && (
+              <AppButton
+                variant="secondary"
+                size="sm"
+                onClick={() => setIsConfirmingClear(true)}
+                icon={<Trash2 className="w-3.5 h-3.5" />}
+              >
+                Очистить журнал
+              </AppButton>
+            )}
+          </div>
           <AppButton variant="primary" size="sm" onClick={onClose}>
             Закрыть
           </AppButton>
@@ -134,6 +150,20 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
           Журнал автоматически фиксирует создание, изменение ячеек (было → стало), удаление, импорт 1С/Excel,
           выполнение обязательств и восстановление резервных копий.
         </StatusBanner>
+
+        {isConfirmingClear && onClear && (
+          <InlineConfirm
+            message="Очистить журнал изменений этой организации?"
+            details="Записи удаляются безвозвратно и не восстанавливаются из резервных копий базы. Сами данные таблиц не затрагиваются."
+            confirmLabel="Очистить журнал"
+            cancelLabel="Отмена"
+            onConfirm={() => {
+              onClear();
+              setIsConfirmingClear(false);
+            }}
+            onCancel={() => setIsConfirmingClear(false)}
+          />
+        )}
 
         {/* Filters */}
         <div className="flex flex-wrap items-center gap-2">
