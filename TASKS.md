@@ -112,3 +112,5 @@
 | D-4v1 | P1 | **Гибридная навигация**: стеклянный сайдбар 236/64 px, разделы «Обзор»/«Этапы», счётчик сроков, «Модули этапов» и «Рабочая папка», сохранение свёрнутости | `src/components/Sidebar.tsx`, `src/App.tsx` | Выполнено |
 | D-4v2 | P1 | **TabPreviewPopover**: превью вкладки с реальными данными, 280/180 мс, pointer-bridge, `Escape`, прижатие к границам окна | `src/components/TabPreviewPopover.tsx`, `src/components/TabBar.tsx` | Выполнено |
 | D-5v1 | P2 | **Стекло в модалках**: полупрозрачная панель `AppModal`, радиус 16 px, размытый оверлей | `src/components/ui/AppModal.tsx` | Выполнено |
+
+| M-11 | P1 | **Одиночный EXE-лаунчер**: `launcher_web.cs` (встроенный `app.html`, локальный сервер `127.0.0.1:47821`, трей, фиксированный порт для сохранности localStorage), `build_web_exe.ps1`, сборка через `csc.exe` без MinGW | `launcher_web.cs`, `build_web_exe.ps1`, `README.md`, `HANDOFF.md` | Выполнено (проверено: HTTP 200, рендер без ошибок консоли, сохранение данных между перезапусками) |
