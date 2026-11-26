@@ -24,17 +24,21 @@ namespace OtBaza
             _store = store;
             _tab = tab;
             _onChanged = onChanged;
-            BackColor = Theme.Canvas;
+            BackColor = Color.Transparent;
+            DoubleBuffered = true;
 
-            var toolbar = new FlowLayoutPanel
+            var surface = new GlassPanel { Dock = DockStyle.Fill, Padding = new Padding(12), Margin = new Padding(0) };
+            Controls.Add(surface);
+
+            var toolbar = new TransparentFlow
             {
                 Dock = DockStyle.Top,
                 Height = 46,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
-                Padding = new Padding(0, 6, 0, 6)
+                Padding = new Padding(2, 4, 2, 6)
             };
-            Controls.Add(toolbar);
+            surface.Controls.Add(toolbar);
 
             toolbar.Controls.Add(ToolButton("Добавить запись", delegate { AddRow(); }, true));
             toolbar.Controls.Add(ToolButton("Изменить", delegate { EditRow(); }, false));
@@ -62,7 +66,7 @@ namespace OtBaza
             _grid = new DataGridView
             {
                 Dock = DockStyle.Fill,
-                BackgroundColor = Theme.Surface,
+                BackgroundColor = Color.White,
                 BorderStyle = BorderStyle.None,
                 AllowUserToAddRows = false,
                 AllowUserToDeleteRows = false,
@@ -72,48 +76,41 @@ namespace OtBaza
                 SelectionMode = DataGridViewSelectionMode.FullRowSelect,
                 MultiSelect = true,
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None,
-                ColumnHeadersHeight = 36,
+                ColumnHeadersHeight = 38,
                 ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
-                RowTemplate = { Height = 30 },
-                GridColor = Theme.Line,
-                Font = Theme.Font(9.25f)
+                RowTemplate = { Height = 32 },
+                GridColor = Color.FromArgb(0xE8, 0xEE, 0xF7),
+                Font = Ui.Font(12f)
             };
-            _grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(0xF1, 0xF5, 0xF9);
-            _grid.ColumnHeadersDefaultCellStyle.ForeColor = Theme.Ink;
-            _grid.ColumnHeadersDefaultCellStyle.Font = Theme.Font(8.75f, FontStyle.Bold);
+            _grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(0xF6, 0xF9, 0xFD);
+            _grid.ColumnHeadersDefaultCellStyle.ForeColor = Ui.Ink;
+            _grid.ColumnHeadersDefaultCellStyle.Font = Ui.Font(11.5f, FontStyle.Bold);
             _grid.ColumnHeadersDefaultCellStyle.Padding = new Padding(6, 0, 6, 0);
-            _grid.DefaultCellStyle.SelectionBackColor = Theme.SoftAccent;
-            _grid.DefaultCellStyle.SelectionForeColor = Theme.Ink;
+            _grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(0xE0, 0xEA, 0xFF);
+            _grid.DefaultCellStyle.SelectionForeColor = Ui.Ink;
             _grid.DefaultCellStyle.Padding = new Padding(6, 0, 6, 0);
             _grid.EnableHeadersVisualStyles = false;
             _grid.CellDoubleClick += delegate(object sender, DataGridViewCellEventArgs e)
             {
                 if (e.RowIndex >= 0) EditRow();
             };
-            Controls.Add(_grid);
+            surface.Controls.Add(_grid);
             _grid.BringToFront();
 
             BuildColumns();
             Reload();
         }
 
-        private Button ToolButton(string text, EventHandler onClick, bool primary)
+        private Control ToolButton(string text, EventHandler onClick, bool primary)
         {
-            var button = new Button
+            var button = new PillButton
             {
                 Text = text,
-                Height = 32,
-                AutoSize = true,
-                Padding = new Padding(12, 0, 12, 0),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = primary ? Theme.Accent : Theme.Surface,
-                ForeColor = primary ? Theme.AccentInk : Theme.Ink,
-                Font = Theme.Font(9f, primary ? FontStyle.Bold : FontStyle.Regular),
-                Cursor = Cursors.Hand,
+                Primary = primary,
+                Width = primary ? 156 : 112,
+                Height = 34,
                 Margin = new Padding(0, 1, 6, 0)
             };
-            button.FlatAppearance.BorderSize = primary ? 0 : 1;
-            button.FlatAppearance.BorderColor = Theme.Line;
             button.Click += onClick;
             return button;
         }
@@ -291,16 +288,20 @@ namespace OtBaza
         {
             _store = store;
             _onChanged = onChanged;
-            BackColor = Theme.Canvas;
+            BackColor = Color.Transparent;
+            DoubleBuffered = true;
 
-            var toolbar = new FlowLayoutPanel
+            var surface = new GlassPanel { Dock = DockStyle.Fill, Padding = new Padding(12), Margin = new Padding(0) };
+            Controls.Add(surface);
+
+            var toolbar = new TransparentFlow
             {
                 Dock = DockStyle.Top,
                 Height = 46,
-                Padding = new Padding(0, 6, 0, 6),
+                Padding = new Padding(2, 4, 2, 6),
                 WrapContents = false
             };
-            Controls.Add(toolbar);
+            surface.Controls.Add(toolbar);
 
             toolbar.Controls.Add(new Label
             {
@@ -337,7 +338,7 @@ namespace OtBaza
             _grid = new DataGridView
             {
                 Dock = DockStyle.Fill,
-                BackgroundColor = Theme.Surface,
+                BackgroundColor = Color.White,
                 BorderStyle = BorderStyle.None,
                 AllowUserToAddRows = false,
                 AllowUserToDeleteRows = false,
@@ -346,44 +347,38 @@ namespace OtBaza
                 SelectionMode = DataGridViewSelectionMode.FullRowSelect,
                 MultiSelect = false,
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
-                ColumnHeadersHeight = 36,
-                RowTemplate = { Height = 30 },
-                GridColor = Theme.Line,
-                Font = Theme.Font(9.25f)
+                ColumnHeadersHeight = 38,
+                RowTemplate = { Height = 32 },
+                GridColor = Color.FromArgb(0xE8, 0xEE, 0xF7),
+                Font = Ui.Font(12f)
             };
-            _grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(0xF1, 0xF5, 0xF9);
-            _grid.ColumnHeadersDefaultCellStyle.Font = Theme.Font(8.75f, FontStyle.Bold);
-            _grid.DefaultCellStyle.SelectionBackColor = Theme.SoftAccent;
-            _grid.DefaultCellStyle.SelectionForeColor = Theme.Ink;
+            _grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(0xF6, 0xF9, 0xFD);
+            _grid.ColumnHeadersDefaultCellStyle.Font = Ui.Font(11.5f, FontStyle.Bold);
+            _grid.ColumnHeadersDefaultCellStyle.ForeColor = Ui.Ink;
+            _grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(0xE0, 0xEA, 0xFF);
+            _grid.DefaultCellStyle.SelectionForeColor = Ui.Ink;
             _grid.EnableHeadersVisualStyles = false;
             _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Работник", FillWeight = 22 });
             _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Требование", FillWeight = 34 });
             _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Срок", FillWeight = 12 });
             _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Статус", FillWeight = 18 });
             _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Основание", FillWeight = 24 });
-            Controls.Add(_grid);
+            surface.Controls.Add(_grid);
             _grid.BringToFront();
 
             Fill();
         }
 
-        private Button DeadlineButton(string text, EventHandler onClick, bool primary)
+        private Control DeadlineButton(string text, EventHandler onClick, bool primary)
         {
-            var button = new Button
+            var button = new PillButton
             {
                 Text = text,
-                Height = 32,
-                AutoSize = true,
-                Padding = new Padding(12, 0, 12, 0),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = primary ? Theme.Accent : Theme.Surface,
-                ForeColor = primary ? Theme.AccentInk : Theme.Ink,
-                Font = Theme.Font(9f, primary ? FontStyle.Bold : FontStyle.Regular),
-                Cursor = Cursors.Hand,
+                Primary = primary,
+                Width = primary ? 130 : 110,
+                Height = 34,
                 Margin = new Padding(0, 1, 6, 0)
             };
-            button.FlatAppearance.BorderSize = primary ? 0 : 1;
-            button.FlatAppearance.BorderColor = Theme.Line;
             button.Click += onClick;
             return button;
         }

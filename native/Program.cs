@@ -138,7 +138,7 @@ namespace OtBaza
 
             log.AppendLine(failures == 0 ? "ИТОГ: все проверки пройдены" : "ИТОГ: ошибок " + failures);
             string logPath = Path.Combine(Path.GetTempPath(), "ot-baza-native-selftest.log");
-            File.WriteAllText(logPath, log.ToString(), Encoding.UTF8);
+            try { File.WriteAllText(logPath, log.ToString(), Encoding.UTF8); } catch { }
             return failures == 0 ? 0 : 1;
         }
     }

@@ -58,87 +58,94 @@ namespace OtBaza
             Size = new Size(1340, 800);
             MinimumSize = new Size(900, 600);
             StartPosition = FormStartPosition.CenterScreen;
-            BackColor = Theme.Canvas;
-            Font = Theme.Font(9.75f);
+            BackColor = Color.FromArgb(0xF3, 0xF7, 0xFD);
+            Font = Ui.Font(13f);
             AutoScaleMode = AutoScaleMode.None;
+            DoubleBuffered = true;
 
-            var root = new TableLayoutPanel
+            var canvas = new CanvasPanel { Dock = DockStyle.Fill };
+            Controls.Add(canvas);
+
+            var root = new TransparentTable
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
                 RowCount = 1,
-                BackColor = Theme.Canvas
+                BackColor = Color.Transparent,
+                Padding = new Padding(10, 10, 12, 10)
             };
-            root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 236));
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 244));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            Controls.Add(root);
+            canvas.Controls.Add(root);
 
-            _sidebar = new FlowLayoutPanel
+            var sidebarHost = new GlassPanel { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 10, 0) };
+            root.Controls.Add(sidebarHost, 0, 0);
+
+            _sidebar = new TransparentFlow
             {
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
                 AutoScroll = true,
-                BackColor = Theme.Sidebar,
-                Padding = new Padding(10, 12, 10, 12)
+                BackColor = Color.Transparent,
+                Padding = new Padding(10, 14, 10, 12)
             };
-            root.Controls.Add(_sidebar, 0, 0);
+            sidebarHost.Controls.Add(_sidebar);
 
-            var main = new TableLayoutPanel
+            var main = new TransparentTable
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
                 RowCount = 4,
-                BackColor = Theme.Canvas
+                BackColor = Color.Transparent
             };
             main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
-            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
             main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
             root.Controls.Add(main, 1, 0);
-
-            var header = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Canvas };
-            main.Controls.Add(header, 0, 0);
 
             _entityLabel = new Label
             {
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Font = Theme.Font(13f, FontStyle.Bold),
-                ForeColor = Theme.Ink,
-                Padding = new Padding(16, 0, 0, 0)
+                Font = Ui.Font(18f, FontStyle.Bold),
+                ForeColor = Ui.Ink,
+                Padding = new Padding(8, 0, 0, 0),
+                BackColor = Color.Transparent
             };
-            header.Controls.Add(_entityLabel);
+            main.Controls.Add(_entityLabel, 0, 0);
 
-            var tabsPanel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Canvas };
-            main.Controls.Add(tabsPanel, 0, 1);
-
-            _tabs = new FlowLayoutPanel
+            _tabs = new TransparentFlow
             {
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
                 AutoScroll = true,
-                Padding = new Padding(12, 6, 12, 6)
+                Padding = new Padding(6, 4, 6, 6),
+                BackColor = Color.Transparent
             };
-            tabsPanel.Controls.Add(_tabs);
+            main.Controls.Add(_tabs, 0, 1);
 
-            _content = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Canvas, Padding = new Padding(12, 4, 12, 8) };
+            _content = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.Transparent,
+                Padding = new Padding(6, 2, 2, 4)
+            };
             main.Controls.Add(_content, 0, 2);
-
-            var statusPanel = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Sidebar };
-            main.Controls.Add(statusPanel, 0, 3);
 
             _status = new Label
             {
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleLeft,
-                ForeColor = Theme.Muted,
-                Font = Theme.Font(8.75f),
-                Padding = new Padding(16, 0, 0, 0)
+                ForeColor = Ui.Muted,
+                Font = Ui.Font(10.5f),
+                Padding = new Padding(8, 0, 0, 0),
+                BackColor = Color.Transparent
             };
-            statusPanel.Controls.Add(_status);
+            main.Controls.Add(_status, 0, 3);
 
             Load += delegate
             {
@@ -166,18 +173,20 @@ namespace OtBaza
             _sidebar.Controls.Add(new Label
             {
                 Text = "ОТ-БАЗА",
-                Font = Theme.Font(13f, FontStyle.Bold),
-                ForeColor = Theme.Ink,
+                Font = Ui.Font(22f, FontStyle.Bold),
+                ForeColor = Ui.Ink,
                 AutoSize = true,
+                BackColor = Color.Transparent,
                 Margin = new Padding(4, 2, 0, 0)
             });
             _sidebar.Controls.Add(new Label
             {
                 Text = "рабочее пространство",
-                Font = Theme.Font(8.25f),
-                ForeColor = Theme.Muted,
+                Font = Ui.Font(11.5f),
+                ForeColor = Ui.Muted,
                 AutoSize = true,
-                Margin = new Padding(4, 0, 0, 12)
+                BackColor = Color.Transparent,
+                Margin = new Padding(5, 0, 0, 16)
             });
 
             _sidebar.Controls.Add(SectionLabel("ОБЗОР"));
@@ -192,7 +201,7 @@ namespace OtBaza
                 _sidebar.Controls.Add(NavButton(module.Title, active, delegate { ShowModuleTab(captured); }));
             }
 
-            _sidebar.Controls.Add(new Panel { Height = 16, Width = 200 });
+            _sidebar.Controls.Add(new TransparentPanel { Height = 18, Width = 180 });
 
             _sidebar.Controls.Add(NavButton("Модули этапов", false, delegate { ShowModulesDialog(); }));
             _sidebar.Controls.Add(NavButton("Папка с данными", false, delegate
@@ -209,30 +218,25 @@ namespace OtBaza
             return new Label
             {
                 Text = text,
-                Font = Theme.Font(8f, FontStyle.Bold),
-                ForeColor = Theme.Muted,
+                Font = Ui.Font(10f, FontStyle.Bold),
+                ForeColor = Ui.Muted,
                 AutoSize = true,
-                Margin = new Padding(6, 10, 0, 4)
+                BackColor = Color.Transparent,
+                Margin = new Padding(8, 12, 0, 6)
             };
         }
 
-        private Button NavButton(string text, bool active, EventHandler onClick)
+        private Control NavButton(string text, bool active, EventHandler onClick)
         {
-            var button = new Button
+            var button = new PillButton
             {
                 Text = text,
-                Width = 208,
+                Primary = active,
+                AlignLeft = true,
+                Width = 204,
                 Height = 36,
-                TextAlign = ContentAlignment.MiddleLeft,
-                Padding = new Padding(10, 0, 0, 0),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = active ? Theme.Accent : Theme.Sidebar,
-                ForeColor = active ? Theme.AccentInk : Theme.Ink,
-                Font = Theme.Font(9.5f, active ? FontStyle.Bold : FontStyle.Regular),
-                Cursor = Cursors.Hand,
                 Margin = new Padding(0, 1, 0, 1)
             };
-            button.FlatAppearance.BorderSize = 0;
             button.Click += onClick;
             return button;
         }
@@ -258,23 +262,18 @@ namespace OtBaza
             _tabs.ResumeLayout();
         }
 
-        private Button TabButton(string text, bool active, EventHandler onClick)
+        private Control TabButton(string text, bool active, EventHandler onClick)
         {
-            var button = new Button
+            int width = TextRenderer.MeasureText(text, Ui.Font(12.5f, FontStyle.Bold)).Width + 30;
+            var button = new PillButton
             {
                 Text = text,
-                AutoSize = true,
+                Primary = active,
+                Width = Math.Max(90, width),
                 Height = 34,
-                Padding = new Padding(14, 0, 14, 0),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = active ? Theme.Accent : Theme.Surface,
-                ForeColor = active ? Theme.AccentInk : Theme.Ink,
-                Font = Theme.Font(9f, active ? FontStyle.Bold : FontStyle.Regular),
-                Cursor = Cursors.Hand,
+                Radius = 10,
                 Margin = new Padding(0, 0, 6, 0)
             };
-            button.FlatAppearance.BorderColor = Theme.Line;
-            button.FlatAppearance.BorderSize = 1;
             button.Click += onClick;
             return button;
         }
@@ -370,96 +369,167 @@ namespace OtBaza
         public HomeView(Store store, Action openDeadlines, Action openEmployees)
         {
             _store = store;
-            BackColor = Theme.Canvas;
-
-            var root = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 1,
-                RowCount = 6,
-                BackColor = Theme.Canvas,
-                Padding = new Padding(4, 4, 4, 4)
-            };
-            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 112));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            Controls.Add(root);
-
-            var title = new Label
-            {
-                Text = J.Str(J.Get(store.Profile, "shortName")),
-                Font = Theme.Font(19f, FontStyle.Bold),
-                ForeColor = Theme.Ink,
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft
-            };
-            root.Controls.Add(title, 0, 0);
-
-            var subtitle = new Label
-            {
-                Text = J.Str(J.Get(store.Profile, "fullName")) + "  ·  ИНН " + J.Str(J.Get(store.Profile, "inn")),
-                Font = Theme.Font(9.25f),
-                ForeColor = Theme.Muted,
-                Dock = DockStyle.Fill,
-                AutoEllipsis = true,
-                TextAlign = ContentAlignment.MiddleLeft
-            };
-            root.Controls.Add(subtitle, 0, 1);
+            BackColor = Color.Transparent;
+            DoubleBuffered = true;
 
             var pending = store.Obligations.Select(J.Obj)
                 .Where(o => o != null && !ObligationsEngine.IsDone(o))
                 .ToList();
             int totalRows = store.Tabs.Sum(tab => J.Arr(J.Get(J.Obj(tab), "rows")).Count);
+            int organizations = J.Arr(J.Get(store.Db, "entities")).Count;
+            int templates = J.Arr(J.Get(store.Entity, "templates")).Count;
 
-            var cards = new TableLayoutPanel
+            var grid = new TransparentTable
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 4,
-                RowCount = 1,
-                Margin = new Padding(0, 4, 0, 8)
+                RowCount = 3,
+                BackColor = Color.Transparent,
+                Padding = new Padding(2)
             };
-            for (int i = 0; i < 4; i++) cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
-            cards.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            root.Controls.Add(cards, 0, 2);
-            cards.Controls.Add(Card("ЗАПИСЕЙ В БАЗЕ", totalRows.ToString(), Theme.Ink, "по всем вкладкам"), 0, 0);
-            cards.Controls.Add(Card("ПРОСРОЧЕНО", pending.Count(o => ObligationsEngine.DaysLeft(o) < 0).ToString(), Theme.Danger, "требует внимания"), 1, 0);
-            cards.Controls.Add(Card("СКОРО", pending.Count(o => { int d = ObligationsEngine.DaysLeft(o); return d >= 0 && d <= 7; }).ToString(), Theme.Warning, "в ближайшие 7 дней"), 2, 0);
-            cards.Controls.Add(Card("АКТИВНЫХ ТРЕБОВАНИЙ", pending.Count.ToString(), Theme.Success, "в работе"), 3, 0);
+            for (int i = 0; i < 4; i++) grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+            grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 152));
+            grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 152));
+            grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            Controls.Add(grid);
 
-            var actions = new FlowLayoutPanel
+            var hero = BuildHero(pending, totalRows, organizations, templates, openDeadlines, openEmployees);
+            grid.Controls.Add(hero, 0, 0);
+            grid.SetColumnSpan(hero, 2);
+            grid.SetRowSpan(hero, 2);
+
+            grid.Controls.Add(Card("ПРОСРОЧЕНО", pending.Count(o => ObligationsEngine.DaysLeft(o) < 0).ToString(), "требует внимания", Ui.Rose), 2, 0);
+            grid.Controls.Add(Card("СКОРО", pending.Count(o => { int d = ObligationsEngine.DaysLeft(o); return d >= 0 && d <= 7; }).ToString(), "в ближайшие 7 дней", Ui.Amber), 3, 0);
+            grid.Controls.Add(Card("ЗАПИСЕЙ В БАЗЕ", totalRows.ToString(), "по всем вкладкам", Ui.Ink), 2, 1);
+            grid.Controls.Add(Card("ТРЕБОВАНИЙ", pending.Count.ToString(), "активных сейчас", Ui.Emerald), 3, 1);
+
+            var deadlines = BuildDeadlines(pending);
+            grid.Controls.Add(deadlines, 0, 2);
+            grid.SetColumnSpan(deadlines, 3);
+
+            grid.Controls.Add(BuildOrganization(totalRows), 3, 2);
+        }
+
+        private GlassPanel BuildHero(List<Dictionary<string, object>> pending, int totalRows, int organizations, int templates, Action openDeadlines, Action openEmployees)
+        {
+            var hero = new GlassPanel
             {
                 Dock = DockStyle.Fill,
+                Radius = 20,
+                FillAlpha = 185,
+                Margin = new Padding(0, 0, 12, 12),
+                Padding = new Padding(20, 16, 20, 14)
+            };
+
+            var body = new TransparentFlow
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                BackColor = Color.Transparent,
+                Padding = new Padding(0)
+            };
+            body.Controls.Add(new Label
+            {
+                Text = "РАБОЧЕЕ ПРОСТРАНСТВО",
+                Font = Ui.Font(10.5f, FontStyle.Bold),
+                ForeColor = Ui.Muted,
+                AutoSize = true,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0, 0, 0, 6)
+            });
+            body.Controls.Add(new Label
+            {
+                Text = totalRows.ToString(),
+                Font = Ui.Font(54f, FontStyle.Bold),
+                ForeColor = Ui.Ink,
+                AutoSize = true,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0, 0, 0, 0)
+            });
+            body.Controls.Add(new Label
+            {
+                Text = "записей в базе",
+                Font = Ui.Font(12.5f),
+                ForeColor = Ui.Muted,
+                AutoSize = true,
+                BackColor = Color.Transparent,
+                Margin = new Padding(1, 0, 0, 10)
+            });
+            body.Controls.Add(new Label
+            {
+                Text = string.Format("{0} таблиц  ·  {1} организация  ·  {2} шаблонов  ·  {3} активных требований",
+                    _store.Tabs.Count, organizations, templates, pending.Count),
+                Font = Ui.Font(11.5f),
+                ForeColor = Ui.Muted,
+                AutoSize = true,
+                BackColor = Color.Transparent,
+                Margin = new Padding(1, 0, 0, 0)
+            });
+            hero.Controls.Add(body);
+
+            var actions = new TransparentFlow
+            {
+                Dock = DockStyle.Bottom,
+                Height = 44,
                 FlowDirection = FlowDirection.LeftToRight,
-                Padding = new Padding(0, 6, 0, 6)
+                BackColor = Color.Transparent,
+                Padding = new Padding(0, 4, 0, 0)
             };
-            root.Controls.Add(actions, 0, 3);
-            actions.Controls.Add(PrimaryButton("Контроль сроков", delegate { openDeadlines(); }));
-            actions.Controls.Add(SecondaryButton("Сотрудники", delegate { openEmployees(); }));
-
-            var listTitle = new Label
+            var deadlinesButton = new PillButton
             {
-                Text = "Ближайшие и просроченные требования",
-                Font = Theme.Font(11.5f, FontStyle.Bold),
-                ForeColor = Theme.Ink,
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft
+                Text = "Контроль сроков",
+                Primary = true,
+                Width = 172,
+                Height = 36,
+                Margin = new Padding(0, 0, 8, 0)
             };
-            root.Controls.Add(listTitle, 0, 4);
+            deadlinesButton.Click += delegate { openDeadlines(); };
+            actions.Controls.Add(deadlinesButton);
+
+            var employeesButton = new PillButton
+            {
+                Text = "Сотрудники",
+                Width = 132,
+                Height = 36
+            };
+            employeesButton.Click += delegate { openEmployees(); };
+            actions.Controls.Add(employeesButton);
+            hero.Controls.Add(actions);
+
+            return hero;
+        }
+
+        private GlassCard Card(string caption, string value, string hint, Color accent)
+        {
+            var card = new GlassCard { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 12, 12) };
+            card.SetData(caption, value, hint, accent);
+            return card;
+        }
+
+        private GlassPanel BuildDeadlines(List<Dictionary<string, object>> pending)
+        {
+            var panel = new GlassPanel
+            {
+                Dock = DockStyle.Fill,
+                Radius = 18,
+                FillAlpha = 175,
+                Margin = new Padding(0, 0, 12, 0),
+                Padding = new Padding(16, 12, 16, 12)
+            };
 
             if (pending.Count == 0)
             {
-                root.Controls.Add(new Label
+                panel.Controls.Add(new Label
                 {
                     Text = "Активных требований нет. Добавьте работника — требования появятся автоматически.",
-                    Font = Theme.Font(9.25f),
-                    ForeColor = Theme.Muted,
                     Dock = DockStyle.Fill,
-                    TextAlign = ContentAlignment.TopLeft
-                }, 0, 5);
+                    Font = Ui.Font(12f),
+                    ForeColor = Ui.Muted,
+                    BackColor = Color.Transparent,
+                    TextAlign = ContentAlignment.TopLeft,
+                    Padding = new Padding(2, 26, 2, 2)
+                });
             }
             else
             {
@@ -469,109 +539,96 @@ namespace OtBaza
                     View = View.Details,
                     FullRowSelect = true,
                     GridLines = false,
-                    BorderStyle = BorderStyle.FixedSingle,
-                    BackColor = Theme.Surface,
-                    Font = Theme.Font(9.25f)
+                    BorderStyle = BorderStyle.None,
+                    BackColor = Color.FromArgb(0xFB, 0xFD, 0xFF),
+                    Font = Ui.Font(12f)
                 };
                 list.Columns.Add("Работник", 220);
-                list.Columns.Add("Требование", 340);
+                list.Columns.Add("Требование", 330);
                 list.Columns.Add("Срок", 100);
-                list.Columns.Add("Статус", 180);
-                list.Columns.Add("Основание", 220);
-                foreach (var obligation in pending.OrderBy(ObligationsEngine.DaysLeft).Take(300))
+                list.Columns.Add("Статус", 170);
+                list.Columns.Add("Основание", 200);
+
+                foreach (var obligation in pending.OrderBy(ObligationsEngine.DaysLeft).Take(200))
                 {
                     var item = new ListViewItem(ObligationsEngine.EmployeeName(_store, J.Str(J.Get(obligation, "employeeRowId"))));
                     item.SubItems.Add(J.Str(J.Get(obligation, "title")));
                     item.SubItems.Add(ObligationsEngine.DueLabel(obligation));
                     item.SubItems.Add(ObligationsEngine.StatusLabel(obligation));
                     item.SubItems.Add(J.Str(J.Get(obligation, "legalBasis")));
-                    if (ObligationsEngine.DaysLeft(obligation) < 0) item.ForeColor = Theme.Danger;
+                    if (ObligationsEngine.DaysLeft(obligation) < 0) item.ForeColor = Ui.Rose;
                     list.Items.Add(item);
                 }
-                root.Controls.Add(list, 0, 5);
+                panel.Controls.Add(list);
             }
-        }
 
-        private Panel Card(string caption, string value, Color tone, string hint)
-        {
-            var panel = new Panel
-            {
-                Dock = DockStyle.Fill,
-                BackColor = Theme.Surface,
-                Margin = new Padding(0, 0, 10, 0),
-                Padding = new Padding(14, 10, 14, 10)
-            };
-            panel.Paint += delegate(object sender, PaintEventArgs e)
-            {
-                using (var pen = new Pen(Theme.Line))
-                {
-                    e.Graphics.DrawRectangle(pen, 0, 0, panel.Width - 1, panel.Height - 1);
-                }
-            };
             panel.Controls.Add(new Label
             {
-                Text = caption,
-                Font = Theme.Font(7.75f, FontStyle.Bold),
-                ForeColor = Theme.Muted,
-                AutoSize = true,
-                Location = new Point(16, 12)
+                Text = "Ближайшие и просроченные требования",
+                Dock = DockStyle.Top,
+                Height = 30,
+                Font = Ui.Font(15f, FontStyle.Bold),
+                ForeColor = Ui.Ink,
+                BackColor = Color.Transparent
             });
-            panel.Controls.Add(new Label
-            {
-                Text = value,
-                Font = Theme.Font(24f, FontStyle.Bold),
-                ForeColor = tone,
-                AutoSize = true,
-                Location = new Point(14, 32)
-            });
-            panel.Controls.Add(new Label
-            {
-                Text = hint,
-                Font = Theme.Font(8.25f),
-                ForeColor = Theme.Muted,
-                AutoSize = true,
-                Location = new Point(16, 80)
-            });
+
             return panel;
         }
 
-        private Button PrimaryButton(string text, EventHandler onClick)
+        private GlassPanel BuildOrganization(int totalRows)
         {
-            var button = new Button
+            var panel = new GlassPanel
             {
-                Text = text,
-                Height = 34,
-                AutoSize = true,
-                Padding = new Padding(14, 0, 14, 0),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = Theme.Accent,
-                ForeColor = Theme.AccentInk,
-                Font = Theme.Font(9.25f, FontStyle.Bold),
-                Cursor = Cursors.Hand,
-                Margin = new Padding(0, 0, 8, 0)
+                Dock = DockStyle.Fill,
+                Radius = 18,
+                FillAlpha = 175,
+                Padding = new Padding(16, 12, 16, 12)
             };
-            button.FlatAppearance.BorderSize = 0;
-            button.Click += onClick;
-            return button;
-        }
 
-        private Button SecondaryButton(string text, EventHandler onClick)
-        {
-            var button = new Button
+            var body = new TransparentFlow
             {
-                Text = text,
-                Height = 34,
-                AutoSize = true,
-                Padding = new Padding(14, 0, 14, 0),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = Theme.Surface,
-                ForeColor = Theme.Ink,
-                Font = Theme.Font(9.25f),
-                Cursor = Cursors.Hand
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                BackColor = Color.Transparent
             };
-            button.FlatAppearance.BorderColor = Theme.Line;
-            button.Click += onClick;
-            return button;
+            body.Controls.Add(new Label
+            {
+                Text = "ОРГАНИЗАЦИЯ",
+                Font = Ui.Font(10.5f, FontStyle.Bold),
+                ForeColor = Ui.Muted,
+                AutoSize = true,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0, 0, 0, 10)
+            });
+            body.Controls.Add(new Label
+            {
+                Text = J.Str(J.Get(_store.Profile, "shortName")),
+                Font = Ui.Font(15f, FontStyle.Bold),
+                ForeColor = Ui.Ink,
+                AutoSize = true,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0, 0, 0, 6)
+            });
+            body.Controls.Add(new Label
+            {
+                Text = "ИНН " + J.Str(J.Get(_store.Profile, "inn")) + "  ·  " + totalRows + " записей",
+                Font = Ui.Font(11.5f),
+                ForeColor = Ui.Muted,
+                AutoSize = true,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0, 0, 0, 10)
+            });
+            body.Controls.Add(new Label
+            {
+                Text = "АКТИВНА",
+                Font = Ui.Font(10.5f, FontStyle.Bold),
+                ForeColor = Ui.Emerald,
+                AutoSize = true,
+                BackColor = Color.Transparent
+            });
+            panel.Controls.Add(body);
+            return panel;
         }
     }
 }
