@@ -84,7 +84,7 @@
 
 ## 3. Текущий статус
 
-Функционально реализованы задачи `T-01`–`T-49` (включая «Контроль сроков»), модульный трек `M-01`–`M-12`, дизайн-трек `D-1`–`D-5` в объёме v1–v2 и продуктовый/ИБ-пакет `P-01`–`P-06`. Актуальная проверка: **191 тест в 20 файлах** (`npx vitest run`), `tsc --noEmit` — 0 ошибок при `strict: true`, `vite build` проходит, `npm audit --omit=dev --audit-level=high` — 0 уязвимостей.
+Функционально реализованы задачи `T-01`–`T-49` (включая «Контроль сроков»), модульный трек `M-01`–`M-12`, дизайн-трек `D-1`–`D-5` в объёме v1–v2 и продуктовый/ИБ-пакет `P-01`–`P-06`. Актуальная проверка: **191 тест в 20 файлах** (`pnpm test`), `tsc --noEmit` — 0 ошибок при `strict: true`, `vite build` проходит, `pnpm audit --prod` — 0 уязвимостей.
 
 Стартовый (web) бандл ≈ 1.35 МБ (≈ 390 КБ gzip); шрифты PDF (`cyrillicFont`, 1.96 МБ) и `jspdf`/`docx` вынесены в отдельные ленивые чанки.
 
@@ -151,7 +151,7 @@ python build_native_windows.py                 # + OT-Baza.exe и ZIP (нуже�
 **Сборка, зависимости, репозиторий**
 - Добавлена отсутствовавшая зависимость `fflate` (без неё чистый клон не проходил `tsc`).
 - Включён `strict` + `noUnusedLocals`/`noUnusedParameters` в `tsconfig.json`; удалён неиспользуемый алиас `@/*`.
-- Удалены мёртвые зависимости (`@google/genai`, `dotenv`, `express`, `motion`, `autoprefixer`, `esbuild`, `tsx`), build-пакеты перенесены в `devDependencies`; манифест переименован в `ot-baza@1.3.0`.
+- Удалены мёртвые зависимости (`@google/genai`, `dotenv`, `express`, `motion`, `autoprefixer`, `esbuild`, `tsx`), build-пакеты перенесены в `devDependencies`; манифест переименован в `ot-baza@1.4.0`.
 - Шрифты переведены на локальные `@fontsource-variable/*` — внешний Google Fonts CDN удалён.
 - Из git убраны генерируемые артефакты (≈25 МБ): `dist-offline/`, `public/app.html`, `public/download/*.exe|.zip`, `resources.o`, `test_*.exe`, `test_launcher.js`, `bun.lock`, `metadata.json`, копии AI Studio-инструкций и неиспользуемые концепт-рендеры.
 - `build_native_windows.py` переписан: проверка Node/MinGW, режим `--skip-native`, сборка `dist/` до упаковки, SHA-256 артефактов, ZIP больше не кладёт демо-БД в `data/`.
@@ -206,7 +206,7 @@ python build_native_windows.py                 # + OT-Baza.exe и ZIP (нуже�
 
 **Файлы.** В `handleRecordGeneratedDoc` при подключённой рабочей папке документ дополнительно пишется в `documents/<Категория>/<файл>` через `workspaceFolderService.writeBinaryFile`; ошибка записи показывается предупреждением, но не отменяет регистрацию документа.
 
-**Проверки.** 173 теста (19 файлов), `tsc --noEmit` — 0 ошибок, `vite build`. Сквозные браузерные сценарии: приём → 8 требований → пакет из 4 документов; перевод +3 требования; увольнение +3 и баннер «уволен»; рабочая папка получает `data/ot_database.json`, бэкап и `documents/<Категория>/*.docx`.
+**Проверки.** 191 тест (20 файлов), `tsc --noEmit` — 0 ошибок, `vite build`. Сквозные браузерные сценарии: приём → 8 требований → пакет из 4 документов; перевод +3 требования; увольнение +3 и баннер «уволен»; рабочая папка получает `data/ot_database.json`, бэкап и `documents/<Категория>/*.docx`.
 
 ---
 
@@ -216,7 +216,7 @@ python build_native_windows.py                 # + OT-Baza.exe и ZIP (нуже�
 - **Превью вкладок** (`src/components/TabPreviewPopover.tsx`): портал с реальными данными вкладки, задержка открытия 280 мс и закрытия 180 мс (с отменой при входе курсора в поповер), закрытие по `Escape`/уходу, прижатие к границам окна.
 - **Режим эффектов**: `AppSettings.visualEffects: 'glass' | 'reduced'`; атрибут `data-visual-effects` на `<html>` отключает `backdrop-filter`, тени и hover-трансформации. Системные `prefers-reduced-transparency`/`prefers-reduced-motion` действуют независимо.
 - **Модалки**: панель `AppModal` переведена на полупрозрачную подложку (`bg-white/95`, `backdrop-blur-xl`), радиус 16 px, усиленный оверлей с размытием; содержимое осталось на плотной поверхности.
-- Проверки: `tsc --noEmit` — 0 ошибок, 173 теста, `vite build`; браузерные проверки — сайдбар 236→64 px, навигация, превью с реальными данными, `data-visual-effects="reduced"`, отсутствие горизонтального переполнения на 1440×950 и 1366×768, 0 ошибок консоли.
+- Проверки: `tsc --noEmit` — 0 ошибок, 191 тест, `vite build`; браузерные проверки — сайдбар 236→64 px, навигация, превью с реальными данными, `data-visual-effects="reduced"`, отсутствие горизонтального переполнения на 1440×950 и 1366×768, 0 ошибок консоли.
 
 ---
 
@@ -227,5 +227,5 @@ python build_native_windows.py                 # + OT-Baza.exe и ZIP (нуже�
 - **Пакетный ZIP-экспорт и групповые документы (`zipExportService.ts`, `documentGenerator.ts`, `builtInTemplates.ts`)**: выгрузка выбранных/пакетных документов в один `.zip`-архив с санитизацией путей и два групповых шаблона (`tpl_group_protocol_knowledge`, `tpl_group_lna_signoff`) с поддержкой `[ТАБЛИЦА]...[/ТАБЛИЦА]` в DOCX и PDF.
 - **Пресет импорта 1С:ЗУП (`excelService.ts`, `ExcelImportModal.tsx`)**: автоматическое сопоставление кадровых колонок 1С и досоздание недостающих должностей в штатном расписании.
 - **Готовность к проверке ГИТ и календарь РФ 2026–2027 (`gitReadinessService.ts`, `DashboardView.tsx`, `deadlineService.ts`, `DeadlineControlView.tsx`)**: скоринг по 9 направлениям (100 баллов), ранжирование пробелов с переходами к проблемным разделам, экспорт отчёта в DOCX/PDF/XLSX и предзагрузка праздников РФ 2026–2027.
-- **Отказ от `xlsx` и ИБ-защита (`ooxmlWorkbookService.ts`, `storageService.ts`, `BackupModal.tsx`, `AuditLogModal.tsx`, `WindowsPortableModal.tsx`, `HelpModal.tsx`)**: уязвимая зависимость `xlsx@0.18.5` удалена (0 уязвимостей по `npm audit`), импорт/экспорт `.xlsx`/`.xlsm`/`.csv` переведён на `ooxmlWorkbookService.ts` поверх `fflate`, парсинг JSON защищён от `__proto__`/`constructor`/`prototype`, бэкапы поддерживают шифрование `PBKDF2-SHA256` (210 000 итераций) + `AES-256-GCM`, добавлен журнал аудита изменений (до 1000 записей с экспортом в `.xlsx`) и документация по подписи Windows EXE (`signtool.exe`).
-- **Проверки**: `npx vitest run` — **191/191 тест** (20 файлов), `tsc --noEmit` — 0 ошибок, `vite build` — успешно, `npm audit --omit=dev --audit-level=high` — 0 уязвимостей.
+- **Отказ от `xlsx` и ИБ-защита (`ooxmlWorkbookService.ts`, `storageService.ts`, `BackupModal.tsx`, `AuditLogModal.tsx`, `WindowsPortableModal.tsx`, `HelpModal.tsx`)**: уязвимая зависимость `xlsx@0.18.5` удалена (0 уязвимостей по `pnpm audit --prod`), импорт/экспорт `.xlsx`/`.xlsm`/`.csv` переведён на `ooxmlWorkbookService.ts` поверх `fflate`, парсинг JSON защищён от `__proto__`/`constructor`/`prototype`, бэкапы поддерживают шифрование `PBKDF2-SHA256` (210 000 итераций) + `AES-256-GCM`, добавлен журнал аудита изменений (до 1000 записей с экспортом в `.xlsx`) и документация по подписи Windows EXE (`signtool.exe`).
+- **Проверки**: `pnpm test` — **191/191 тест** (20 файлов), `pnpm lint` — 0 ошибок, `pnpm build` — успешно, `pnpm audit --prod` — 0 уязвимостей.
