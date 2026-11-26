@@ -104,23 +104,67 @@
     }
   ],
   "rules": [
-    { "id": "hire_order", "moduleId": "employees", "event": "hire", "title": "Приказ о приёме на работу", "kind": "document", "offsetDays": 0, "legalBasis": "ТК РФ, ст. 68" },
+    { "id": "hire_order", "moduleId": "employees", "event": "hire", "title": "Приказ о приёме на работу", "kind": "document", "templateId": "tpl_hire_order", "offsetDays": 0, "legalBasis": "ТК РФ, ст. 68" },
     { "id": "briefing_intro", "moduleId": "briefings", "event": "hire", "title": "Вводный инструктаж по охране труда", "kind": "deadline", "offsetDays": 0, "legalBasis": "Постановление Правительства РФ № 2464, п. 10" },
     { "id": "briefing_initial", "moduleId": "briefings", "event": "hire", "title": "Первичный инструктаж на рабочем месте", "kind": "deadline", "offsetDays": 30, "legalBasis": "Постановление Правительства РФ № 2464, п. 13" },
-    { "id": "knowledge_test", "moduleId": "briefings", "event": "hire", "title": "Проверка знаний требований охраны труда", "kind": "document", "offsetDays": 30, "periodicityMonths": 12, "legalBasis": "Постановление Правительства РФ № 2464, п. 32" },
-    { "id": "med_referral", "moduleId": "medical", "event": "hire", "title": "Направление на предварительный медосмотр", "kind": "document", "offsetDays": 0, "periodicityMonths": 12, "periodicityBySoutClass": { "2.0": 24, "3.1": 12, "3.2": 12, "3.3": 12, "3.4": 12 }, "legalBasis": "Приказ Минздрава РФ № 29н" },
-    { "id": "ppe_card", "moduleId": "ppe", "event": "hire", "title": "Карточка учёта выдачи СИЗ", "kind": "document", "offsetDays": 0, "legalBasis": "Приказ Минтруда РФ № 766н" },
+    { "id": "knowledge_test", "moduleId": "briefings", "event": "hire", "title": "Проверка знаний требований охраны труда", "kind": "document", "templateId": "tpl_protocol_knowledge", "offsetDays": 30, "periodicityMonths": 12, "legalBasis": "Постановление Правительства РФ № 2464, п. 32" },
+    { "id": "med_referral", "moduleId": "medical", "event": "hire", "title": "Направление на предварительный медосмотр", "kind": "document", "templateId": "tpl_med_referral", "offsetDays": 0, "periodicityMonths": 12, "periodicityBySoutClass": { "2.0": 24, "3.1": 12, "3.2": 12, "3.3": 12, "3.4": 12 }, "legalBasis": "Приказ Минздрава РФ № 29н" },
+    { "id": "ppe_card", "moduleId": "ppe", "event": "hire", "title": "Карточка учёта выдачи СИЗ", "kind": "document", "templateId": "tpl_siz_card", "offsetDays": 0, "legalBasis": "Приказ Минтруда РФ № 766н" },
     { "id": "periodic_briefing", "moduleId": "briefings", "event": "hire", "title": "Повторный инструктаж по охране труда", "kind": "deadline", "offsetDays": 180, "periodicityMonths": 6, "legalBasis": "Постановление Правительства РФ № 2464, п. 16" },
     { "id": "periodic_med", "moduleId": "medical", "event": "hire", "title": "Периодический медосмотр", "kind": "deadline", "offsetDays": 365, "periodicityMonths": 12, "periodicityBySoutClass": { "2.0": 24, "3.1": 12, "3.2": 12, "3.3": 12, "3.4": 12 }, "legalBasis": "Приказ Минздрава РФ № 29н" },
     { "id": "manager_training", "moduleId": "briefings", "event": "hire", "title": "Обучение по охране труда руководителей и специалистов", "kind": "deadline", "offsetDays": 60, "periodicityMonths": 36, "positionMatches": ["руководител", "начальник", "директор", "заместител", "мастер", "заведующ"], "legalBasis": "Постановление Правительства РФ № 2464, п. 46" },
-    { "id": "transfer_order", "moduleId": "employees", "event": "transfer", "title": "Приказ о переводе на другую работу", "kind": "document", "offsetDays": 0, "legalBasis": "ТК РФ, ст. 72.1" },
+    { "id": "transfer_order", "moduleId": "employees", "event": "transfer", "title": "Приказ о переводе на другую работу", "kind": "document", "templateId": "tpl_transfer_order", "offsetDays": 0, "legalBasis": "ТК РФ, ст. 72.1" },
     { "id": "transfer_briefing", "moduleId": "briefings", "event": "transfer", "title": "Внеплановый инструктаж при переводе", "kind": "deadline", "offsetDays": 0, "legalBasis": "Постановление Правительства РФ № 2464, п. 18" },
     { "id": "transfer_knowledge", "moduleId": "briefings", "event": "transfer", "title": "Проверка знаний после перевода", "kind": "deadline", "offsetDays": 30, "legalBasis": "Постановление Правительства РФ № 2464, п. 32" },
-    { "id": "dismissal_order", "moduleId": "employees", "event": "dismissal", "title": "Приказ о прекращении трудового договора", "kind": "document", "offsetDays": 0, "legalBasis": "ТК РФ, ст. 84.1" },
+    { "id": "dismissal_order", "moduleId": "employees", "event": "dismissal", "title": "Приказ о прекращении трудового договора", "kind": "document", "templateId": "tpl_dismissal_order", "offsetDays": 0, "legalBasis": "ТК РФ, ст. 84.1" },
     { "id": "ppe_return", "moduleId": "ppe", "event": "dismissal", "title": "Возврат СИЗ при увольнении", "kind": "deadline", "offsetDays": 0, "legalBasis": "Приказ Минтруда РФ № 766н" },
     { "id": "personal_card_close", "moduleId": "employees", "event": "dismissal", "title": "Закрытие личной карточки работника", "kind": "deadline", "offsetDays": 0, "legalBasis": "ТК РФ, ст. 84.1" },
-    { "id": "incident_act", "moduleId": "incidents", "event": "incident", "title": "Акт о несчастном случае на производстве", "kind": "document", "offsetDays": 1, "legalBasis": "ТК РФ, ст. 230" },
+    { "id": "incident_act", "moduleId": "incidents", "event": "incident", "title": "Акт о несчастном случае на производстве", "kind": "document", "templateId": "tpl_incident_act", "offsetDays": 1, "legalBasis": "ТК РФ, ст. 230" },
     { "id": "incident_investigation", "moduleId": "incidents", "event": "incident", "title": "Расследование обстоятельств и причин", "kind": "deadline", "offsetDays": 3, "legalBasis": "ТК РФ, ст. 229.1" },
     { "id": "incident_briefing", "moduleId": "briefings", "event": "incident", "title": "Внеплановый инструктаж после несчастного случая", "kind": "deadline", "offsetDays": 7, "legalBasis": "Постановление Правительства РФ № 2464, п. 18" }
   ]
-}
+,
+  "templates": [
+    {
+      "id": "tpl_hire_order",
+      "name": "Приказ о приёме на работу",
+      "category": "Приказы",
+      "content": "ПРИКАЗ № {Номер} от {Дата_события}\n\n{Организация} (ИНН {ИНН})\n\nО ПРИЁМЕ НА РАБОТУ\n\nПРИНЯТЬ {ФИО} на должность {Должность} в подразделение {Подразделение} с {Дата_приёма}.\nУстановить должностной оклад согласно штатному расписанию.\nОснование: трудовой договор.\n\nДиректор ____________________ {Директор}\n\nС приказом ознакомлен(а): ______________ {ФИО}"
+    },
+    {
+      "id": "tpl_transfer_order",
+      "name": "Приказ о переводе на другую работу",
+      "category": "Приказы",
+      "content": "ПРИКАЗ № {Номер} от {Дата_события}\n\n{Организация} (ИНН {ИНН})\n\nО ПЕРЕВОДЕ НА ДРУГУЮ РАБОТУ\n\nПЕРЕВЕСТИ {ФИО} с прежней должности {Должность} на новую должность с {Дата_события}.\nОснование: соглашение сторон трудового договора.\n\nДиректор ____________________ {Директор}\n\nС приказом ознакомлен(а): ______________ {ФИО}"
+    },
+    {
+      "id": "tpl_dismissal_order",
+      "name": "Приказ о прекращении трудового договора",
+      "category": "Приказы",
+      "content": "ПРИКАЗ № {Номер} от {Дата_события}\n\n{Организация} (ИНН {ИНН})\n\nО ПРЕКРАЩЕНИИ ТРУДОВОГО ДОГОВОРА\n\nУВОЛИТЬ {ФИО}, должность {Должность}, {Дата_события}.\nОснование: заявление работника, пункт 3 части 1 статьи 77 ТК РФ.\n\nДиректор ____________________ {Директор}\n\nС приказом ознакомлен(а): ______________ {ФИО}"
+    },
+    {
+      "id": "tpl_incident_act",
+      "name": "Акт о несчастном случае на производстве",
+      "category": "Несчастные случаи",
+      "content": "АКТ № {Номер} от {Дата_события}\n\n{Организация} (ИНН {ИНН})\n\nО НЕСЧАСТНОМ СЛУЧАЕ НА ПРОИЗВОДСТВЕ\n\nПострадавший: {ФИО}, должность {Должность}, подразделение {Подразделение}.\nДата происшествия: {Дата_события}.\nОбстоятельства: установлены комиссией по расследованию.\n\nПредседатель комиссии ____________________ {Директор}"
+    },
+    {
+      "id": "tpl_med_referral",
+      "name": "Направление на медицинский осмотр",
+      "category": "Медосмотры и МО",
+      "content": "НАПРАВЛЕНИЕ НА МЕДИЦИНСКИЙ ОСМОТР\n\n{Организация} (ИНН {ИНН})\n\nРаботник: {ФИО}\nДолжность: {Должность}\nПодразделение: {Подразделение}\nДата приёма: {Дата_приёма}\n\nНаправляется на медицинский осмотр в соответствии с Приказом Минздрава РФ № 29н.\nДата: {Дата_события}\n\nРуководитель ____________________ {Директор}"
+    },
+    {
+      "id": "tpl_siz_card",
+      "name": "Личная карточка учёта выдачи СИЗ",
+      "category": "Выдача СИЗ",
+      "content": "ЛИЧНАЯ КАРТОЧКА УЧЁТА ВЫДАЧИ СИЗ\n\n{Организация} (ИНН {ИНН})\n\nРаботник: {ФИО}\nТабельный номер: {Табельный}\nДолжность: {Должность}\nПодразделение: {Подразделение}\n\nВыдано: комплект СИЗ согласно нормам Приказа Минтруда РФ № 766н.\nДата выдачи: {Дата_события}\n\nОтветственный ____________________ {Директор}"
+    },
+    {
+      "id": "tpl_protocol_knowledge",
+      "name": "Протокол проверки знаний требований охраны труда",
+      "category": "Инструктажи и протоколы",
+      "content": "ПРОТОКОЛ № {Номер} от {Дата_события}\n\n{Организация} (ИНН {ИНН})\n\nПРОВЕРКА ЗНАНИЙ ТРЕБОВАНИЙ ОХРАНЫ ТРУДА\n\nПроверяемый: {ФИО}, должность {Должность}.\nРезультат: знания требований охраны труда подтверждены.\nОснование: Постановление Правительства РФ № 2464.\n\nПредседатель комиссии ____________________ {Директор}"
+    }
+  ]}

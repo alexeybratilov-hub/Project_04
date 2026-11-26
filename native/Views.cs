@@ -41,6 +41,10 @@ namespace OtBaza
             surface.Controls.Add(toolbar);
 
             toolbar.Controls.Add(ToolButton("Добавить запись", delegate { AddRow(); }, true));
+            if (J.Str(J.Get(_tab, "moduleId")) == "employees")
+            {
+                toolbar.Controls.Add(ToolButton("Карточка", delegate { OpenEmployeeCard(); }, false));
+            }
             toolbar.Controls.Add(ToolButton("Изменить", delegate { EditRow(); }, false));
             toolbar.Controls.Add(ToolButton("Удалить", delegate { DeleteRows(); }, false));
             toolbar.Controls.Add(ToolButton("Экспорт CSV", delegate { ExportCsv(); }, false));
@@ -92,7 +96,13 @@ namespace OtBaza
             _grid.EnableHeadersVisualStyles = false;
             _grid.CellDoubleClick += delegate(object sender, DataGridViewCellEventArgs e)
             {
-                if (e.RowIndex >= 0) EditRow();
+                if (e.RowIndex < 0) return;
+                if (J.Str(J.Get(_tab, "moduleId")) == "employees")
+                {
+                    OpenEmployeeCard();
+                    return;
+                }
+                EditRow();
             };
             surface.Controls.Add(_grid);
             _grid.BringToFront();
@@ -177,6 +187,22 @@ namespace OtBaza
             return _grid.CurrentRow.Tag as Dictionary<string, object>;
         }
 
+        private void OpenEmployeeCard()
+        {
+            var row = SelectedRow();
+            if (row == null)
+            {
+                MessageBox.Show("Выберите работника.", "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            using (var card = new EmployeeCardForm(_store, row, _onChanged))
+            {
+                card.ShowDialog(FindForm());
+            }
+            Reload();
+            _onChanged();
+        }
+
         private void AddRow()
         {
             using (var dialog = new RowEditorForm(Columns, null, "Новая запись"))
@@ -189,7 +215,7 @@ namespace OtBaza
 
                 if (J.Str(J.Get(_tab, "moduleId")) == "employees")
                 {
-                    string hireDate = J.Str(J.Get(row, "emp_hire_date"));
+                    string hireDate = Employees.Read(_store, row).HireDate;
                     if (hireDate.Length == 0) hireDate = ObligationsEngine.TodayIso();
                     ObligationsEngine.RegisterEvent(_store, row, "hire", hireDate);
                 }
@@ -204,8 +230,7 @@ namespace OtBaza
             {
                 MessageBox.Show("Выберите строку.", "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
-            }
-            using (var dialog = new RowEditorForm(Columns, row, "Изменение записи"))
+            }            using (var dialog = new RowEditorForm(Columns, row, "Изменение записи"))
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
                 foreach (var pair in dialog.Result)

@@ -79,7 +79,7 @@ namespace OtBaza
             });
             J.Put(store.Entity, "employeeEvents", events.ToArray());
 
-            string position = J.Str(J.Get(employeeRow, "emp_position"));
+            string position = Employees.Read(store, employeeRow).Position;
             string soutClass = ResolveSoutClass(store, position);
 
             foreach (ObligationRule rule in store.Catalog.Rules.Where(r => r.Event == eventType))
@@ -196,7 +196,7 @@ namespace OtBaza
             foreach (object item in J.Arr(J.Get(employees, "rows")))
             {
                 var row = J.Obj(item);
-                if (row != null && J.Str(J.Get(row, "id")) == rowId) return J.Str(J.Get(row, "emp_fio"));
+                if (row != null && J.Str(J.Get(row, "id")) == rowId) return Employees.Read(store, row).Fio;
             }
             return rowId;
         }

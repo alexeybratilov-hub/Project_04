@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using System.Windows.Forms;
@@ -98,6 +99,31 @@ namespace OtBaza
 
                 ObligationsEngine.RegisterEvent(store, row, "hire", ObligationsEngine.TodayIso());
                 check(store.Obligations.Count == 9, "приём: 9 требований (включая обучение руководителя), фактически " + store.Obligations.Count);
+
+                var hireOrder = store.Obligations.Select(J.Obj)
+                    .First(o => J.Str(J.Get(o, "requirementId")) == "hire_order");
+                string docPath = DocxService.GenerateForObligation(store, hireOrder);
+                check(docPath != null && File.Exists(docPath), "документ Word сформирован");
+                if (docPath != null)
+                {
+                    check(docPath.Contains(Path.Combine("documents", "Приказы")), "документ сохранён в documents/<категория>");
+                    using (var zip = System.IO.Compression.ZipFile.OpenRead(docPath))
+                    {
+                        var documentEntry = zip.GetEntry("word/document.xml");
+                        check(documentEntry != null, "DOCX содержит word/document.xml");
+                        if (documentEntry != null)
+                        {
+                            using (var reader = new StreamReader(documentEntry.Open()))
+                            {
+                                string xml = reader.ReadToEnd();
+                                check(xml.Contains("Тестов Иван Иванович"), "в документ подставлено ФИО");
+                                check(xml.Contains("Начальник цеха"), "в документ подставлена должность");
+                                check(xml.Contains("ООО «Катания»") || xml.Contains("Катания"), "в документе есть организация");
+                            }
+                        }
+                    }
+                    check(J.Arr(J.Get(store.Entity, "generatedDocs")).Count >= 1, "запись добавлена в реестр документов");
+                }
 
                 var periodic = store.Obligations
                     .Select(J.Obj)

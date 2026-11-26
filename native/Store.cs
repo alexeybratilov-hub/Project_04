@@ -77,15 +77,29 @@ namespace OtBaza
         public string TemplateId;
     }
 
+    internal sealed class TemplateDef
+    {
+        public string Id;
+        public string Name;
+        public string Category;
+        public string Content;
+    }
+
     internal sealed class Catalog
     {
         public List<ModuleDef> Modules = new List<ModuleDef>();
         public List<ObligationRule> Rules = new List<ObligationRule>();
+        public List<TemplateDef> Templates = new List<TemplateDef>();
         public List<Dictionary<string, object>> DefaultColumns = new List<Dictionary<string, object>>();
 
         public ModuleDef Module(string id)
         {
             return Modules.FirstOrDefault(m => m.Id == id);
+        }
+
+        public TemplateDef Template(string id)
+        {
+            return Templates.FirstOrDefault(t => t.Id == id);
         }
 
         public static Catalog Load()
@@ -119,6 +133,19 @@ namespace OtBaza
                     if (columnDict != null) module.Columns.Add(columnDict);
                 }
                 catalog.Modules.Add(module);
+            }
+
+            foreach (object item in J.Arr(J.Get(root, "templates")))
+            {
+                var rawTemplate = J.Obj(item);
+                if (rawTemplate == null) continue;
+                catalog.Templates.Add(new TemplateDef
+                {
+                    Id = J.Str(J.Get(rawTemplate, "id")),
+                    Name = J.Str(J.Get(rawTemplate, "name")),
+                    Category = J.Str(J.Get(rawTemplate, "category")),
+                    Content = J.Str(J.Get(rawTemplate, "content"))
+                });
             }
 
             foreach (object item in J.Arr(J.Get(root, "rules")))
