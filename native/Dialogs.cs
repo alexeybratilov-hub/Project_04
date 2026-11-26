@@ -8,7 +8,7 @@ using System.Windows.Forms;
 namespace OtBaza
 {
     /// <summary>Редактор строки: controls строятся по описанию колонок модуля.</summary>
-    internal sealed class RowEditorForm : Form
+    internal sealed class RowEditorForm : GlassForm
     {
         public Dictionary<string, object> Result = new Dictionary<string, object>();
 
@@ -18,32 +18,40 @@ namespace OtBaza
         private readonly Dictionary<string, string> _types = new Dictionary<string, string>();
 
         public RowEditorForm(List<Dictionary<string, object>> columns, Dictionary<string, object> existing, string title)
+            : base(title, new Size(660, 600))
         {
             _columns = columns;
             _existing = existing != null ? new Dictionary<string, object>(existing) : new Dictionary<string, object>();
 
-            Text = title;
-            Width = 640;
-            Height = 560;
-            MinimumSize = new Size(520, 420);
-            StartPosition = FormStartPosition.CenterParent;
-            BackColor = Theme.Canvas;
-            Font = Theme.Font(9.5f);
-            FormBorderStyle = FormBorderStyle.Sizable;
-            MaximizeBox = false;
-            MinimizeBox = false;
+            var footer = new TransparentFlow
+            {
+                Dock = DockStyle.Bottom,
+                Height = 54,
+                FlowDirection = FlowDirection.RightToLeft,
+                Padding = new Padding(0, 10, 0, 0)
+            };
+            Body.Controls.Add(footer);
 
-            var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(16, 12, 16, 12) };
-            Controls.Add(scroll);
+            var save = new PillButton { Text = "Сохранить", Primary = true, Width = 138, Height = 36, Margin = new Padding(8, 0, 0, 0) };
+            save.Click += delegate { SaveAndClose(); };
+            footer.Controls.Add(save);
 
-            var table = new TableLayoutPanel
+            var cancel = new PillButton { Text = "Отмена", Width = 118, Height = 36 };
+            cancel.Click += delegate { Close(); };
+            footer.Controls.Add(cancel);
+
+            var scroll = new TransparentPanel { Dock = DockStyle.Fill, AutoScroll = true };
+            Body.Controls.Add(scroll);
+            scroll.BringToFront();
+
+            var table = new TransparentTable
             {
                 Dock = DockStyle.Top,
                 AutoSize = true,
                 ColumnCount = 2,
-                BackColor = Theme.Canvas
+                Padding = new Padding(0, 0, 6, 0)
             };
-            table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
+            table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 200));
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             scroll.Controls.Add(table);
 
@@ -52,63 +60,24 @@ namespace OtBaza
                 string id = J.Str(J.Get(column, "id"));
                 string name = J.Str(J.Get(column, "name"));
                 string type = J.Str(J.Get(column, "type"));
-                bool required = J.Str(J.Get(column, "required")) == "true";
+                bool required = J.Str(J.Get(column, "required")) == "True";
                 _types[id] = type;
 
-                var label = new Label
+                table.Controls.Add(new Label
                 {
                     Text = name + (required ? " *" : string.Empty),
                     AutoSize = true,
-                    ForeColor = Theme.Ink,
+                    ForeColor = Ui.Ink,
+                    BackColor = Color.Transparent,
                     Margin = new Padding(0, 10, 8, 6),
-                    Font = Theme.Font(9.25f, required ? FontStyle.Bold : FontStyle.Regular)
-                };
-                table.Controls.Add(label);
+                    Font = Ui.Font(12f, required ? FontStyle.Bold : FontStyle.Regular)
+                });
 
                 object value = J.Get(_existing, id);
                 table.Controls.Add(BuildControl(column, id, type, value));
             }
 
-            var buttons = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Bottom,
-                Height = 58,
-                FlowDirection = FlowDirection.RightToLeft,
-                Padding = new Padding(16, 12, 16, 12)
-            };
-            Controls.Add(buttons);
-
-            var save = new Button
-            {
-                Text = "Сохранить",
-                Width = 130,
-                Height = 34,
-                FlatStyle = FlatStyle.Flat,
-                BackColor = Theme.Accent,
-                ForeColor = Theme.AccentInk,
-                Font = Theme.Font(9.25f, FontStyle.Bold),
-                Cursor = Cursors.Hand
-            };
-            save.FlatAppearance.BorderSize = 0;
-            save.Click += delegate { SaveAndClose(); };
-            buttons.Controls.Add(save);
-
-            var cancel = new Button
-            {
-                Text = "Отмена",
-                Width = 110,
-                Height = 34,
-                FlatStyle = FlatStyle.Flat,
-                BackColor = Theme.Surface,
-                ForeColor = Theme.Ink,
-                Cursor = Cursors.Hand
-            };
-            cancel.FlatAppearance.BorderColor = Theme.Line;
-            cancel.DialogResult = DialogResult.Cancel;
-            buttons.Controls.Add(cancel);
-
-            AcceptButton = save;
-            CancelButton = cancel;
+            KeyPreview = true;
         }
 
         private Control BuildControl(Dictionary<string, object> column, string id, string type, object value)
@@ -125,8 +94,9 @@ namespace OtBaza
                     ShowCheckBox = true,
                     Checked = text.Length > 0,
                     Value = ObligationsEngine.ParseIso(text),
-                    Width = 180,
-                    Margin = new Padding(0, 6, 0, 4)
+                    Width = 190,
+                    Font = Ui.Font(12f),
+                    Margin = new Padding(0, 7, 0, 4)
                 };
                 _getters[id] = delegate
                 {
@@ -139,8 +109,9 @@ namespace OtBaza
                 var combo = new ComboBox
                 {
                     DropDownStyle = ComboBoxStyle.DropDownList,
-                    Width = 280,
-                    Margin = new Padding(0, 6, 0, 4)
+                    Width = 300,
+                    Font = Ui.Font(12f),
+                    Margin = new Padding(0, 7, 0, 4)
                 };
                 combo.Items.Add(string.Empty);
                 foreach (object option in J.Arr(J.Get(column, "options")))
@@ -156,9 +127,11 @@ namespace OtBaza
                 var check = new CheckBox
                 {
                     Text = "да",
-                    Checked = text == "true" || text == "1",
+                    Checked = text == "True" || text == "true" || text == "1",
                     AutoSize = true,
-                    Margin = new Padding(0, 8, 0, 4)
+                    Font = Ui.Font(12f),
+                    BackColor = Color.Transparent,
+                    Margin = new Padding(0, 9, 0, 4)
                 };
                 _getters[id] = delegate { return check.Checked ? "true" : "false"; };
                 control = check;
@@ -168,15 +141,16 @@ namespace OtBaza
                 var box = new TextBox
                 {
                     Text = text,
-                    Width = 360,
-                    Margin = new Padding(0, 6, 0, 4),
-                    Font = Theme.Font(9.5f)
+                    Width = 380,
+                    Font = Ui.Font(12f),
+                    BorderStyle = BorderStyle.FixedSingle,
+                    Margin = new Padding(0, 7, 0, 4)
                 };
                 _getters[id] = delegate { return box.Text.Trim(); };
                 control = box;
             }
 
-            var host = new Panel { AutoSize = true, Dock = DockStyle.Fill };
+            var host = new TransparentPanel { AutoSize = true, Dock = DockStyle.Fill };
             host.Controls.Add(control);
             return host;
         }
@@ -188,7 +162,7 @@ namespace OtBaza
             {
                 string id = J.Str(J.Get(column, "id"));
                 string name = J.Str(J.Get(column, "name"));
-                bool required = J.Str(J.Get(column, "required")) == "true";
+                bool required = J.Str(J.Get(column, "required")) == "True";
                 object value = _getters.ContainsKey(id) ? _getters[id]() : string.Empty;
                 string text = J.Str(value);
 
@@ -219,7 +193,7 @@ namespace OtBaza
     }
 
     /// <summary>Каталог модулей: включение/выключение и создание своего этапа.</summary>
-    internal sealed class ModulesForm : Form
+    internal sealed class ModulesForm : GlassForm
     {
         private readonly Store _store;
         private readonly CheckedListBox _list;
@@ -227,119 +201,73 @@ namespace OtBaza
         private readonly TextBox _columns;
 
         public ModulesForm(Store store)
+            : base("Модули этапов", new Size(820, 680))
         {
             _store = store;
-            Text = "Модули этапов";
-            Width = 780;
-            Height = 640;
-            MinimumSize = new Size(680, 520);
-            StartPosition = FormStartPosition.CenterParent;
-            BackColor = Theme.Canvas;
-            Font = Theme.Font(9.5f);
-            MaximizeBox = false;
-            MinimizeBox = false;
+
+            var bottom = new TransparentPanel { Dock = DockStyle.Bottom, Height = 152 };
+            Body.Controls.Add(bottom);
+
+            var apply = new PillButton { Text = "Применить", Primary = true, Width = 150, Height = 38, Location = new Point(0, 8) };
+            apply.Click += delegate { Apply(); };
+            bottom.Controls.Add(apply);
+
+            var close = new PillButton { Text = "Закрыть", Width = 120, Height = 38, Location = new Point(162, 10) };
+            close.Click += delegate { Close(); };
+            bottom.Controls.Add(close);
+
+            var create = new PillButton { Text = "Создать модуль", Width = 156, Height = 34, Location = new Point(0, 64) };
+            create.Click += delegate { CreateModule(); };
+            bottom.Controls.Add(create);
+
+            _name = new TextBox { Width = 240, Location = new Point(168, 64), Font = Ui.Font(12f) };
+            bottom.Controls.Add(_name);
+
+            _columns = new TextBox { Width = 330, Location = new Point(416, 64), Font = Ui.Font(12f) };
+            bottom.Controls.Add(_columns);
+
+            bottom.Controls.Add(new Label
+            {
+                Text = "Название этапа",
+                Location = new Point(168, 98),
+                AutoSize = true,
+                ForeColor = Ui.Muted,
+                BackColor = Color.Transparent,
+                Font = Ui.Font(10.5f)
+            });
+            bottom.Controls.Add(new Label
+            {
+                Text = "Колонки через запятую (необязательно)",
+                Location = new Point(416, 98),
+                AutoSize = true,
+                ForeColor = Ui.Muted,
+                BackColor = Color.Transparent,
+                Font = Ui.Font(10.5f)
+            });
 
             var intro = new Label
             {
                 Dock = DockStyle.Top,
                 Height = 58,
-                Padding = new Padding(18, 12, 18, 8),
-                ForeColor = Theme.Muted,
-                Font = Theme.Font(9f),
+                ForeColor = Ui.Muted,
+                BackColor = Color.Transparent,
+                Font = Ui.Font(11.5f),
                 Text = "Модуль — это этап работы: вкладка со своими колонками и правилами. Отключение скрывает этап, но не удаляет данные. Новый модуль создаётся копированием структуры и наполняется своим содержимым."
             };
-            Controls.Add(intro);
+            Body.Controls.Add(intro);
 
             _list = new CheckedListBox
             {
                 Dock = DockStyle.Fill,
                 CheckOnClick = true,
-                Font = Theme.Font(9.25f),
+                Font = Ui.Font(12f),
                 BorderStyle = BorderStyle.FixedSingle,
-                Padding = new Padding(8)
+                BackColor = Color.White,
+                IntegralHeight = false
             };
             _list.ItemCheck += OnItemCheck;
-            Controls.Add(_list);
-
-            var bottom = new Panel { Dock = DockStyle.Bottom, Height = 168, Padding = new Padding(18, 8, 18, 12) };
-            Controls.Add(bottom);
-
-            var newTitle = new Label
-            {
-                Text = "Свой этап (модуль создаётся копированием структуры):",
-                Dock = DockStyle.Top,
-                Height = 24,
-                ForeColor = Theme.Ink,
-                Font = Theme.Font(9f, FontStyle.Bold)
-            };
-            bottom.Controls.Add(newTitle);
-
-            _name = new TextBox { Width = 300, Location = new Point(0, 30) };
-            _columns = new TextBox { Width = 380, Location = new Point(310, 30) };
-            bottom.Controls.Add(_name);
-            bottom.Controls.Add(_columns);
-            bottom.Controls.Add(new Label
-            {
-                Text = "Название этапа",
-                Location = new Point(0, 56),
-                AutoSize = true,
-                ForeColor = Theme.Muted,
-                Font = Theme.Font(8.25f)
-            });
-            bottom.Controls.Add(new Label
-            {
-                Text = "Колонки через запятую (необязательно)",
-                Location = new Point(310, 56),
-                AutoSize = true,
-                ForeColor = Theme.Muted,
-                Font = Theme.Font(8.25f)
-            });
-
-            var create = new Button
-            {
-                Text = "Создать модуль",
-                Location = new Point(700, 28),
-                Size = new Size(150, 34),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = Theme.Surface,
-                ForeColor = Theme.Ink,
-                Cursor = Cursors.Hand
-            };
-            create.FlatAppearance.BorderColor = Theme.Line;
-            create.Click += delegate { CreateModule(); };
-            bottom.Controls.Add(create);
-
-            var apply = new Button
-            {
-                Text = "Применить",
-                Location = new Point(0, 104),
-                Size = new Size(150, 38),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = Theme.Accent,
-                ForeColor = Theme.AccentInk,
-                Font = Theme.Font(9.25f, FontStyle.Bold),
-                Cursor = Cursors.Hand
-            };
-            apply.FlatAppearance.BorderSize = 0;
-            apply.Click += delegate { Apply(); };
-            bottom.Controls.Add(apply);
-
-            var close = new Button
-            {
-                Text = "Закрыть",
-                Location = new Point(162, 104),
-                Size = new Size(120, 38),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = Theme.Surface,
-                ForeColor = Theme.Ink,
-                Cursor = Cursors.Hand,
-                DialogResult = DialogResult.OK
-            };
-            close.FlatAppearance.BorderColor = Theme.Line;
-            bottom.Controls.Add(close);
-
-            AcceptButton = apply;
-            CancelButton = close;
+            Body.Controls.Add(_list);
+            _list.BringToFront();
 
             FillList();
         }
@@ -378,8 +306,8 @@ namespace OtBaza
                 if (!wanted && installed && !item.Module.Base) _store.DisableModule(item.Module.Id);
             }
             _store.Save();
-            MessageBox.Show("Список этапов обновлён.", "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Information);
             FillList();
+            MessageBox.Show("Список этапов обновлён.", "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         private void CreateModule()
@@ -396,7 +324,7 @@ namespace OtBaza
             _columns.Clear();
             FillList();
             MessageBox.Show(
-                "Модуль «" + title + "» создан: вкладка и правила для него не нужны — структура скопирована, содержимое наполняется в таблице.",
+                "Модуль «" + title + "» создан: структура скопирована, содержимое наполняется в таблице.",
                 "ОТ-База",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);

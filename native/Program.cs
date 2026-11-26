@@ -34,11 +34,13 @@ namespace OtBaza
                 Catalog catalog = Catalog.Load();
                 Store store = Store.Open(catalog);
                 string startTab = null;
+                string demo = null;
                 for (int i = 0; i < args.Length - 1; i++)
                 {
                     if (args[i] == "--tab") startTab = args[i + 1];
+                    if (args[i] == "--demo") demo = args[i + 1];
                 }
-                Application.Run(new MainForm(store, startTab));
+                Application.Run(new MainForm(store, startTab, demo));
             }
             catch (Exception ex)
             {

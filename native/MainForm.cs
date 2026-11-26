@@ -47,11 +47,16 @@ namespace OtBaza
         private string _currentTabId = string.Empty;
 
         private readonly string _startModuleId;
+        private readonly string _demo;
+        private System.Windows.Forms.Timer _previewTimer;
+        private TabPreviewForm _preview;
 
-        public MainForm(Store store, string startModuleId)
+        public MainForm(Store store, string startModuleId, string demo)
         {
             _startModuleId = startModuleId;
+            _demo = demo;
             _store = store;
+            Ui.Reduced = J.Str(J.Get(_store.Settings, "visualEffects")) == "reduced";
 
             Text = "ОТ-База — база данных по охране труда";
             WindowState = FormWindowState.Normal;
@@ -153,6 +158,18 @@ namespace OtBaza
                 ModuleDef startModule = string.IsNullOrEmpty(_startModuleId) ? null : _store.Catalog.Module(_startModuleId);
                 if (startModule != null) ShowModuleTab(startModule);
                 else ShowHome();
+
+                if (_demo == "modules") ShowModulesDialog();
+                else if (_demo == "row") OpenDemoRowDialog();
+                else if (_demo == "preview")
+                {
+                    var employees = _store.FindTabByModule("employees");
+                    if (employees != null)
+                    {
+                        ShowTab(employees);
+                        BeginInvoke((MethodInvoker)delegate { ShowPreview(employees); });
+                    }
+                }
             };
         }
 
@@ -209,6 +226,7 @@ namespace OtBaza
                 try { System.Diagnostics.Process.Start("explorer.exe", "\"" + _store.DataRoot + "\""); }
                 catch (Exception ex) { MessageBox.Show(ex.Message, "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
             }));
+            _sidebar.Controls.Add(NavButton(Ui.Reduced ? "Облегчённый режим" : "Стекло включено", false, delegate { ToggleEffects(); }));
 
             _sidebar.ResumeLayout();
         }
@@ -257,12 +275,12 @@ namespace OtBaza
                 string tabId = J.Str(J.Get(tab, "id"));
                 string name = J.Str(J.Get(tab, "name"));
                 string caption = name + "  (" + J.Arr(J.Get(tab, "rows")).Count + ")";
-                _tabs.Controls.Add(TabButton(caption, _currentView == "tab:" + tabId, delegate { ShowTabById(tabId); }));
+                _tabs.Controls.Add(TabButton(caption, _currentView == "tab:" + tabId, delegate { ShowTabById(tabId); }, tab));
             }
             _tabs.ResumeLayout();
         }
 
-        private Control TabButton(string text, bool active, EventHandler onClick)
+        private Control TabButton(string text, bool active, EventHandler onClick, Dictionary<string, object> tab = null)
         {
             int width = TextRenderer.MeasureText(text, Ui.Font(12.5f, FontStyle.Bold)).Width + 30;
             var button = new PillButton
@@ -275,7 +293,107 @@ namespace OtBaza
                 Margin = new Padding(0, 0, 6, 0)
             };
             button.Click += onClick;
+            if (tab != null)
+            {
+                button.MouseEnter += delegate { ShowPreviewDelayed(tab); };
+                button.MouseLeave += delegate { HidePreview(); };
+                button.Click += delegate { HidePreview(); };
+            }
             return button;
+        }
+
+        private void ShowPreviewDelayed(Dictionary<string, object> tab)
+        {
+            HidePreview();
+            if (_previewTimer == null)
+            {
+                _previewTimer = new System.Windows.Forms.Timer { Interval = 280 };
+            }
+            _previewTimer.Stop();
+            _previewTimer.Tick -= OnPreviewTick;
+            _previewTimer.Tag = tab;
+            _previewTimer.Tick += OnPreviewTick;
+            _previewTimer.Start();
+        }
+
+        private void OnPreviewTick(object sender, EventArgs e)
+        {
+            _previewTimer.Stop();
+            var tab = _previewTimer.Tag as Dictionary<string, object>;
+            if (tab != null) ShowPreview(tab);
+        }
+
+        private void ShowPreview(Dictionary<string, object> tab)
+        {
+            try
+            {
+                HidePreview();
+                var rows = J.Arr(J.Get(tab, "rows"));
+                var columns = J.Arr(J.Get(tab, "columns"));
+                string moduleId = J.Str(J.Get(tab, "moduleId"));
+                ModuleDef module = _store.Catalog.Module(moduleId);
+                string subtitle = module != null ? module.Title : "Этап";
+
+                var lines = new List<string>();
+                foreach (object rowObject in rows.Take(3))
+                {
+                    var row = J.Obj(rowObject);
+                    var parts = new List<string>();
+                    foreach (object columnObject in columns.Take(2))
+                    {
+                        var column = J.Obj(columnObject);
+                        string value = J.Str(J.Get(row, J.Str(J.Get(column, "id"))));
+                        if (value.Length > 0) parts.Add(value);
+                    }
+                    if (parts.Count > 0) lines.Add("· " + string.Join(" · ", parts.ToArray()));
+                }
+                if (lines.Count == 0) lines.Add("Пока нет записей");
+
+                string meta = string.Format("{0} записей · {1} столбцов", rows.Count, columns.Count);
+                _preview = new TabPreviewForm(J.Str(J.Get(tab, "name")), subtitle, meta, lines);
+                _preview.ShowNear(Cursor.Position);
+            }
+            catch
+            {
+                // Превью не должно мешать работе.
+            }
+        }
+
+        private void HidePreview()
+        {
+            if (_previewTimer != null) _previewTimer.Stop();
+            if (_preview != null)
+            {
+                try { _preview.Close(); } catch { }
+                _preview = null;
+            }
+        }
+
+        private void ToggleEffects()
+        {
+            Ui.Reduced = !Ui.Reduced;
+            _store.Settings["visualEffects"] = Ui.Reduced ? "reduced" : "glass";
+            _store.Save();
+            RebuildAll();
+            if (_currentView == "home") ShowHome();
+            else if (_currentView == "deadlines") ShowDeadlines();
+            else if (_currentView.StartsWith("tab:"))
+            {
+                var tab = _store.FindTab(_currentView.Substring(4));
+                if (tab != null) ShowTab(tab); else ShowHome();
+            }
+        }
+
+        private void OpenDemoRowDialog()
+        {
+            var employees = _store.FindTabByModule("employees");
+            if (employees == null) return;
+            ShowTab(employees);
+            var columns = J.Arr(J.Get(employees, "columns")).Select(J.Obj).Where(c => c != null).ToList();
+            using (var dialog = new RowEditorForm(columns, null, "Новая запись"))
+            {
+                dialog.ShowDialog(this);
+            }
         }
 
         private void SetView(string view)

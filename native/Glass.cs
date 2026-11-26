@@ -20,6 +20,9 @@ namespace OtBaza
         public static readonly Color Emerald = Color.FromArgb(0x04, 0x78, 0x57);
         public static readonly Color Blue = Color.FromArgb(0x1D, 0x4E, 0xD8);
 
+        /// <summary>Облегчённый режим: без размытия/прозрачности и теней.</summary>
+        public static bool Reduced;
+
         public static Font Font(float pixels, FontStyle style)
         {
             return new Font("Segoe UI", pixels, style, GraphicsUnit.Pixel);
@@ -47,6 +50,14 @@ namespace OtBaza
         public static void PaintCanvas(Graphics g, Rectangle area)
         {
             if (area.Width <= 0 || area.Height <= 0) return;
+            if (Reduced)
+            {
+                using (var solid = new SolidBrush(Color.FromArgb(0xF3, 0xF7, 0xFD)))
+                {
+                    g.FillRectangle(solid, area);
+                }
+                return;
+            }
             using (var brush = new LinearGradientBrush(area, CanvasTop, CanvasBottom, 90f))
             {
                 g.FillRectangle(brush, area);
@@ -75,6 +86,22 @@ namespace OtBaza
         {
             if (bounds.Width <= 4 || bounds.Height <= 4) return;
             var body = new Rectangle(bounds.X + 1, bounds.Y + 1, bounds.Width - 3, bounds.Height - 3);
+
+            if (Reduced)
+            {
+                using (var path = Round(body, radius))
+                {
+                    using (var solid = new SolidBrush(Color.White))
+                    {
+                        g.FillPath(solid, path);
+                    }
+                    using (var border = new Pen(Line, 1f))
+                    {
+                        g.DrawPath(border, path);
+                    }
+                }
+                return;
+            }
 
             if (shadow)
             {
@@ -324,6 +351,159 @@ namespace OtBaza
         protected override void OnPaintBackground(PaintEventArgs e)
         {
             Ui.PaintCanvas(e.Graphics, ClientRectangle);
+        }
+    }
+
+    /// <summary>Стеклянная модалка: без системной рамки, с заголовком и перетаскиванием.</summary>
+    internal class GlassForm : Form
+    {
+        protected readonly TransparentPanel Body;
+        private readonly string _caption;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool ReleaseCapture();
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, int wParam, int lParam);
+
+        public GlassForm(string caption, Size size)
+        {
+            _caption = caption;
+            Text = caption;
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.CenterParent;
+            ShowInTaskbar = false;
+            Size = size;
+            MinimumSize = new Size(460, 340);
+            BackColor = Color.FromArgb(0xF3, 0xF7, 0xFD);
+            DoubleBuffered = true;
+            KeyPreview = true;
+
+            Body = new TransparentPanel { Dock = DockStyle.Fill, Padding = new Padding(24, 58, 24, 18) };
+            Controls.Add(Body);
+
+            var close = new PillButton { Text = "✕", Width = 36, Height = 30, Radius = 8 };
+            close.Click += delegate { Close(); };
+            Controls.Add(close);
+            close.BringToFront();
+            close.Location = new Point(Width - 50, 14);
+            close.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+
+            KeyDown += delegate(object sender, KeyEventArgs e)
+            {
+                if (e.KeyCode == Keys.Escape) Close();
+            };
+
+            MouseDown += DragWindow;
+            Body.MouseDown += DragWindow;
+            Resize += delegate { ApplyRegion(); };
+            ApplyRegion();
+        }
+
+        private void DragWindow(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left) return;
+            ReleaseCapture();
+            SendMessage(Handle, 0xA1, 0x2, 0);
+        }
+
+        private void ApplyRegion()
+        {
+            using (var path = Ui.Round(new Rectangle(0, 0, Width, Height), 18))
+            {
+                Region = new Region(path);
+            }
+            Invalidate();
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            Ui.PaintCanvas(e.Graphics, ClientRectangle);
+            Ui.PaintGlass(e.Graphics, ClientRectangle, 18, 208, true);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            TextRenderer.DrawText(
+                e.Graphics,
+                _caption,
+                Ui.Font(17f, FontStyle.Bold),
+                new Rectangle(26, 18, Width - 90, 26),
+                Ui.Ink,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        }
+    }
+
+    /// <summary>Превью вкладки при наведении: реальные данные, без интерактива.</summary>
+    internal sealed class TabPreviewForm : Form
+    {
+        private readonly string _title;
+        private readonly string _subtitle;
+        private readonly string _meta;
+        private readonly System.Collections.Generic.List<string> _lines;
+
+        public TabPreviewForm(string title, string subtitle, string meta, System.Collections.Generic.List<string> lines)
+        {
+            _title = title;
+            _subtitle = subtitle;
+            _meta = meta;
+            _lines = lines;
+
+            Text = "Предпросмотр";
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.Manual;
+            TopMost = true;
+            BackColor = Color.FromArgb(0xF3, 0xF7, 0xFD);
+            DoubleBuffered = true;
+            Size = new Size(330, 148);
+        }
+
+        public void ShowNear(Point screenPoint)
+        {
+            Rectangle area = Screen.FromPoint(screenPoint).WorkingArea;
+            int x = screenPoint.X + 16;
+            int y = screenPoint.Y + 18;
+            if (x + Width > area.Right) x = area.Right - Width - 8;
+            if (y + Height > area.Bottom) y = area.Bottom - Height - 8;
+            Location = new Point(Math.Max(area.Left + 8, x), Math.Max(area.Top + 8, y));
+            Show();
+        }
+        protected override bool ShowWithoutActivation
+        {
+            get { return true; }
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            Ui.PaintCanvas(e.Graphics, ClientRectangle);
+            Ui.PaintGlass(e.Graphics, ClientRectangle, 14, 245, true);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            int y = 12;
+            TextRenderer.DrawText(e.Graphics, _title, Ui.Font(14f, FontStyle.Bold),
+                new Rectangle(16, y, Width - 32, 20), Ui.Ink,
+                TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
+            y += 22;
+            TextRenderer.DrawText(e.Graphics, _subtitle, Ui.Font(10.5f),
+                new Rectangle(16, y, Width - 32, 16), Ui.Muted,
+                TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
+            y += 20;
+            TextRenderer.DrawText(e.Graphics, _meta, Ui.Font(10.5f, FontStyle.Bold),
+                new Rectangle(16, y, Width - 32, 16), Ui.Ink,
+                TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
+            y += 22;
+            foreach (string line in _lines)
+            {
+                TextRenderer.DrawText(e.Graphics, line, Ui.Font(10.5f),
+                    new Rectangle(16, y, Width - 32, 16), Ui.Muted,
+                    TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
+                y += 18;
+            }
         }
     }
 }
