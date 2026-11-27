@@ -36,7 +36,10 @@
 - Интерфейс: Liquid Glass + Bento, сайдбар 236/64 px, bento-дашборд «Главная», превью вкладок,
   режим эффектов glass/reduced; таблицы — на непрозрачной подложке.
 - Проверки на момент передачи (2026-11-27): pnpm test — 196/196 (21 файл), pnpm lint — 0 ошибок,
-  vite build — успешно, pnpm audit --prod — 0 уязвимостей; build_native_app.ps1 + --selftest — 31/31.
+  vite build — успешно, pnpm audit --prod — 0 уязвимостей; build_native_app.ps1 + --selftest — 41/41,
+  --portable-check — exit 0 (данные рядом с EXE).
+- Портативность: папка с ОТ-База.exe (anycpu, ≈258 КБ) копируется на флешку целиком и запускается
+  на любом ПК с Windows 10/11 без установки и интернета; данные, документы и бэкапы — рядом с EXE.
 
 КОМАНДЫ
   pnpm install

@@ -39,6 +39,15 @@
 - `launcher.c`, `resources.rc`, `build_native_windows.py` — исходник Win64 HTTP-сервера/лаунчера и полный скрипт сборки (`app.html` -> `OT-Baza.exe` -> `OT-Baza-Windows.zip` -> `dist/`).
 - `package.json`, `tsconfig.json`, `vite.config.ts`, `vite.offline.config.ts`.
 
+### Нативный портативный клиент (`native/`, WinForms, без web-движка)
+- `native/PortablePaths.cs` — где лежат данные: настоящая проба записи рядом с EXE, резервная папка `%LOCALAPPDATA%\OT-Baza`, имя `Mutex` для одного экземпляра, отчёт `--portable-check`.
+- `native/Store.cs` — база `data/ot_database.json`: чтение/запись, атомарная замена с повтором, `ot_database_prev.json` + дневные копии с ротацией, каталог пользовательских модулей.
+- `native/Program.cs` — вход: `--portable-check`, `--selftest` (41 проверка), `--import-test`, замок единственного экземпляра, запуск окна.
+- `native/MainForm.cs`, `native/Views.cs`, `native/Card.cs`, `native/Dialogs.cs`, `native/Glass.cs`, `native/Preview.cs` — оболочка Liquid Glass, таблицы, карточка работника, модалки, просмотр DOCX.
+- `native/XlsxReader.cs` / `native/XlsxWriter.cs` — импорт и экспорт Excel без библиотек; `native/DateText.cs` — нормализация дат к ISO; `native/CsvExport.cs` — экранирование CSV (в т.ч. защита от формул).
+- `native/DocxService.cs` — генерация DOCX по шаблонам (`{Тег}`, `[ТАБЛИЦА]…[/ТАБЛИЦА]`) в `documents/<Категория>/`.
+- `native/Obligations.cs`, `native/Employees.cs`, `native/modules.json` — правила обязательств, чтение карточек, каталог модулей (встроен ресурсом в EXE).
+
 ### Типы и данные (`src/types/`, `src/data/`)
 - `src/types/database.ts`:
   - `DatabaseState`: `activeEntityId`, `entities: LegalEntity[]`, общая `normativeDocs: AttachedDoc[]`, зеркала активного юрлица (`tabs`, `tags`, `templates`, `generatedDocs`, `employeeObligations`, `employeeEvents`, `auditLog`, `llmConfig`, `llmLogs`, `settings`).
@@ -87,6 +96,8 @@
 Функционально реализованы задачи `T-01`–`T-49` (включая «Контроль сроков»), модульный трек `M-01`–`M-12`, дизайн-трек `D-1`–`D-5` в объёме v1–v2 и продуктовый/ИБ-пакет `P-01`–`P-06`. Актуальная проверка (2026-11-27): **196 тестов в 21 файле** (`pnpm test`), `tsc --noEmit` — 0 ошибок при `strict: true`, `vite build` проходит, `pnpm audit --prod` — 0 уязвимостей.
 
 Стартовый (web) бандл ≈ 1.35 МБ (≈ 390 КБ gzip); шрифты PDF (`cyrillicFont`, 1.96 МБ) и `jspdf`/`docx` вынесены в отдельные ленивые чанки.
+
+**Портативный сценарий (2026-11-27):** нативный клиент — `ОТ-База.exe` (≈258 КБ, `anycpu`) — переносится на флешке и запускается на любом ПК с Windows 10/11 без установки, прав администратора и интернета. Все данные, документы и бэкапы лежат рядом с EXE; при запрете записи — резервная папка с предупреждением. Основной функционал (сроки, нормативка, списки, шаблоны, импорт/экспорт Excel и CSV) работает без ИИ и без сети. Проверки: `--selftest` 41/41, `--portable-check` exit 0, экспорт проверен `openpyxl`.
 
 Оставшиеся незакрытые пункты:
 1. **`T-36`** — выполнен (пакетный отчёт генерации с изоляцией сбоев по строкам, `BatchGenerationReportPanel.tsx`).
