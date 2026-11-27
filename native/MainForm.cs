@@ -184,6 +184,7 @@ namespace OtBaza
                 else if (_demo == "orgs") ShowOrganizations();
                 else if (_demo == "templates") ShowTemplates();
                 else if (_demo == "norms") ShowNorms();
+                else if (_demo == "readiness") ShowReadiness();
                 else if (_demo == "preview")
                 {
                     var employees = _store.FindTabByModule("employees");
@@ -245,6 +246,7 @@ namespace OtBaza
             _sidebar.Controls.Add(SectionLabel("СПРАВОЧНИКИ"));
             _sidebar.Controls.Add(NavButton("Нормативная база", _currentView == "norms", delegate { ShowNorms(); }));
             _sidebar.Controls.Add(NavButton("Шаблоны документов", false, delegate { ShowTemplates(); }));
+            _sidebar.Controls.Add(NavButton("Готовность к ГИТ", _currentView == "readiness", delegate { ShowReadiness(); }));
 
             _sidebar.ResumeLayout();
 
@@ -568,6 +570,15 @@ namespace OtBaza
             SetView("norms");
             _content.Controls.Clear();
             var view = new NormsView(_store);
+            view.Dock = DockStyle.Fill;
+            _content.Controls.Add(view);
+        }
+
+        private void ShowReadiness()
+        {
+            SetView("readiness");
+            _content.Controls.Clear();
+            var view = new ReadinessView(_store);
             view.Dock = DockStyle.Fill;
             _content.Controls.Add(view);
         }

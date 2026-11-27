@@ -416,6 +416,29 @@ namespace OtBaza
                 int pages = pdfText.Contains("/Count 2") ? 2 : pdfText.Contains("/Count 3") ? 3 : 1;
                 check(pages >= 2, "PDF: длинный текст разбит на страницы (" + pages + ")");
 
+                // Готовность к проверке ГИТ: 9 направлений, 100 баллов, экспорт PDF и CSV.
+                ReadinessReport readiness = GitReadiness.Evaluate(store);
+                check(readiness.Items.Count == 9, "готовность ГИТ: 9 направлений");
+                check(readiness.MaxTotal == 100, "готовность ГИТ: максимум 100 баллов");
+                check(readiness.Total >= 0 && readiness.Total <= 100 && readiness.Percent >= 0 && readiness.Percent <= 100,
+                    "готовность ГИТ: баллы в диапазоне (" + readiness.Total + "/" + readiness.MaxTotal + ", " + readiness.Percent + "%)");
+                check(readiness.Items.All(item => item.Score >= 0 && item.Score <= item.MaxScore),
+                    "готовность ГИТ: ни один балл не выходит за максимум");
+                check(readiness.Items.Any(item => item.Title.Contains("Штатное расписание")),
+                    "готовность ГИТ: есть направление по штатному расписанию и СОУТ");
+                check(readiness.Items.Any(item => item.Title.Contains("Ссылочная целостность")),
+                    "готовность ГИТ: есть проверка ссылочной целостности");
+
+                string readinessText = GitReadiness.ToText(readiness);
+                check(readinessText.Contains("Индекс готовности") && readinessText.Contains("Самопроверка"),
+                    "готовность ГИТ: в отчёте есть индекс и дисклеймер");
+                string readinessCsv = GitReadiness.ToCsv(readiness);
+                check(readinessCsv.Split('\n').Length >= 11, "готовность ГИТ: CSV содержит шапку, 9 направлений и итог");
+                string readinessPdf = Path.Combine(root, "readiness.pdf");
+                PdfService.Save(readinessPdf, "Готовность к проверке ГИТ", readinessText);
+                check(File.Exists(readinessPdf) && new FileInfo(readinessPdf).Length > 20000,
+                    "готовность ГИТ: PDF-отчёт сформирован (" + new FileInfo(readinessPdf).Length + " байт)");
+
                 // Нормативная база: у каждого требования есть основание и событие.
                 check(catalog.Rules.Count == 18, "нормативная база: 18 требований");
                 check(catalog.Rules.All(rule => !string.IsNullOrWhiteSpace(rule.LegalBasis)),
