@@ -172,3 +172,5 @@
 | A-14 | P0 | **Нормативная база**: экран 18 требований с событием, модулем, сроком и основанием, поиск | `native/NormsView.cs` | Выполнено (selftest: 18 требований, у всех есть основание) |
 | A-15 | P1 | **Синонимы тегов веб-шаблонов** в нативном DOCX (`{Организация_полное}`, `{Генеральный_директор}`, `{ФИО_работника}` и др.) | `native/DocxService.cs` | Выполнено (selftest: подстановка) |
 | A-16 | P1 | **Раскладка под масштаб Windows**: окна ограничены рабочим столом, закреплённая нижняя панель, `AutoScaleMode.None`, склонения, демо-режимы `--demo norms/templates/orgs` | `native/MainForm.cs`, `native/Glass.cs`, `native/NormsView.cs`, `native/TemplatesForm.cs` | Выполнено (скриншоты всех экранов) |
+
+| A-17 | P0 | **Импорт готовых .docx-шаблонов**: загрузка бланка Word, подстановка тегов в XML абзаца (в т.ч. разорванных на прогоны), хранение в `templates/`, удаление вместе с шаблоном | `native/DocxTemplateService.cs`, `native/TemplatesForm.cs`, `native/DocxService.cs`, `native/Store.cs` | Выполнено (selftest 61/61, документ проверен разбором XML) |
