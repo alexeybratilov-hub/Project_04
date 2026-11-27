@@ -33,6 +33,19 @@ namespace OtBaza
             return Font(pixels, FontStyle.Regular);
         }
 
+        /// <summary>Русское склонение: «1 запись», «2 записи», «5 записей».</summary>
+        public static string Plural(int count, string one, string few, string many)
+        {
+            int mod100 = Math.Abs(count) % 100;
+            int mod10 = mod100 % 10;
+            string word;
+            if (mod100 >= 11 && mod100 <= 14) word = many;
+            else if (mod10 == 1) word = one;
+            else if (mod10 >= 2 && mod10 <= 4) word = few;
+            else word = many;
+            return count + " " + word;
+        }
+
         public static GraphicsPath Round(Rectangle rect, int radius)
         {
             int d = Math.Max(2, radius * 2);
@@ -378,6 +391,9 @@ namespace OtBaza
             BackColor = Color.FromArgb(0xF3, 0xF7, 0xFD);
             DoubleBuffered = true;
             KeyPreview = true;
+            // Без этого WinForms масштабирует дочерние контролы по соотношению шрифтов
+            // (шрифты задаются в пикселях) — и раскладка диалога «разъезжается».
+            AutoScaleMode = AutoScaleMode.None;
 
             Body = new TransparentPanel { Dock = DockStyle.Fill, Padding = new Padding(24, 58, 24, 18) };
             Controls.Add(Body);
@@ -405,6 +421,26 @@ namespace OtBaza
             if (e.Button != MouseButtons.Left) return;
             ReleaseCapture();
             SendMessage(Handle, 0xA1, 0x2, 0);
+        }
+
+        /// <summary>
+        /// Окно не должно вылезать за рабочий стол: при масштабе Windows 125/150 %
+        /// и на маленьких экранах диалог, отцентрованный по большому главному окну,
+        /// оказывался за границей экрана. Уменьшаем и ставим по центру.
+        /// </summary>
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            Rectangle area = Screen.FromControl(this).WorkingArea;
+            int width = Math.Min(Width, area.Width - 20);
+            int height = Math.Min(Height, area.Height - 20);
+            if (width != Width || height != Height)
+            {
+                Size = new Size(Math.Max(400, width), Math.Max(300, height));
+            }
+            Location = new Point(
+                area.Left + Math.Max(0, (area.Width - Width) / 2),
+                area.Top + Math.Max(0, (area.Height - Height) / 2));
         }
 
         private void ApplyRegion()

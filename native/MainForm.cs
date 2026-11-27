@@ -39,6 +39,7 @@ namespace OtBaza
     {
         private readonly Store _store;
         private FlowLayoutPanel _sidebar;
+        private FlowLayoutPanel _sidebarBottom;
         private FlowLayoutPanel _tabs;
         private Panel _content;
         private Label _status;
@@ -60,8 +61,13 @@ namespace OtBaza
 
             Text = "ОТ-База — база данных по охране труда";
             WindowState = FormWindowState.Normal;
-            Size = new Size(1340, 800);
-            MinimumSize = new Size(900, 600);
+            // Размер подгоняется под рабочий стол: при масштабе 125/150 % виртуальный
+            // рабочий стол меньше, и окно 1340×800 иначе уезжает за край экрана.
+            Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
+            int windowWidth = Math.Min(1340, Math.Max(900, workArea.Width - 20));
+            int windowHeight = Math.Min(800, Math.Max(600, workArea.Height - 40));
+            Size = new Size(windowWidth, windowHeight);
+            MinimumSize = new Size(Math.Min(900, windowWidth), Math.Min(600, windowHeight));
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = Color.FromArgb(0xF3, 0xF7, 0xFD);
             Font = Ui.Font(13f);
@@ -96,6 +102,18 @@ namespace OtBaza
                 Padding = new Padding(10, 14, 10, 12)
             };
             sidebarHost.Controls.Add(_sidebar);
+
+            _sidebarBottom = new TransparentFlow
+            {
+                Dock = DockStyle.Bottom,
+                Height = 104,
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                BackColor = Color.Transparent,
+                Padding = new Padding(10, 4, 10, 8)
+            };
+            sidebarHost.Controls.Add(_sidebarBottom);
+            _sidebarBottom.BringToFront();
 
             var main = new TransparentTable
             {
@@ -163,6 +181,9 @@ namespace OtBaza
                 else if (_demo == "row") OpenDemoRowDialog();
                 else if (_demo == "card") OpenDemoCard();
                 else if (_demo == "docx") OpenDemoDocx();
+                else if (_demo == "orgs") ShowOrganizations();
+                else if (_demo == "templates") ShowTemplates();
+                else if (_demo == "norms") ShowNorms();
                 else if (_demo == "preview")
                 {
                     var employees = _store.FindTabByModule("employees");
@@ -211,6 +232,7 @@ namespace OtBaza
             _sidebar.Controls.Add(SectionLabel("ОБЗОР"));
             _sidebar.Controls.Add(NavButton("Главная", _currentView == "home", delegate { ShowHome(); }));
             _sidebar.Controls.Add(NavButton("Контроль сроков", _currentView == "deadlines", delegate { ShowDeadlines(); }));
+            _sidebar.Controls.Add(NavButton("Организации", false, delegate { ShowOrganizations(); }));
 
             _sidebar.Controls.Add(SectionLabel("ЭТАПЫ"));
             foreach (ModuleDef module in _store.VisibleModules())
@@ -220,17 +242,38 @@ namespace OtBaza
                 _sidebar.Controls.Add(NavButton(module.Title, active, delegate { ShowModuleTab(captured); }));
             }
 
-            _sidebar.Controls.Add(new TransparentPanel { Height = 18, Width = 180 });
+            _sidebar.Controls.Add(SectionLabel("СПРАВОЧНИКИ"));
+            _sidebar.Controls.Add(NavButton("Нормативная база", _currentView == "norms", delegate { ShowNorms(); }));
+            _sidebar.Controls.Add(NavButton("Шаблоны документов", false, delegate { ShowTemplates(); }));
 
-            _sidebar.Controls.Add(NavButton("Модули этапов", false, delegate { ShowModulesDialog(); }));
-            _sidebar.Controls.Add(NavButton("Папка с данными", false, delegate
+            _sidebar.ResumeLayout();
+
+            // Служебные действия — в закреплённой нижней панели: они не уезжают
+            // за пределы экрана, когда модулей становится много.
+            _sidebarBottom.SuspendLayout();
+            _sidebarBottom.Controls.Clear();
+            _sidebarBottom.Controls.Add(UtilButton("Модули этапов", delegate { ShowModulesDialog(); }));
+            _sidebarBottom.Controls.Add(UtilButton("Папка с данными", delegate
             {
                 try { System.Diagnostics.Process.Start("explorer.exe", "\"" + _store.DataRoot + "\""); }
                 catch (Exception ex) { MessageBox.Show(ex.Message, "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
             }));
-            _sidebar.Controls.Add(NavButton(Ui.Reduced ? "Облегчённый режим" : "Стекло включено", false, delegate { ToggleEffects(); }));
+            _sidebarBottom.Controls.Add(UtilButton(Ui.Reduced ? "Облегчённый режим" : "Стекло включено", delegate { ToggleEffects(); }));
+            _sidebarBottom.ResumeLayout();
+        }
 
-            _sidebar.ResumeLayout();
+        private Control UtilButton(string text, EventHandler onClick)
+        {
+            var button = new PillButton
+            {
+                Text = text,
+                AlignLeft = true,
+                Width = 204,
+                Height = 30,
+                Margin = new Padding(0, 1, 0, 1)
+            };
+            button.Click += onClick;
+            return button;
         }
 
         private Label SectionLabel(string text)
@@ -242,7 +285,7 @@ namespace OtBaza
                 ForeColor = Ui.Muted,
                 AutoSize = true,
                 BackColor = Color.Transparent,
-                Margin = new Padding(8, 12, 0, 6)
+                Margin = new Padding(8, 10, 0, 4)
             };
         }
 
@@ -254,7 +297,7 @@ namespace OtBaza
                 Primary = active,
                 AlignLeft = true,
                 Width = 204,
-                Height = 36,
+                Height = 34,
                 Margin = new Padding(0, 1, 0, 1)
             };
             button.Click += onClick;
@@ -520,6 +563,42 @@ namespace OtBaza
             }
         }
 
+        private void ShowNorms()
+        {
+            SetView("norms");
+            _content.Controls.Clear();
+            var view = new NormsView(_store);
+            view.Dock = DockStyle.Fill;
+            _content.Controls.Add(view);
+        }
+
+        private void ShowTemplates()
+        {
+            bool changed;
+            using (var dialog = new TemplatesForm(_store))
+            {
+                dialog.ShowDialog(this);
+                changed = dialog.Changed;
+            }
+            if (changed) RebuildAll();
+        }
+
+        private void ShowOrganizations()
+        {
+            bool changed;
+            using (var dialog = new OrganizationsForm(_store))
+            {
+                dialog.ShowDialog(this);
+                changed = dialog.Changed;
+            }
+            if (changed)
+            {
+                // Организация могла смениться — возвращаемся на «Главную»,
+                // чтобы экран не показывал данные прежнего юрлица.
+                ShowHome();
+            }
+        }
+
         private void UpdateStatus()
         {
             var pending = _store.Obligations.Select(J.Obj)
@@ -638,8 +717,11 @@ namespace OtBaza
             });
             body.Controls.Add(new Label
             {
-                Text = string.Format("{0} таблиц  ·  {1} организация  ·  {2} шаблонов  ·  {3} активных требований",
-                    _store.Tabs.Count, organizations, templates, pending.Count),
+                Text = string.Format("{0}  ·  {1}  ·  {2}  ·  {3}",
+                    Ui.Plural(_store.Tabs.Count, "таблица", "таблицы", "таблиц"),
+                    Ui.Plural(organizations, "организация", "организации", "организаций"),
+                    Ui.Plural(templates, "шаблон", "шаблона", "шаблонов"),
+                    Ui.Plural(pending.Count, "активное требование", "активных требования", "активных требований")),
                 Font = Ui.Font(11.5f),
                 ForeColor = Ui.Muted,
                 AutoSize = true,

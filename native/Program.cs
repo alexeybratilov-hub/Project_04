@@ -284,6 +284,51 @@ namespace OtBaza
                 check(readBack[2][2] == "-42,5", "Excel: «42,5» остаётся текстом");
                 check(readBack[1][2] == "7", "Excel: целое число выгружено числом");
 
+                // Свои шаблоны документов: текст с тегами + синонимы веб-шаблонов.
+                var templates = J.Arr(J.Get(store.Entity, "templates"));
+                templates.Add(new Dictionary<string, object>
+                {
+                    { "id", "tpl_user_test" },
+                    { "name", "Тестовый документ" },
+                    { "category", "Проверка" },
+                    { "contentTemplate", "Сотрудник: {ФИО}\nОрганизация: {Организация_полное}\nДолжность: {Должность}\nДиректор: {Генеральный_директор}" }
+                });
+                J.Put(store.Entity, "templates", templates.Cast<object>().ToArray());
+                string userTemplateDoc = DocxService.Generate(store, "row_test_1", "tpl_user_test", ObligationsEngine.TodayIso());
+                check(userTemplateDoc != null && File.Exists(userTemplateDoc), "шаблоны: документ по своему шаблону сформирован");
+                if (userTemplateDoc != null)
+                {
+                    using (var zip = System.IO.Compression.ZipFile.OpenRead(userTemplateDoc))
+                    {
+                        var entry = zip.GetEntry("word/document.xml");
+                        string xml = entry == null ? string.Empty : new StreamReader(entry.Open()).ReadToEnd();
+                        check(xml.Contains("Тестов Иван Иванович"), "шаблоны: тег {ФИО} подставлен");
+                        check(xml.Contains("Катания"), "шаблоны: синоним {Организация_полное} подставлен");
+                    }
+                }
+
+                // Нормативная база: у каждого требования есть основание и событие.
+                check(catalog.Rules.Count == 18, "нормативная база: 18 требований");
+                check(catalog.Rules.All(rule => !string.IsNullOrWhiteSpace(rule.LegalBasis)),
+                    "нормативная база: у каждого требования указано основание");
+                check(catalog.Rules.Select(rule => rule.Event).Distinct().Count() >= 4,
+                    "нормативная база: покрыты все события жизненного цикла");
+
+                // Организации: раздельные списки, переключение и возврат.
+                string firstEntityId = store.ActiveEntityId;
+                int firstEntityRows = store.Tabs.Sum(tab => J.Arr(J.Get(J.Obj(tab), "rows")).Count);
+                var second = store.CreateOrganization("ООО «Вторая»", "Общество с ограниченной ответственностью «Вторая»");
+                check(store.Entities.Count == 2, "организации: создана вторая");
+                store.SetActiveEntity(J.Str(J.Get(second, "id")));
+                check(J.Str(J.Get(store.Profile, "shortName")) == "ООО «Вторая»", "организации: переключение на вторую");
+                check(store.FindTabByModule("employees") != null, "организации: у новой есть вкладка «Сотрудники»");
+                check(store.Tabs.Sum(tab => J.Arr(J.Get(J.Obj(tab), "rows")).Count) == 0,
+                    "организации: списки новой пустые (данные не скопированы)");
+                store.SetActiveEntity(firstEntityId);
+                check(J.Str(J.Get(store.Profile, "shortName")) == "ООО «Катания»", "организации: возврат к первой");
+                check(store.Tabs.Sum(tab => J.Arr(J.Get(J.Obj(tab), "rows")).Count) == firstEntityRows,
+                    "организации: данные первой не изменились");
+
                 // Бэкапы: предыдущая версия базы и дневная копия.
                 string backupDir = Path.Combine(root, "data", "backups");
                 check(Directory.GetFiles(backupDir, "ot_database_20*.json").Length == 1,

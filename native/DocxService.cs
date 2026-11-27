@@ -120,7 +120,21 @@ namespace OtBaza
                 { "Дата_приёма", FormatDate(hireDate) },
                 { "Дата_события", FormatDate(eventDate) },
                 { "Сегодня", DateTime.Today.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture) },
-                { "Номер", DateTime.Now.ToString("ddMMyy-HHmm", CultureInfo.InvariantCulture) }
+                { "Номер", DateTime.Now.ToString("ddMMyy-HHmm", CultureInfo.InvariantCulture) },
+
+                // Синонимы из шаблонов веб-версии: те же данные под привычными именами,
+                // чтобы шаблоны, сделанные для web, работали и в портативном клиенте.
+                { "Организация_полное", J.Str(J.Get(profile, "fullName")) },
+                { "Юридический_адрес", J.Str(J.Get(profile, "legalAddress")) },
+                { "Генеральный_директор", J.Str(J.Get(profile, "directorFio")) },
+                { "ОКВЭД", J.Str(J.Get(profile, "okved")) },
+                { "ОКПО", J.Str(J.Get(profile, "okpo")) },
+                { "Телефон_организации", J.Str(J.Get(profile, "phone")) },
+                { "Email_организации", J.Str(J.Get(profile, "email")) },
+                { "ФИО_работника", info.Fio },
+                { "Табельный_номер", info.TabNumber },
+                { "Дата_проведения", FormatDate(eventDate) },
+                { "Номер_записи", DateTime.Now.ToString("ddMMyy-HHmm", CultureInfo.InvariantCulture) }
             };
 
             string result = template ?? string.Empty;

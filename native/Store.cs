@@ -245,6 +245,8 @@ namespace OtBaza
 
             store.LoadCustomModules();
             store.MergeCustomModules();
+            try { store.EnsureModuleTabs(store.Entity); }
+            catch { /* база без организаций — ошибка покажется при открытии */ }
             return store;
         }
 
@@ -268,6 +270,129 @@ namespace OtBaza
         public Dictionary<string, object> Profile
         {
             get { return J.Obj(J.Get(Entity, "profile")) ?? new Dictionary<string, object>(); }
+        }
+
+        /// <summary>Все организации базы (юрлица ведутся раздельно, как в веб-версии).</summary>
+        public List<Dictionary<string, object>> Entities
+        {
+            get
+            {
+                return J.Arr(J.Get(Db, "entities"))
+                    .Select(J.Obj)
+                    .Where(entity => entity != null)
+                    .ToList();
+            }
+        }
+
+        public string ActiveEntityId
+        {
+            get { return J.Str(J.Get(Db, "activeEntityId")); }
+        }
+
+        public Dictionary<string, object> FindEntity(string entityId)
+        {
+            return Entities.FirstOrDefault(entity => J.Str(J.Get(entity, "id")) == entityId);
+        }
+
+        /// <summary>
+        /// Новая организация: пустая, со своим профилем и вкладками базовых модулей.
+        /// Данные текущей организации не копируются — иначе чужие списки работников
+        /// и документы попали бы в новую базу.
+        /// </summary>
+        public Dictionary<string, object> CreateOrganization(string shortName, string fullName)
+        {
+            string name = string.IsNullOrWhiteSpace(shortName) ? "Новая организация" : shortName.Trim();
+            var profile = new Dictionary<string, object>
+            {
+                { "fullName", string.IsNullOrWhiteSpace(fullName) ? name : fullName.Trim() },
+                { "shortName", name },
+                { "inn", string.Empty },
+                { "kpp", string.Empty },
+                { "ogrn", string.Empty },
+                { "okpo", string.Empty },
+                { "okved", string.Empty },
+                { "bankDetails", string.Empty },
+                { "bankIn", string.Empty },
+                { "legalAddress", string.Empty },
+                { "email", string.Empty },
+                { "phone", string.Empty },
+                { "directorFio", string.Empty }
+            };
+
+            string id = "entity_" + DateTime.Now.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
+            var entities = Entities;
+            while (entities.Any(entity => J.Str(J.Get(entity, "id")) == id))
+            {
+                id = id + "_1";
+            }
+
+            var created = new Dictionary<string, object>
+            {
+                { "id", id },
+                { "profile", profile },
+                { "tabs", new object[0] },
+                { "tags", new object[0] },
+                { "templates", new object[0] },
+                { "generatedDocs", new object[0] },
+                { "employeeObligations", new object[0] },
+                { "employeeEvents", new object[0] },
+                { "auditLog", new object[0] },
+                { "llmLogs", new object[0] },
+                { "createdAt", DateTime.UtcNow.ToString("o") }
+            };
+
+            entities.Add(created);
+            J.Put(Db, "entities", entities.Cast<object>().ToArray());
+            EnsureModuleTabs(created);
+            return created;
+        }
+
+        /// <summary>
+        /// Переключение активной организации. Перед переключением текущие данные
+        /// зеркалятся в базу (как при Save), чтобы веб-версия видела те же данные.
+        /// </summary>
+        public void SetActiveEntity(string entityId)
+        {
+            var target = FindEntity(entityId);
+            if (target == null) throw new InvalidOperationException("Организация не найдена: " + entityId);
+            if (J.Str(J.Get(target, "id")) == ActiveEntityId) return;
+
+            try { Save(); }
+            catch { /* сохранение не должно блокировать переключение */ }
+
+            Db["activeEntityId"] = entityId;
+            EnsureModuleTabs(target);
+            Save();
+        }
+
+        /// <summary>
+        /// Вкладки включённых модулей должны существовать в каждой организации:
+        /// список модулей общий на базу, а вкладки — свои. Иначе после переключения
+        /// организация оказалась бы без таблицы «Медосмотры» и т. п.
+        /// </summary>
+        public void EnsureModuleTabs(Dictionary<string, object> entity)
+        {
+            if (entity == null) return;
+            var tabs = J.Arr(J.Get(entity, "tabs"));
+            var installed = InstalledModules;
+            bool changed = false;
+            foreach (ModuleDef module in Catalog.Modules)
+            {
+                if (!installed.Contains(module.Id)) continue;
+                bool exists = tabs.Select(J.Obj).Any(tab => tab != null && J.Str(J.Get(tab, "id")) == module.TabId);
+                if (exists) continue;
+                tabs.Add(new Dictionary<string, object>
+                {
+                    { "id", module.TabId },
+                    { "name", module.TabName },
+                    { "moduleId", module.Id },
+                    { "columns", module.Columns.Select(c => new Dictionary<string, object>(c)).ToArray() },
+                    { "rows", new object[0] },
+                    { "attachedDocs", new object[0] }
+                });
+                changed = true;
+            }
+            if (changed) J.Put(entity, "tabs", tabs.ToArray());
         }
 
         public List<object> Tabs
