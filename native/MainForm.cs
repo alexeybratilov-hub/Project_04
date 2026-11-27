@@ -299,9 +299,57 @@ namespace OtBaza
                     break;
                 case "anim":
                     {
+                        // Замедленный переход — для фиксации кадров анимации.
+                        Anim.Normal = 900;
+                        Anim.Fast = 420;
                         var timer = new Timer { Interval = 700 };
                         timer.Tick += delegate { timer.Stop(); timer.Dispose(); OpenPortfolio(); };
                         timer.Start();
+                    }
+                    break;
+                case "twoactive":
+                    {
+                        if (_store.Entities.Count < 2)
+                        {
+                            _store.CreateOrganization("ООО «Вторая площадка»", "Общество с ограниченной ответственностью «Вторая площадка»");
+                        }
+                        var second = _store.Entities.FirstOrDefault(e => J.Str(J.Get(J.Obj(J.Get(e, "profile")), "shortName")) == "ООО «Вторая площадка»");
+                        if (second != null)
+                        {
+                            _store.SetActiveEntity(J.Str(J.Get(second, "id")));
+                            _store.Save();
+                        }
+                        RebuildChrome();
+                        ShowDashboard(false);
+                    }
+                    break;
+                case "two":
+                    {
+                        if (_store.Entities.Count < 2)
+                        {
+                            var created = _store.CreateOrganization("ООО «Вторая площадка»", "Общество с ограниченной ответственностью «Вторая площадка»");
+                            string previous = _store.ActiveEntityId;
+                            string createdId = J.Str(J.Get(created, "id"));
+                            _store.SetActiveEntity(createdId);
+                            _store.EnsureModuleTabs(_store.Entity);
+                            var employeesTab = _store.FindTabByModule("employees");
+                            if (employeesTab != null)
+                            {
+                                var rows = J.Arr(J.Get(employeesTab, "rows"));
+                                var row = new Dictionary<string, object>();
+                                row["id"] = "row_demo_two_1";
+                                row["emp_fio"] = "Петров Пётр Петрович";
+                                row["emp_position"] = "Слесарь-ремонтник";
+                                row["emp_hire_date"] = ObligationsEngine.TodayIso();
+                                rows.Add(row);
+                                J.Put(employeesTab, "rows", rows.ToArray());
+                                ObligationsEngine.RegisterEvent(_store, row, "hire", ObligationsEngine.TodayIso());
+                            }
+                            _store.Save();
+                            _store.SetActiveEntity(previous);
+                            RebuildChrome();
+                        }
+                        ShowPortfolio(false);
                     }
                     break;
                 case "toast":

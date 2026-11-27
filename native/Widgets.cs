@@ -82,8 +82,8 @@ namespace OtBaza
     {
         private static readonly List<Timer> Alive = new List<Timer>();
 
-        public static readonly int Fast = 140;
-        public static readonly int Normal = 190;
+        public static int Fast = 140;
+        public static int Normal = 190;
 
         public static double Ease(double t)
         {
@@ -1175,6 +1175,57 @@ namespace OtBaza
                 TextRenderer.DrawText(g, _subtitle, Ui.Font(10f),
                     new Rectangle(14, titleY + 21, Width - 28, 32), Ui.Muted,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
+            }
+        }
+    }
+    /// <summary>
+    /// Единое текстовое поле приложения: светлая рамка, без системного «чёрного»
+    /// канта. Внутри — обычный TextBox, поэтому вся логика форм не меняется.
+    /// </summary>
+    internal sealed class InputField : Panel
+    {
+        public readonly TextBox Box;
+        private bool _focused;
+
+        public InputField()
+            : this(new TextBox())
+        {
+        }
+
+        public InputField(TextBox box)
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor, true);
+            BackColor = Color.Transparent;
+            Height = 32;
+            Margin = new Padding(0, 5, 0, 3);
+            Padding = new Padding(9, 0, 9, 0);
+
+            Box = box ?? new TextBox();
+            Box.BorderStyle = BorderStyle.None;
+            Box.Font = Ui.Font(12f);
+            Box.BackColor = Color.FromArgb(252, 253, 255);
+            Box.ForeColor = Ui.Ink;
+            Box.Dock = DockStyle.Fill;
+            Box.Margin = new Padding(0);
+            Box.GotFocus += delegate { _focused = true; Invalidate(); };
+            Box.LostFocus += delegate { _focused = false; Invalidate(); };
+            Controls.Add(Box);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            var body = new Rectangle(0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
+            using (var path = Ui.Round(body, 8))
+            using (var brush = new SolidBrush(Color.FromArgb(252, 253, 255)))
+            {
+                g.FillPath(brush, path);
+            }
+            using (var path = Ui.Round(body, 8))
+            using (var pen = new Pen(_focused ? Ui.Blue : Ui.Line, _focused ? 1.6f : 1f))
+            {
+                g.DrawPath(pen, path);
             }
         }
     }

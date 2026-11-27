@@ -147,6 +147,34 @@ namespace OtBaza
         /// Сообщение пользователю. В рабочем приложении оболочка всегда есть,
         /// поэтому MessageBox — только крайний случай для автономных проверок.
         /// </summary>
+        /// <summary>Подсказка с полным значением для усечённых ячеек таблиц.</summary>
+        public static void AttachCellToolTips(DataGridView grid)
+        {
+            if (grid == null) return;
+            grid.ShowCellToolTips = true;
+            grid.CellToolTipTextNeeded += delegate(object sender, DataGridViewCellToolTipTextNeededEventArgs e)
+            {
+                if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
+                if (e.RowIndex >= grid.Rows.Count) return;
+                object value = grid.Rows[e.RowIndex].Cells[e.ColumnIndex].Value;
+                string text = value == null ? string.Empty : value.ToString();
+                if (text.Length > 22) e.ToolTipText = text;
+            };
+        }
+
+        /// <summary>Компактная легенда статусов: цвет + текст, а не только цвет.</summary>
+        public static Control LegendChip(string text, Color color)
+        {
+            return new Label
+            {
+                Text = "● " + text,
+                AutoSize = true,
+                ForeColor = color,
+                BackColor = Color.Transparent,
+                Font = Ui.Font(10.5f, FontStyle.Bold),
+                Margin = new Padding(12, 9, 0, 0)
+            };
+        }
         public static void Say(string message, NoticeKind kind)
         {
             if (string.IsNullOrEmpty(message)) return;
@@ -299,6 +327,7 @@ namespace OtBaza
             _grid.DefaultCellStyle.SelectionForeColor = Ui.Ink;
             _grid.DefaultCellStyle.Padding = new Padding(6, 0, 6, 0);
             _grid.EnableHeadersVisualStyles = false;
+                        ViewsFx.AttachCellToolTips(_grid);
             _grid.CellDoubleClick += delegate(object sender, DataGridViewCellEventArgs e)
             {
                 if (e.RowIndex < 0) return;
@@ -1016,6 +1045,9 @@ namespace OtBaza
                 Margin = new Padding(12, 10, 0, 0)
             };
             _toolbar.Controls.Add(_summary);
+            _toolbar.Controls.Add(ViewsFx.LegendChip("Просрочено", Ui.Rose));
+            _toolbar.Controls.Add(ViewsFx.LegendChip("Скоро", Ui.Amber));
+            _toolbar.Controls.Add(ViewsFx.LegendChip("Выполнено", Ui.Emerald));
 
             _grid = new DataGridView
             {
@@ -1040,6 +1072,7 @@ namespace OtBaza
             _grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(0xE0, 0xEA, 0xFF);
             _grid.DefaultCellStyle.SelectionForeColor = Ui.Ink;
             _grid.EnableHeadersVisualStyles = false;
+                        ViewsFx.AttachCellToolTips(_grid);
             _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Работник", FillWeight = 22, SortMode = DataGridViewColumnSortMode.Automatic });
             _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Требование", FillWeight = 34, SortMode = DataGridViewColumnSortMode.Automatic });
             _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Срок", FillWeight = 12, SortMode = DataGridViewColumnSortMode.Automatic });

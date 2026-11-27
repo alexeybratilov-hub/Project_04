@@ -223,14 +223,13 @@ namespace OtBaza
                     Margin = new Padding(0, 9, 8, 6)
                 });
 
-                var box = new TextBox
+                var field = new InputField
                 {
                     Dock = DockStyle.Fill,
-                    Font = Ui.Font(12f),
-                    Margin = new Padding(0, 6, 0, 4)
+                    Margin = new Padding(0, 4, 0, 2)
                 };
-                _fields[key] = box;
-                table.Controls.Add(box);
+                _fields[key] = field.Box;
+                table.Controls.Add(field);
             }
 
             RefreshList();

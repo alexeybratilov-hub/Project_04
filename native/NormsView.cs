@@ -135,6 +135,7 @@ namespace OtBaza
             _grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(0xE0, 0xEA, 0xFF);
             _grid.DefaultCellStyle.SelectionForeColor = Ui.Ink;
             _grid.EnableHeadersVisualStyles = false;
+            ViewsFx.AttachCellToolTips(_grid);
             _grid.CellDoubleClick += delegate(object sender, DataGridViewCellEventArgs e)
             {
                 if (e.RowIndex < 0) return;

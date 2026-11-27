@@ -161,14 +161,16 @@ namespace OtBaza
             rows.Controls.Add(meta, 0, 1);
 
             meta.Controls.Add(FieldLabel("Название"), 0, 0);
-            _name = new TextBox { Dock = DockStyle.Fill, Font = Ui.Font(12f), Margin = new Padding(0, 4, 0, 4) };
-            meta.Controls.Add(_name, 1, 0);
+            _name = new TextBox();
+            var nameField = new InputField(_name) { Dock = DockStyle.Fill, Margin = new Padding(0, 3, 0, 3) };
+            meta.Controls.Add(nameField, 1, 0);
 
             meta.Controls.Add(FieldLabel("Категория / вкладка"), 0, 1);
             var secondRow = new TransparentFlow { Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(0, 2, 0, 0) };
             meta.Controls.Add(secondRow, 1, 1);
-            _category = new TextBox { Width = 260, Font = Ui.Font(12f), Margin = new Padding(0, 2, 8, 0) };
-            secondRow.Controls.Add(_category);
+            _category = new TextBox();
+            var categoryField = new InputField(_category) { Width = 268, Margin = new Padding(0, 2, 8, 0) };
+            secondRow.Controls.Add(categoryField);
             _tab = new ComboBox { Width = 320, DropDownStyle = ComboBoxStyle.DropDownList, Font = Ui.Font(11.5f), Margin = new Padding(0, 2, 0, 0) };
             secondRow.Controls.Add(_tab);
 

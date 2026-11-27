@@ -266,16 +266,10 @@ namespace OtBaza
                 return check;
             }
 
-            var box = new TextBox
-            {
-                Text = text,
-                Font = Ui.Font(12f),
-                BorderStyle = BorderStyle.FixedSingle,
-                Dock = DockStyle.Fill,
-                Margin = new Padding(0, 6, 0, 0)
-            };
+            var box = new TextBox { Text = text };
             _getters[id] = delegate { return box.Text.Trim(); };
-            return box;
+            var field = new InputField(box) { Dock = DockStyle.Fill, Margin = new Padding(0, 4, 0, 1) };
+            return field;
         }
 
         /// <summary>
@@ -284,6 +278,13 @@ namespace OtBaza
         /// </summary>
         private void TrackChanges(Control control, string id)
         {
+            var field = control as InputField;
+            if (field != null)
+            {
+                field.Box.TextChanged += delegate { Touch(id); };
+                return;
+            }
+
             var textBox = control as TextBox;
             if (textBox != null)
             {
@@ -413,7 +414,9 @@ namespace OtBaza
                 {
                     try { _scroll.ScrollControlIntoView(firstInvalid); }
                     catch { }
-                    firstInvalid.Focus();
+                    var invalidField = firstInvalid as InputField;
+            if (invalidField != null) invalidField.Box.Focus();
+            else firstInvalid.Focus();
                 }
                 return;
             }

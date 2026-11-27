@@ -123,6 +123,7 @@ namespace OtBaza
             _grid.DefaultCellStyle.SelectionForeColor = Ui.Ink;
             _grid.DefaultCellStyle.WrapMode = DataGridViewTriState.False;
             _grid.EnableHeadersVisualStyles = false;
+            ViewsFx.AttachCellToolTips(_grid);
             layout.Controls.Add(_grid, 0, 3);
 
             _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Направление", Width = 330 });
