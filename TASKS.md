@@ -174,3 +174,5 @@
 | A-16 | P1 | **Раскладка под масштаб Windows**: окна ограничены рабочим столом, закреплённая нижняя панель, `AutoScaleMode.None`, склонения, демо-режимы `--demo norms/templates/orgs` | `native/MainForm.cs`, `native/Glass.cs`, `native/NormsView.cs`, `native/TemplatesForm.cs` | Выполнено (скриншоты всех экранов) |
 
 | A-17 | P0 | **Импорт готовых .docx-шаблонов**: загрузка бланка Word, подстановка тегов в XML абзаца (в т.ч. разорванных на прогоны), хранение в `templates/`, удаление вместе с шаблоном | `native/DocxTemplateService.cs`, `native/TemplatesForm.cs`, `native/DocxService.cs`, `native/Store.cs` | Выполнено (selftest 61/61, документ проверен разбором XML) |
+
+| A-18 | P0 | **PDF с кириллицей**: свой генератор (A4, переносы, таблицы, страницы), встраивание DejaVuSans из `src/data/cyrillicFont.ts` при сборке, кнопка «Сохранить PDF» в просмотре документа | `native/PdfFont.cs`, `native/PdfWriter.cs`, `native/Preview.cs`, `build_native_app.ps1` | Выполнено (selftest 68/68, PDF открыт в просмотрщике) |

@@ -48,6 +48,7 @@
 - `native/TemplatesForm.cs` — шаблоны документов: встроенные и свои, редактор с тегами, формирование DOCX по работнику.
 - `native/NormsView.cs` — экран «Нормативная база»: требования, события, сроки/периодичность, нормативные основания, поиск.
 - `native/DocxTemplateService.cs` — подстановка тегов в готовые `.docx`-бланки (по абзацу, а не по прогону);
+- `native/PdfFont.cs` + `native/PdfWriter.cs` — PDF с кириллицей: разбор TrueType, встраивание шрифта (CIDFontType2/Identity-H/ToUnicode), A4, таблицы, страницы;
 - `native/XlsxReader.cs` / `native/XlsxWriter.cs` — импорт и экспорт Excel без библиотек; `native/DateText.cs` — нормализация дат к ISO; `native/CsvExport.cs` — экранирование CSV (в т.ч. защита от формул).
 - `native/DocxService.cs` — генерация DOCX по шаблонам (`{Тег}`, `[ТАБЛИЦА]…[/ТАБЛИЦА]`) в `documents/<Категория>/`.
 - `native/Obligations.cs`, `native/Employees.cs`, `native/modules.json` — правила обязательств, чтение карточек, каталог модулей (встроен ресурсом в EXE).
