@@ -380,6 +380,42 @@ namespace OtBaza
                     }
                 }
 
+                // PDF с кириллицей: встроенный шрифт, карта символов и валидный xref.
+                PdfFont probeFont = PdfFont.LoadFromResource("DejaVuSans.ttf");
+                check(probeFont.GlyphId('А') > 0 && probeFont.GlyphId('я') > 0 && probeFont.GlyphId('Ё') > 0,
+                    "PDF: в шрифте есть кириллица (А, я, Ё)");
+                string pdfPath = Path.Combine(root, "probe.pdf");
+                string longText = string.Join(" ", Enumerable.Repeat(
+                    "Длинный абзац для проверки переноса строк, разбиения на страницы и кириллицы.", 60).ToArray());
+                PdfService.Save(
+                    pdfPath,
+                    "ПРИКАЗ О ПРИЁМЕ НА РАБОТУ",
+                    "Работник: Тестов Иван Иванович\nДолжность: Начальник цеха\nДата: 27.11.2026\n\n" +
+                    "[ТАБЛИЦА]\nСИЗ|Норма|Дата выдачи\nКаска защитная|1 шт|27.11.2026\n[/ТАБЛИЦА]\n\n" + longText);
+                byte[] pdfBytes = File.ReadAllBytes(pdfPath);
+                string pdfText = System.Text.Encoding.ASCII.GetString(pdfBytes);
+                check(pdfBytes.Length > 20000, "PDF: файл создан (" + pdfBytes.Length + " байт)");
+                check(pdfText.StartsWith("%PDF-1.4"), "PDF: корректный заголовок %PDF-1.4");
+                check(pdfText.Contains("/FontFile2") && pdfText.Contains("/ToUnicode") &&
+                      pdfText.Contains("/Identity-H") && pdfText.Contains("/BaseFont /DejaVuSans"),
+                    "PDF: шрифт, кодировка Identity-H и ToUnicode встроены");
+                check(pdfText.Contains("%%EOF"), "PDF: файл завершён %%EOF");
+
+                int startxrefAt = pdfText.LastIndexOf("startxref", StringComparison.Ordinal);
+                int xrefOffset = -1;
+                if (startxrefAt >= 0)
+                {
+                    string tail = pdfText.Substring(startxrefAt + 9).Trim();
+                    int lineEnd = tail.IndexOf('\n');
+                    if (lineEnd < 0) lineEnd = tail.Length;
+                    int.TryParse(tail.Substring(0, lineEnd).Trim(), out xrefOffset);
+                }
+                check(xrefOffset > 0 && xrefOffset < pdfBytes.Length &&
+                      pdfText.Substring(xrefOffset, 4) == "xref",
+                    "PDF: таблица xref найдена по указанному смещению");
+                int pages = pdfText.Contains("/Count 2") ? 2 : pdfText.Contains("/Count 3") ? 3 : 1;
+                check(pages >= 2, "PDF: длинный текст разбит на страницы (" + pages + ")");
+
                 // Нормативная база: у каждого требования есть основание и событие.
                 check(catalog.Rules.Count == 18, "нормативная база: 18 требований");
                 check(catalog.Rules.All(rule => !string.IsNullOrWhiteSpace(rule.LegalBasis)),

@@ -36,11 +36,31 @@ if (Test-Path $Output) {
     Remove-Item $Output -Force
 }
 
-& $csc /nologo /target:winexe /platform:anycpu "/out:$Output" `
-    "/resource:$modules,modules.json" `
-    "/resource:$seed,initial_db.json" `
-    /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll /r:System.Core.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:System.Xml.dll `
-    (Join-Path $native "*.cs")
+# Шрифт с кириллицей для PDF: берём из src/data/cyrillicFont.ts, чтобы не держать
+# вторую копию 750-КБ файла в репозитории. Без встроенного шрифта PDF с русским
+# текстом не отображается (стандартные шрифты PDF кириллицу не содержат).
+$fontTs = Join-Path $root "src\data\cyrillicFont.ts"
+if (-not (Test-Path $fontTs)) {
+    throw "Не найден src/data/cyrillicFont.ts (шрифт для PDF)."
+}
+$fontSource = Get-Content $fontTs -Raw -Encoding UTF8
+if ($fontSource -notmatch 'DEJAVU_SANS_REGULAR_B64\s*=\s*"([^"]+)"') {
+    throw "В src/data/cyrillicFont.ts не найден DEJAVU_SANS_REGULAR_B64."
+}
+$fontTemp = Join-Path $env:TEMP ("DejaVuSans-" + [guid]::NewGuid().ToString('N') + ".ttf")
+[System.IO.File]::WriteAllBytes($fontTemp, [Convert]::FromBase64String($matches[1]))
+
+try {
+    & $csc /nologo /target:winexe /platform:anycpu "/out:$Output" `
+        "/resource:$modules,modules.json" `
+        "/resource:$seed,initial_db.json" `
+        "/resource:$fontTemp,DejaVuSans.ttf" `
+        /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll /r:System.Core.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:System.Xml.dll `
+        (Join-Path $native "*.cs")
+}
+finally {
+    if (Test-Path $fontTemp) { Remove-Item $fontTemp -Force }
+}
 
 if ($LASTEXITCODE -ne 0) {
     throw "Компиляция не удалась (exit $LASTEXITCODE)."

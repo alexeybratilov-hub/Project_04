@@ -41,6 +41,10 @@ namespace OtBaza
             };
             footer.Controls.Add(openFolder);
 
+            var pdf = new PillButton { Text = "Сохранить PDF", Primary = true, Width = 170, Height = 36, Margin = new Padding(0, 0, 8, 0) };
+            pdf.Click += delegate { SavePdf(); };
+            footer.Controls.Add(pdf);
+
             var fileName = new Label
             {
                 Dock = DockStyle.Top,
@@ -67,6 +71,22 @@ namespace OtBaza
             box.Select(0, 0);
             Body.Controls.Add(box);
             box.BringToFront();
+        }
+
+        private void SavePdf()
+        {
+            try
+            {
+                string pdfPath = Path.ChangeExtension(_path, ".pdf");
+                PdfService.Save(pdfPath, Path.GetFileNameWithoutExtension(_path), ExtractText(_path));
+                string question = "PDF сохранён:\n" + pdfPath + "\n\nОткрыть его сейчас?";
+                if (MessageBox.Show(question, "PDF", MessageBoxButtons.YesNo, MessageBoxIcon.Information) != DialogResult.Yes) return;
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(pdfPath) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Не удалось сохранить PDF: " + ex.Message, "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
         public static string ExtractText(string path)
