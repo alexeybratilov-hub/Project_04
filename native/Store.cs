@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Threading;
 using System.Web.Script.Serialization;
 
 namespace OtBaza
@@ -208,13 +209,21 @@ namespace OtBaza
         public string DbPath = string.Empty;
         public Dictionary<string, object> Db;
         public List<ModuleDef> CustomModules = new List<ModuleDef>();
+        /// <summary>Где лежат данные и является ли расположение портативным (null при OpenAt).</summary>
+        public PortableInfo Portable;
 
         private readonly JavaScriptSerializer _serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
         private string _customModulesPath = string.Empty;
 
+        /// <summary>Сколько дневных копий хранить рядом с базой (флешка — не архив).</summary>
+        public const int DAILY_BACKUP_LIMIT = 30;
+
         public static Store Open(Catalog catalog)
         {
-            return OpenAt(catalog, ResolveDataRoot());
+            PortableInfo portable = PortablePaths.Resolve();
+            Store store = OpenAt(catalog, portable.DataRoot);
+            store.Portable = portable;
+            return store;
         }
 
         public static Store OpenAt(Catalog catalog, string dataRoot)
@@ -237,27 +246,6 @@ namespace OtBaza
             store.LoadCustomModules();
             store.MergeCustomModules();
             return store;
-        }
-
-        private static string ResolveDataRoot()
-        {
-            string exeDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? Directory.GetCurrentDirectory();
-            try
-            {
-                string probe = Path.Combine(exeDir, "data", ".write-test");
-                Directory.CreateDirectory(Path.Combine(exeDir, "data"));
-                File.WriteAllText(probe, "1");
-                File.Delete(probe);
-                return exeDir;
-            }
-            catch
-            {
-                string fallback = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "OT-Baza");
-                Directory.CreateDirectory(fallback);
-                return fallback;
-            }
         }
 
         public Dictionary<string, object> Entity
@@ -376,27 +364,88 @@ namespace OtBaza
 
             if (File.Exists(DbPath))
             {
-                try
+                string previous = null;
+                try { previous = File.ReadAllText(DbPath, Encoding.UTF8); }
+                catch { }
+                if (!string.IsNullOrWhiteSpace(previous))
                 {
-                    string previous = File.ReadAllText(DbPath, Encoding.UTF8);
-                    if (!string.IsNullOrWhiteSpace(previous))
-                    {
-                        File.WriteAllText(
-                            Path.Combine(DataRoot, "data", "backups", "ot_database_prev.json"),
-                            previous,
-                            Encoding.UTF8);
-                    }
+                    WriteBackups(previous);
                 }
-                catch
-                {
-                    // Бэкап не должен блокировать сохранение.
-                }
-                File.Replace(tmp, DbPath, null);
+                ReplaceDatabase(tmp, DbPath);
             }
             else
             {
                 File.Move(tmp, DbPath);
             }
+        }
+
+        /// <summary>
+        /// Бэкапы портативной базы: предыдущая версия + одна копия на день
+        /// (с ротацией). Ошибка бэкапа не блокирует сохранение — иначе одна
+        /// занятая антивирусом папка остановила бы работу.
+        /// </summary>
+        private void WriteBackups(string previous)
+        {
+            string backupDir = Path.Combine(DataRoot, "data", "backups");
+            try { Directory.CreateDirectory(backupDir); }
+            catch { return; }
+
+            try { File.WriteAllText(Path.Combine(backupDir, "ot_database_prev.json"), previous, Encoding.UTF8); }
+            catch { }
+
+            string daily = Path.Combine(
+                backupDir,
+                "ot_database_" + DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + ".json");
+            try
+            {
+                if (!File.Exists(daily)) File.WriteAllText(daily, previous, Encoding.UTF8);
+            }
+            catch { }
+
+            try
+            {
+                List<string> dailies = Directory.GetFiles(backupDir, "ot_database_20*.json")
+                    .OrderByDescending(path => path, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                for (int i = DAILY_BACKUP_LIMIT; i < dailies.Count; i++)
+                {
+                    try { File.Delete(dailies[i]); }
+                    catch { }
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Замена файла базы. File.Replace не работает на некоторых носителях
+        /// (FAT/exFAT-флешка, сетевой диск) и падает, если файл занят
+        /// антивирусом — поэтому есть повтор и копирование как резервный путь.
+        /// </summary>
+        private static void ReplaceDatabase(string tmp, string target)
+        {
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                try
+                {
+                    File.Replace(tmp, target, null);
+                    return;
+                }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+                catch (PlatformNotSupportedException) { }
+
+                try
+                {
+                    File.Copy(tmp, target, true);
+                    File.Delete(tmp);
+                    return;
+                }
+                catch (IOException) { Thread.Sleep(60 * (attempt + 1)); }
+                catch (UnauthorizedAccessException) { Thread.Sleep(60 * (attempt + 1)); }
+            }
+
+            File.Copy(tmp, target, true);
+            File.Delete(tmp);
         }
 
         public void Reload()

@@ -17,6 +17,12 @@ namespace OtBaza
         [STAThread]
         private static void Main(string[] args)
         {
+            if (args.Length > 0 && args[0] == "--portable-check")
+            {
+                Environment.ExitCode = PortableCheck.Run();
+                return;
+            }
+
             if (args.Length > 0 && args[0] == "--selftest")
             {
                 Environment.ExitCode = SelfTest.Run(args.Length > 1 ? args[1] : null);
@@ -29,6 +35,29 @@ namespace OtBaza
                 return;
             }
 
+            // Один экземпляр на папку с данными: два окна перезаписывают одну базу
+            // последним сохранением. Разные папки (две флешки) работают независимо.
+            PortableInfo portable = PortablePaths.Resolve();
+            bool singleInstance;
+            using (var mutex = new System.Threading.Mutex(true, PortablePaths.InstanceMutexName(portable.DataRoot), out singleInstance))
+            {
+                if (!singleInstance)
+                {
+                    MessageBox.Show(
+                        "ОТ-База уже запущена из этой папки.\n\nВторое окно может затереть изменения первого.\n" +
+                        "Закройте работающую копию или запустите программу из другой папки.",
+                        "ОТ-База",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                    return;
+                }
+
+                RunApplication(args, portable);
+            }
+        }
+
+        private static void RunApplication(string[] args, PortableInfo portable)
+        {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.ThreadException += delegate(object sender, System.Threading.ThreadExceptionEventArgs e)
@@ -39,7 +68,10 @@ namespace OtBaza
             try
             {
                 Catalog catalog = Catalog.Load();
-                Store store = Store.Open(catalog);
+                // Расположение данных уже определено до замка: используем его же,
+                // чтобы замок и рабочая папка не могли разойтись.
+                Store store = Store.OpenAt(catalog, portable.DataRoot);
+                store.Portable = portable;
                 string startTab = null;
                 string demo = null;
                 for (int i = 0; i < args.Length - 1; i++)
@@ -47,6 +79,19 @@ namespace OtBaza
                     if (args[i] == "--tab") startTab = args[i + 1];
                     if (args[i] == "--demo") demo = args[i + 1];
                 }
+
+                if (!portable.IsPortable)
+                {
+                    MessageBox.Show(
+                        "Рядом с программой нельзя записывать данные:\n" + portable.ExeDirectory +
+                        "\n\n" + portable.FallbackReason +
+                        "\n\nБаза будет храниться в:\n" + portable.DataRoot +
+                        "\n\nДля переноса на другом компьютере скопируйте папку целиком (EXE + data + documents).",
+                        "ОТ-База — режим без записи рядом с программой",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                }
+
                 Application.Run(new MainForm(store, startTab, demo));
             }
             catch (Exception ex)
@@ -90,6 +135,9 @@ namespace OtBaza
     /// <summary>Проверка хранилища и движка обязательств без интерфейса: --selftest [каталог].</summary>
     internal static class SelfTest
     {
+        /// <summary>Каталог проверки: отчёт пишется рядом с ним, чтобы его можно было прочитать.</summary>
+        private static string selftestRoot;
+
         public static int Run(string targetDirectory)
         {
             var log = new StringBuilder();
@@ -106,6 +154,7 @@ namespace OtBaza
                 string root = string.IsNullOrWhiteSpace(targetDirectory)
                     ? Path.Combine(Path.GetTempPath(), "ot-baza-native-selftest-" + DateTime.Now.ToString("HHmmss"))
                     : targetDirectory;
+                selftestRoot = root;
                 if (Directory.Exists(root)) Directory.Delete(root, true);
                 Directory.CreateDirectory(root);
 
@@ -197,6 +246,48 @@ namespace OtBaza
                 check(CsvExport.Escape("=HYPERLINK(\"http://x\")") == "\"'=HYPERLINK(\"\"http://x\"\")\"", "CSV: формула нейтрализована");
                 check(CsvExport.Escape("-42,5") == "-42,5", "CSV: отрицательное число не испорчено");
                 check(CsvExport.Escape("@SUM(A1)") == "'@SUM(A1)", "CSV: значение с @ нейтрализовано");
+
+                // Портативность: данные рядом с EXE и замок запуска на папку.
+                PortableInfo portable = PortablePaths.Resolve();
+                check(
+                    portable.IsPortable && string.Equals(portable.DataRoot, portable.ExeDirectory, StringComparison.OrdinalIgnoreCase),
+                    "портативность: данные пишутся рядом с EXE (" + portable.DataRoot + ")");
+                check(
+                    PortablePaths.InstanceMutexName(portable.DataRoot) ==
+                    PortablePaths.InstanceMutexName(portable.DataRoot + Path.DirectorySeparatorChar),
+                    "замок запуска: один путь — одно имя");
+                check(
+                    PortablePaths.InstanceMutexName(portable.DataRoot) !=
+                    PortablePaths.InstanceMutexName(portable.DataRoot + "_2"),
+                    "замок запуска: разные папки — разные имена");
+
+                // Excel: выгрузка и обратное чтение тем же приложением.
+                string xlsxPath = Path.Combine(root, "probe-export.xlsx");
+                var matrix = new List<string[]>();
+                matrix.Add(new[] { "ФИО", "Дата приёма", "Стаж" });
+                matrix.Add(new[] { "Иванов; Иван", "2026-11-27", "7" });
+                matrix.Add(new[] { "007", "2026-02-01", "-42,5" });
+                XlsxWriter.Write(
+                    xlsxPath,
+                    "Сотрудники: тест/1",
+                    matrix,
+                    new List<int> { 160, 120, 80 },
+                    new List<bool> { false, true, false });
+                var readBack = XlsxReader.Read(xlsxPath);
+                check(readBack.Count == 3 && readBack[0][0] == "ФИО" && readBack[0][1] == "Дата приёма",
+                    "Excel: файл читается обратно, шапка на месте");
+                check(readBack[1][1] == "27.11.2026",
+                    "Excel: дата выгружена настоящей датой: " + readBack[1][1]);
+                check(DateText.Normalize(readBack[1][1]) == "2026-11-27",
+                    "Excel: дата из Excel приводится к ISO при импорте");
+                check(readBack[2][0] == "007", "Excel: ведущие нули не потеряны");
+                check(readBack[2][2] == "-42,5", "Excel: «42,5» остаётся текстом");
+                check(readBack[1][2] == "7", "Excel: целое число выгружено числом");
+
+                // Бэкапы: предыдущая версия базы и дневная копия.
+                string backupDir = Path.Combine(root, "data", "backups");
+                check(Directory.GetFiles(backupDir, "ot_database_20*.json").Length == 1,
+                    "бэкап: создана дневная копия базы");
             }
             catch (Exception ex)
             {
@@ -205,7 +296,9 @@ namespace OtBaza
             }
 
             log.AppendLine(failures == 0 ? "ИТОГ: все проверки пройдены" : "ИТОГ: ошибок " + failures);
-            string logPath = Path.Combine(Path.GetTempPath(), "ot-baza-native-selftest.log");
+            string logPath = string.IsNullOrEmpty(selftestRoot)
+                ? Path.Combine(Path.GetTempPath(), "ot-baza-native-selftest.log")
+                : Path.Combine(selftestRoot, "selftest.log");
             try { File.WriteAllText(logPath, log.ToString(), Encoding.UTF8); } catch { }
             return failures == 0 ? 0 : 1;
         }

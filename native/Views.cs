@@ -48,6 +48,7 @@ namespace OtBaza
             toolbar.Controls.Add(ToolButton("Импорт Excel", delegate { ImportExcel(); }, false));
             toolbar.Controls.Add(ToolButton("Изменить", delegate { EditRow(); }, false));
             toolbar.Controls.Add(ToolButton("Удалить", delegate { DeleteRows(); }, false));
+            toolbar.Controls.Add(ToolButton("Экспорт Excel", delegate { ExportXlsx(); }, false));
             toolbar.Controls.Add(ToolButton("Экспорт CSV", delegate { ExportCsv(); }, false));
 
             _search = new TextBox
@@ -257,6 +258,9 @@ namespace OtBaza
                     if (MessageBox.Show(question, "Импорт из Excel", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
 
                     bool isEmployees = J.Str(J.Get(_tab, "moduleId")) == "employees";
+                    var columnMeta = columns
+                        .GroupBy(c => J.Str(J.Get(c, "id")))
+                        .ToDictionary(g => g.Key, g => g.First());
                     string stamp = DateTime.Now.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
                     int imported = 0;
                     for (int r = 1; r < sheetRows.Count; r++)
@@ -271,7 +275,17 @@ namespace OtBaza
                         };
                         foreach (var pair in mapping)
                         {
-                            if (pair.Key < cells.Length) row[pair.Value] = (cells[pair.Key] ?? string.Empty).Trim();
+                            if (pair.Key >= cells.Length) continue;
+                            string raw = (cells[pair.Key] ?? string.Empty).Trim();
+                            Dictionary<string, object> meta;
+                            if (columnMeta.TryGetValue(pair.Value, out meta) &&
+                                DateText.IsDateColumn(pair.Value, J.Str(J.Get(meta, "name")), J.Str(J.Get(meta, "type"))))
+                            {
+                                // Excel отдаёт даты как «27.11.2026» — в базе хранится ISO,
+                                // иначе сроки по импортированным строкам не считаются.
+                                raw = DateText.Normalize(raw);
+                            }
+                            row[pair.Value] = raw;
                         }
                         _rows.Add(row);
 
@@ -408,6 +422,64 @@ namespace OtBaza
                 File.WriteAllText(dialog.FileName, builder.ToString(), new UTF8Encoding(true));
                 MessageBox.Show("Экспортировано записей: " + _rows.Count, "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
+        }
+
+        /// <summary>
+        /// Выгрузка в Excel: шапка + текущая выборка (если включён поиск, уходит
+        /// ровно то, что видно на экране). Файл читается обратно «Импортом Excel»
+        /// на другом ПК — формат совместим с собственным XlsxReader.
+        /// </summary>
+        private void ExportXlsx()
+        {
+            using (var dialog = new SaveFileDialog
+            {
+                Filter = "Excel (*.xlsx)|*.xlsx",
+                FileName = J.Str(J.Get(_tab, "name")) + "_" + DateTime.Today.ToString("yyyy-MM-dd") + ".xlsx"
+            })
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                try
+                {
+                    List<Dictionary<string, object>> rows = VisibleRows();
+                    var matrix = new List<string[]>();
+                    matrix.Add(Columns.Select(c => J.Str(J.Get(c, "name"))).ToArray());
+                    foreach (var row in rows)
+                    {
+                        matrix.Add(Columns
+                            .Select(c => J.Str(J.Get(row, J.Str(J.Get(c, "id")))))
+                            .ToArray());
+                    }
+                    var widths = Columns
+                        .Select(c => Math.Max(90, J.Int(J.Get(c, "width"), 160)))
+                        .ToList();
+                    var dateFlags = Columns
+                        .Select(c => DateText.IsDateColumn(
+                            J.Str(J.Get(c, "id")),
+                            J.Str(J.Get(c, "name")),
+                            J.Str(J.Get(c, "type"))))
+                        .ToList();
+                    XlsxWriter.Write(dialog.FileName, J.Str(J.Get(_tab, "name")), matrix, widths, dateFlags);
+                    MessageBox.Show(
+                        "Экспортировано записей: " + rows.Count + ".\nФайл: " + dialog.FileName,
+                        "Экспорт Excel",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Не удалось выгрузить Excel: " + ex.Message, "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        /// <summary>Строки, которые сейчас видит пользователь (поиск учитывается).</summary>
+        private List<Dictionary<string, object>> VisibleRows()
+        {
+            string query = _search.Text.Trim().ToLowerInvariant();
+            if (query.Length == 0) return _rows;
+            return _rows.Where(row =>
+                Columns.Any(c => J.Str(J.Get(row, J.Str(J.Get(c, "id")))).ToLowerInvariant().Contains(query)))
+                .ToList();
         }
     }
 

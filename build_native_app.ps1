@@ -36,7 +36,7 @@ if (Test-Path $Output) {
     Remove-Item $Output -Force
 }
 
-& $csc /nologo /target:winexe /platform:x64 "/out:$Output" `
+& $csc /nologo /target:winexe /platform:anycpu "/out:$Output" `
     "/resource:$modules,modules.json" `
     "/resource:$seed,initial_db.json" `
     /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll /r:System.Core.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:System.Xml.dll `

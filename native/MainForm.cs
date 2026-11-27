@@ -527,9 +527,18 @@ namespace OtBaza
                 .ToList();
             int overdue = pending.Count(o => ObligationsEngine.DaysLeft(o) < 0);
             int totalRows = _store.Tabs.Sum(tab => J.Arr(J.Get(J.Obj(tab), "rows")).Count);
+            string location;
+            if (_store.Portable == null || _store.Portable.IsPortable)
+            {
+                location = "Портативно: " + _store.DataRoot;
+            }
+            else
+            {
+                location = "ВНИМАНИЕ: рядом с программой писать нельзя, данные в " + _store.DataRoot;
+            }
             _status.Text = string.Format(
                 "Записей: {0}   ·   Активных требований: {1}   ·   Просрочено: {2}   ·   {3}",
-                totalRows, pending.Count, overdue, _store.DbPath);
+                totalRows, pending.Count, overdue, location);
         }
     }
 
