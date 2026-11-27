@@ -69,10 +69,7 @@ namespace OtBaza
                 Current.Confirm(title, message, confirmText, onYes);
                 return;
             }
-            if (MessageBox.Show(message, title, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes && onYes != null)
-            {
-                onYes();
-            }
+            // Без оболочки подтверждение некому показать: действие не выполняем (headless-режимы).
         }
     }
 
@@ -223,6 +220,8 @@ namespace OtBaza
     {
         public int MaxSheetWidth = 1040;
         public int MaxSheetHeight = 820;
+        /// <summary>Область центрирования листов (рабочая зона без сайдбара).</summary>
+        public Rectangle CardArea = Rectangle.Empty;
 
         private readonly List<Layer> _layers = new List<Layer>();
 
@@ -343,6 +342,9 @@ namespace OtBaza
                 Root.Controls.Add(_card);
 
                 form.Embedded = true;
+                // Внутри окна лист не обязан быть больше 340 px по высоте (как окно):
+                // небольшому подтверждению хватает 240 px.
+                form.MinimumSize = Size.Empty;
                 form.TopLevel = false;
                 form.FormBorderStyle = FormBorderStyle.None;
                 form.StartPosition = FormStartPosition.Manual;
@@ -378,12 +380,14 @@ namespace OtBaza
             private void LayoutCard()
             {
                 if (Root.IsDisposed) return;
+                Rectangle area = _host.CardArea;
+                if (area.Width < 240 || area.Height < 180) area = new Rectangle(0, 0, Root.Width, Root.Height);
                 int width = Math.Min(_host.MaxSheetWidth, Math.Max(420, _preferred.Width));
-                int height = Math.Min(_host.MaxSheetHeight, Math.Max(320, _preferred.Height));
-                width = Math.Min(width, Math.Max(400, Root.Width - 48));
-                height = Math.Min(height, Math.Max(300, Root.Height - 40));
-                int x = Math.Max(12, (Root.Width - width) / 2);
-                int y = Math.Max(10, (Root.Height - height) / 2);
+                int height = Math.Min(_host.MaxSheetHeight, Math.Max(220, _preferred.Height));
+                width = Math.Min(width, Math.Max(400, area.Width - 32));
+                height = Math.Min(height, Math.Max(300, area.Height - 24));
+                int x = area.Left + Math.Max(6, (area.Width - width) / 2);
+                int y = area.Top + Math.Max(6, (area.Height - height) / 2);
                 int offset = (int)(18 * (1.0 - _progress));
                 _card.Bounds = new Rectangle(x, y + offset, width, height);
                 if (Form != null && !Form.IsDisposed)
@@ -624,11 +628,20 @@ namespace OtBaza
         public ConfirmForm(string title, string message, string confirmText, bool destructive)
             : base(title, new Size(600, 300))
         {
+            int lines = 1;
+            if (!string.IsNullOrEmpty(message))
+            {
+                lines = message.Split('\n').Length + Math.Max(0, message.Length / 68);
+            }
+            int sheetHeight = Math.Max(240, Math.Min(520, 190 + lines * 20));
+            MinimumSize = Size.Empty;
+            Size = new Size(600, sheetHeight);
+
             var text = new Label
             {
                 Text = message,
                 Dock = DockStyle.Top,
-                Height = 118,
+                Height = Math.Max(80, sheetHeight - 130),
                 Font = Ui.Font(12.5f),
                 ForeColor = Ui.Ink,
                 BackColor = Color.Transparent

@@ -183,7 +183,7 @@ namespace OtBaza
             if (obligation == null) return;
             if (ObligationsEngine.IsDone(obligation))
             {
-                MessageBox.Show("Требование уже выполнено.", "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Shell.Notify("Требование уже выполнено.", NoticeKind.Info);
                 return;
             }
             ObligationsEngine.Complete(_store, obligation);
@@ -222,19 +222,15 @@ namespace OtBaza
 
             if (generated == 0)
             {
-                MessageBox.Show(
-                    errors.Count > 0
+                Shell.Notify(errors.Count > 0
                         ? "Не удалось сформировать документы:\n" + string.Join("\n", errors.ToArray())
-                        : "Нет активных требований с шаблоном документа.",
-                    "ОТ-База",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
+                        : "Нет активных требований с шаблоном документа.", NoticeKind.Info);
                 return;
             }
 
             string message = "Сформировано документов: " + generated + ".\nПапка: " + (lastFolder ?? Path.Combine(_store.DataRoot, "documents"));
             if (errors.Count > 0) message += "\n\nОшибки:\n" + string.Join("\n", errors.ToArray());
-            MessageBox.Show(message, "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            Shell.Notify(message, NoticeKind.Info);
         }
 
         private void RegisterEvent()
@@ -251,11 +247,7 @@ namespace OtBaza
             ObligationsEngine.RegisterEvent(_store, _employee, type, date);
             ReloadObligations();
             _onChanged();
-            MessageBox.Show(
-                "Событие зарегистрировано: " + _eventType.SelectedItem + " от " + _eventDate.Value.ToString("dd.MM.yyyy") + ".",
-                "ОТ-База",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            Shell.Notify("Событие зарегистрировано: " + _eventType.SelectedItem + " от " + _eventDate.Value.ToString("dd.MM.yyyy") + ".", NoticeKind.Info);
         }
 
         private void OpenDocumentsFolder()
@@ -268,7 +260,7 @@ namespace OtBaza
             }
             catch (Exception ex)
             {
-                MessageBox.Show(ex.Message, "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Shell.Notify(ex.Message, NoticeKind.Warning);
             }
         }
 
@@ -277,7 +269,7 @@ namespace OtBaza
             string folder = Path.Combine(_store.DataRoot, "documents");
             if (!Directory.Exists(folder))
             {
-                MessageBox.Show("Документы ещё не формировались.", "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Shell.Notify("Документы ещё не формировались.", NoticeKind.Info);
                 return;
             }
             var latest = Directory.GetFiles(folder, "*.docx", SearchOption.AllDirectories)
@@ -286,13 +278,10 @@ namespace OtBaza
                 .FirstOrDefault();
             if (latest == null)
             {
-                MessageBox.Show("Документы ещё не формировались.", "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Shell.Notify("Документы ещё не формировались.", NoticeKind.Info);
                 return;
             }
-            using (var preview = new DocxPreviewForm(latest.FullName))
-            {
-                preview.ShowDialog(this);
-            }
+            Shell.Sheet(new DocxPreviewForm(latest.FullName), null);
         }
     }
 }

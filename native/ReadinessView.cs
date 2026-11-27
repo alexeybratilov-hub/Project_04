@@ -176,11 +176,11 @@ namespace OtBaza
                 string name = "Готовность к ГИТ " + DateTime.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + ".pdf";
                 string path = Path.Combine(directory, name);
                 PdfService.Save(path, "Готовность к проверке ГИТ", GitReadiness.ToText(_report));
-                MessageBox.Show("Отчёт сохранён:\n" + path, "Готовность к ГИТ", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Shell.Notify("Отчёт сохранён:\n" + path, NoticeKind.Info);
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Не удалось сохранить PDF: " + ex.Message, "Готовность к ГИТ", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Shell.Notify("Не удалось сохранить PDF: " + ex.Message, NoticeKind.Warning);
             }
         }
 
@@ -196,11 +196,11 @@ namespace OtBaza
                 try
                 {
                     File.WriteAllText(dialog.FileName, GitReadiness.ToCsv(_report), new System.Text.UTF8Encoding(true));
-                    MessageBox.Show("Отчёт сохранён:\n" + dialog.FileName, "Готовность к ГИТ", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    Shell.Notify("Отчёт сохранён:\n" + dialog.FileName, NoticeKind.Info);
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show("Не удалось сохранить CSV: " + ex.Message, "Готовность к ГИТ", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    Shell.Notify("Не удалось сохранить CSV: " + ex.Message, NoticeKind.Warning);
                 }
             }
         }

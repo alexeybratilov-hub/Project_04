@@ -113,8 +113,8 @@ namespace OtBaza
                 RowCount = 1,
                 Padding = new Padding(0)
             };
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 320));
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             Body.Controls.Add(layout);
 
@@ -281,7 +281,7 @@ namespace OtBaza
         {
             if (_selected == null)
             {
-                MessageBox.Show("Выберите организацию.", "Организации", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Shell.Notify("Выберите организацию.", NoticeKind.Info);
                 return;
             }
 
@@ -301,7 +301,7 @@ namespace OtBaza
             }
             if (J.Str(J.Get(profile, "fullName")).Length == 0)
             {
-                MessageBox.Show("Заполните хотя бы краткое или полное название.", "Организации", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Shell.Notify("Заполните хотя бы краткое или полное название.", NoticeKind.Info);
                 return;
             }
 
@@ -311,7 +311,7 @@ namespace OtBaza
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Не удалось сохранить: " + ex.Message, "Организации", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Shell.Notify("Не удалось сохранить: " + ex.Message, NoticeKind.Warning);
                 return;
             }
 
@@ -327,12 +327,13 @@ namespace OtBaza
 
         private void AddOrganization()
         {
-            using (var prompt = new TextPromptForm("Новая организация", "Краткое название (например, ООО «Ромашка»)", "Новая организация"))
+            var prompt = new TextPromptForm("Новая организация", "Краткое название (например, ООО «Ромашка»)", "Новая организация");
+            Shell.Sheet(prompt, delegate
             {
-                if (prompt.ShowDialog(this) != DialogResult.OK) return;
+                if (prompt.DialogResult != DialogResult.OK) return;
                 if (prompt.Value.Length == 0)
                 {
-                    MessageBox.Show("Название не может быть пустым.", "Организации", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    Shell.Notify("Название не может быть пустым.", NoticeKind.Info);
                     return;
                 }
                 try
@@ -342,13 +343,13 @@ namespace OtBaza
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show("Не удалось создать организацию: " + ex.Message, "Организации", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    Shell.Notify("Не удалось создать организацию: " + ex.Message, NoticeKind.Danger);
                     return;
                 }
-            }
-            Changed = true;
-            RefreshList();
-            _list.SelectedIndex = _list.Items.Count - 1;
+                Changed = true;
+                RefreshList();
+                if (_list.Items.Count > 0) _list.SelectedIndex = _list.Items.Count - 1;
+            });
         }
 
         private void ActivateSelected()
@@ -357,7 +358,7 @@ namespace OtBaza
             if (item == null) return;
             if (item.Id == _store.ActiveEntityId)
             {
-                MessageBox.Show("Эта организация уже активна.", "Организации", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Shell.Notify("Эта организация уже активна.", NoticeKind.Info);
                 return;
             }
             try
@@ -366,7 +367,7 @@ namespace OtBaza
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Не удалось переключить организацию: " + ex.Message, "Организации", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Shell.Notify("Не удалось переключить организацию: " + ex.Message, NoticeKind.Warning);
                 return;
             }
             Changed = true;

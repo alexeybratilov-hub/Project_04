@@ -75,14 +75,30 @@ namespace OtBaza
             };
             layout.Controls.Add(toolbar, 0, 2);
 
+            toolbar.Controls.Add(new Label
+            {
+                Text = "Поиск по требованиям:",
+                AutoSize = true,
+                ForeColor = Ui.Muted,
+                BackColor = Color.Transparent,
+                Font = Ui.Font(11.5f),
+                Margin = new Padding(0, 6, 6, 0)
+            });
+
             _search = new TextBox
             {
                 Width = 340,
                 Font = Ui.Font(11.5f),
-                Margin = new Padding(0, 2, 10, 0)
+                Margin = new Padding(0, 2, 4, 0)
             };
+            ViewsFx.SetPlaceholder(_search, "Например: медосмотр, СИЗ, 29н");
             _search.TextChanged += delegate { Fill(); };
             toolbar.Controls.Add(_search);
+
+            var clear = new PillButton { Text = "✕", Width = 34, Height = 27, Radius = 8, Hint = "Очистить поиск" };
+            clear.Margin = new Padding(0, 3, 10, 0);
+            clear.Click += delegate { _search.Clear(); _search.Focus(); };
+            toolbar.Controls.Add(clear);
 
             _summary = new Label
             {
@@ -122,11 +138,7 @@ namespace OtBaza
             _grid.CellDoubleClick += delegate(object sender, DataGridViewCellEventArgs e)
             {
                 if (e.RowIndex < 0) return;
-                MessageBox.Show(
-                    CellText(e.RowIndex, 4),
-                    "Нормативное основание",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
+                Shell.Notify(CellText(e.RowIndex, 4), NoticeKind.Info);
             };
             layout.Controls.Add(_grid, 0, 3);
 

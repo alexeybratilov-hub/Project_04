@@ -60,6 +60,7 @@ namespace OtBaza
         private TransparentFlow _sidebar;
         private TransparentFlow _sidebarBottom;
         private Panel _content;
+        private Control _canvas;
         private Label _status;
         private SheetHost _sheets;
         private ToastHost _toasts;
@@ -106,6 +107,7 @@ namespace OtBaza
 
             var canvas = new CanvasPanel { Dock = DockStyle.Fill };
             Controls.Add(canvas);
+            _canvas = canvas;
 
             var root = new TransparentTable
             {
@@ -143,7 +145,6 @@ namespace OtBaza
                 Padding = new Padding(9, 2, 9, 8)
             };
             sidebarHost.Controls.Add(_sidebarBottom);
-            _sidebarBottom.BringToFront();
 
             var main = new TransparentTable
             {
@@ -196,6 +197,7 @@ namespace OtBaza
                 _sidebar.HorizontalScroll.Visible = false;
             };
             Resize += delegate { LayoutOverlays(); };
+            if (_content != null) _content.Resize += delegate { LayoutOverlays(); };
             KeyDown += delegate(object sender, KeyEventArgs e)
             {
                 if (e.KeyCode == Keys.F1)
@@ -221,7 +223,7 @@ namespace OtBaza
                 RebuildChrome();
                 ModuleDef startModule = string.IsNullOrEmpty(_startModuleId) ? null : _store.Catalog.Module(_startModuleId);
                 if (startModule != null) ShowModuleTab(startModule);
-                else ShowDashboard(true);
+                else ShowDashboard(false);
 
                 LayoutOverlays();
                 RunDemo();
@@ -233,6 +235,23 @@ namespace OtBaza
             if (_toasts == null) return;
             int width = Math.Min(470, Math.Max(280, Width / 3));
             _toasts.SetBounds(Math.Max(0, Width - width - 18), Math.Max(40, Height - 240), width, 224);
+            if (_sheets == null || _canvas == null || _content == null) return;
+            try
+            {
+                // Листы центрируются по рабочей области, а не по всему окну:
+                // иначе на 1366/1000 px карточка накрывает навигацию.
+                Rectangle contentScreen = _content.RectangleToScreen(_content.ClientRectangle);
+                Rectangle canvasScreen = _canvas.RectangleToScreen(_canvas.ClientRectangle);
+                _sheets.CardArea = new Rectangle(
+                    Math.Max(0, contentScreen.X - canvasScreen.X),
+                    Math.Max(0, contentScreen.Y - canvasScreen.Y),
+                    Math.Max(200, contentScreen.Width),
+                    Math.Max(200, contentScreen.Height));
+            }
+            catch
+            {
+                _sheets.CardArea = Rectangle.Empty;
+            }
         }
 
         private void RunDemo()
@@ -274,6 +293,9 @@ namespace OtBaza
                     break;
                 case "docx":
                     OpenDemoDocx();
+                    break;
+                case "reduced":
+                    if (!Ui.Reduced) ToggleEffects();
                     break;
                 case "anim":
                     {
@@ -366,8 +388,9 @@ namespace OtBaza
             }
             if (_entityLinkLabel != null && !_entityLinkLabel.IsDisposed)
             {
-                _entityLinkLabel.Width = width;
-                if (_entityNameLabel != null && !_entityNameLabel.IsDisposed) _entityNameLabel.Width = width;
+                int inner = Math.Max(60, width - 8);
+                _entityLinkLabel.Width = inner;
+                if (_entityNameLabel != null && !_entityNameLabel.IsDisposed) _entityNameLabel.Width = inner;
             }
         }
 
@@ -416,9 +439,9 @@ namespace OtBaza
                 ForeColor = Ui.Ink,
                 BackColor = Color.Transparent,
                 AutoSize = false,
-                Width = SidebarInnerWidth,
+                Width = Math.Max(60, SidebarInnerWidth - 8),
                 Height = 22,
-                Margin = new Padding(5, 0, 0, 0),
+                Margin = new Padding(4, 0, 0, 0),
                 AutoEllipsis = true
             };
             _entityLinkLabel = new Label
@@ -428,9 +451,9 @@ namespace OtBaza
                 ForeColor = Ui.Blue,
                 BackColor = Color.Transparent,
                 AutoSize = false,
-                Width = SidebarInnerWidth,
+                Width = Math.Max(60, SidebarInnerWidth - 8),
                 Height = 17,
-                Margin = new Padding(6, 0, 0, 0),
+                Margin = new Padding(5, 0, 0, 0),
                 Cursor = Cursors.Hand
             };
             _entityLinkLabel.Click += delegate { OpenPortfolio(); };

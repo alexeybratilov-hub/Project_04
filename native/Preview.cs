@@ -37,7 +37,7 @@ namespace OtBaza
             openFolder.Click += delegate
             {
                 try { System.Diagnostics.Process.Start("explorer.exe", "\"" + Path.GetDirectoryName(path) + "\""); }
-                catch (Exception ex) { MessageBox.Show(ex.Message, "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+                catch (Exception ex) { Shell.Notify(ex.Message, NoticeKind.Warning); }
             };
             footer.Controls.Add(openFolder);
 
@@ -80,12 +80,15 @@ namespace OtBaza
                 string pdfPath = Path.ChangeExtension(_path, ".pdf");
                 PdfService.Save(pdfPath, Path.GetFileNameWithoutExtension(_path), ExtractText(_path));
                 string question = "PDF сохранён:\n" + pdfPath + "\n\nОткрыть его сейчас?";
-                if (MessageBox.Show(question, "PDF", MessageBoxButtons.YesNo, MessageBoxIcon.Information) != DialogResult.Yes) return;
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(pdfPath) { UseShellExecute = true });
+                Shell.Confirm("PDF сохранён", question, "Открыть", delegate
+                {
+                    try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(pdfPath) { UseShellExecute = true }); }
+                    catch { }
+                });
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Не удалось сохранить PDF: " + ex.Message, "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Shell.Notify("Не удалось сохранить PDF: " + ex.Message, NoticeKind.Warning);
             }
         }
 

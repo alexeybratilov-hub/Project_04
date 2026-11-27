@@ -429,7 +429,7 @@ namespace OtBaza
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show("Не удалось загрузить шаблон: " + ex.Message, "Шаблоны", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    Shell.Notify("Не удалось загрузить шаблон: " + ex.Message, NoticeKind.Warning);
                 }
             }
         }
@@ -448,19 +448,19 @@ namespace OtBaza
             string name = _name.Text.Trim();
             if (name.Length == 0)
             {
-                MessageBox.Show("Укажите название шаблона.", "Шаблоны", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Shell.Notify("Укажите название шаблона.", NoticeKind.Info);
                 return;
             }
 
             bool isDocx = _current != null && _current.Kind == "docx";
             if (!isDocx && _content.Text.Trim().Length == 0)
             {
-                MessageBox.Show("Текст шаблона пуст.", "Шаблоны", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Shell.Notify("Текст шаблона пуст.", NoticeKind.Info);
                 return;
             }
             if (isDocx && (_current.EntityId == null))
             {
-                MessageBox.Show("Это встроенный Word-шаблон: его можно только сформировать.", "Шаблоны", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Shell.Notify("Это встроенный Word-шаблон: его можно только сформировать.", NoticeKind.Info);
                 return;
             }
 
@@ -502,7 +502,7 @@ namespace OtBaza
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Не удалось сохранить шаблон: " + ex.Message, "Шаблоны", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Shell.Notify("Не удалось сохранить шаблон: " + ex.Message, NoticeKind.Warning);
                 return;
             }
 
@@ -521,46 +521,47 @@ namespace OtBaza
         {
             if (_current == null || _current.EntityId == null)
             {
-                MessageBox.Show("Встроенный шаблон удалить нельзя — его можно только переопределить своим.", "Шаблоны", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Shell.Notify("Встроенный шаблон удалить нельзя — его можно только переопределить своим.", NoticeKind.Info);
                 return;
             }
             string question = "Удалить шаблон «" + _current.Name + "»?\n\n" +
                               "Уже сформированные документы останутся в папке documents.";
-            if (MessageBox.Show(question, "Шаблоны", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-
-            var templates = J.Arr(J.Get(_store.Entity, "templates"));
-            var keep = templates.Where(item =>
+            Shell.Confirm("Шаблоны", question, "Удалить", delegate
             {
-                var raw = J.Obj(item);
-                return raw != null && J.Str(J.Get(raw, "id")) != _current.EntityId;
-            }).ToList();
-            J.Put(_store.Entity, "templates", keep.Cast<object>().ToArray());
+                var templates = J.Arr(J.Get(_store.Entity, "templates"));
+                var keep = templates.Where(item =>
+                {
+                    var raw = J.Obj(item);
+                    return raw != null && J.Str(J.Get(raw, "id")) != _current.EntityId;
+                }).ToList();
+                J.Put(_store.Entity, "templates", keep.Cast<object>().ToArray());
 
-            // Файл своего .docx-бланка при удалении шаблона тоже убираем (он уникален для импорта).
-            if (_current.Kind == "docx" && !string.IsNullOrWhiteSpace(_current.FilePath))
-            {
+                // Файл своего .docx-бланка при удалении шаблона тоже убираем (он уникален для импорта).
+                if (_current.Kind == "docx" && !string.IsNullOrWhiteSpace(_current.FilePath))
+                {
+                    try
+                    {
+                        string path = DocxService.ResolveTemplateFile(_store, new TemplateDef { FilePath = _current.FilePath });
+                        if (File.Exists(path)) File.Delete(path);
+                    }
+                    catch
+                    {
+                        // Файл занят — запись шаблона уже удалена, файл можно убрать вручную.
+                    }
+                }
+
                 try
                 {
-                    string path = DocxService.ResolveTemplateFile(_store, new TemplateDef { FilePath = _current.FilePath });
-                    if (File.Exists(path)) File.Delete(path);
+                    _store.Save();
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // Файл занят — запись шаблона уже удалена, файл можно убрать вручную.
+                    Shell.Notify("Не удалось удалить: " + ex.Message, NoticeKind.Warning);
+                    return;
                 }
-            }
-
-            try
-            {
-                _store.Save();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Не удалось удалить: " + ex.Message, "Шаблоны", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-            Changed = true;
-            RefreshAll();
+                Changed = true;
+                RefreshAll();
+            });
         }
 
         private void Generate()
@@ -568,12 +569,12 @@ namespace OtBaza
             var employee = _employee.SelectedItem as EmployeeItem;
             if (employee == null)
             {
-                MessageBox.Show("В «Сотрудниках» пока нет работников — документ формировать не для кого.", "Шаблоны", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Shell.Notify("В «Сотрудниках» пока нет работников — документ формировать не для кого.", NoticeKind.Info);
                 return;
             }
             if (_current == null)
             {
-                MessageBox.Show("Сначала сохраните шаблон (кнопка «Сохранить как свой»).", "Шаблоны", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Shell.Notify("Сначала сохраните шаблон (кнопка «Сохранить как свой»).", NoticeKind.Info);
                 return;
             }
 
@@ -585,20 +586,17 @@ namespace OtBaza
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Не удалось сформировать документ: " + ex.Message, "Шаблоны", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Shell.Notify("Не удалось сформировать документ: " + ex.Message, NoticeKind.Warning);
                 return;
             }
             if (path == null)
             {
-                MessageBox.Show("Шаблон не найден. Сохраните его как свой и повторите.", "Шаблоны", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Shell.Notify("Шаблон не найден. Сохраните его как свой и повторите.", NoticeKind.Info);
                 return;
             }
 
             Changed = true;
-            using (var preview = new DocxPreviewForm(path))
-            {
-                preview.ShowDialog(this);
-            }
+            Shell.Sheet(new DocxPreviewForm(path), null);
         }
 
         private sealed class TemplateItem

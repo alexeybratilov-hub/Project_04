@@ -415,10 +415,13 @@ namespace OtBaza
             }
             else
             {
-                int alpha = 190 + (int)(45 * _hoverAmount);
-                fill = Color.FromArgb((int)(_pressed ? 255 : alpha), 255, 255, 255);
+                // Вторичная кнопка должна читаться как кнопка на белом стекле:
+                // плотная подложка + видимая светлая рамка, при наведении — голубой тон.
+                fill = _pressed ? Ui.BlueSoft : Blend(Color.FromArgb(248, 251, 255), Ui.BlueSoft, _hoverAmount * 0.75);
                 text = Ui.Ink;
-                border = Color.FromArgb(200 + (int)(40 * _hoverAmount), 255, 255, 255);
+                border = _hoverAmount > 0.03
+                    ? Color.FromArgb((int)(120 + 90 * _hoverAmount), Ui.Blue)
+                    : Color.FromArgb(216, Ui.Line);
             }
 
             using (var path = Ui.Round(body, Radius))
