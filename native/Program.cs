@@ -17,6 +17,13 @@ namespace OtBaza
         [STAThread]
         private static void Main(string[] args)
         {
+            // Проверка раскладки: отдельный одноразовый запуск, реальные данные не трогает.
+            if (args.Length > 0 && args[0] == "--layout-check")
+            {
+                Environment.ExitCode = LayoutCheck.Run(args);
+                return;
+            }
+
             if (args.Length > 0 && args[0] == "--portable-check")
             {
                 Environment.ExitCode = PortableCheck.Run();

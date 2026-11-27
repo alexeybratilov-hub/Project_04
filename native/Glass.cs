@@ -9,16 +9,26 @@ namespace OtBaza
     internal static class Ui
     {
         public static readonly Color Ink = Color.FromArgb(0x1E, 0x29, 0x3B);
-        public static readonly Color Muted = Color.FromArgb(0x64, 0x74, 0x8B);
+        public static readonly Color Muted = Color.FromArgb(0x5B, 0x6B, 0x82);
         public static readonly Color Line = Color.FromArgb(0xE2, 0xE8, 0xF0);
-        public static readonly Color CanvasTop = Color.FromArgb(0xF7, 0xFA, 0xFF);
-        public static readonly Color CanvasBottom = Color.FromArgb(0xE7, 0xEE, 0xFA);
+        public static readonly Color CanvasTop = Color.FromArgb(0xF8, 0xFA, 0xFD);
+        public static readonly Color CanvasBottom = Color.FromArgb(0xE9, 0xEF, 0xF9);
         public static readonly Color Accent = Color.FromArgb(0x1E, 0x29, 0x3B);
         public static readonly Color AccentHover = Color.FromArgb(0x0F, 0x17, 0x2A);
-        public static readonly Color Rose = Color.FromArgb(0xD9, 0x1D, 0x48);
-        public static readonly Color Amber = Color.FromArgb(0xB4, 0x53, 0x09);
-        public static readonly Color Emerald = Color.FromArgb(0x04, 0x78, 0x57);
-        public static readonly Color Blue = Color.FromArgb(0x1D, 0x4E, 0xD8);
+        public static readonly Color Rose = Color.FromArgb(0xB9, 0x1C, 0x1C);
+        public static readonly Color Amber = Color.FromArgb(0x92, 0x40, 0x0E);
+        public static readonly Color Emerald = Color.FromArgb(0x06, 0x5F, 0x46);
+        public static readonly Color Blue = Color.FromArgb(0x25, 0x63, 0xEB);
+        public static readonly Color RoseSoft = Color.FromArgb(0xF4, 0xE3, 0xE5);
+        public static readonly Color AmberSoft = Color.FromArgb(0xFA, 0xF0, 0xDC);
+        public static readonly Color EmeraldSoft = Color.FromArgb(0xE2, 0xF1, 0xEA);
+        public static readonly Color BlueSoft = Color.FromArgb(0xE6, 0xEE, 0xFC);
+
+        /// <summary>Цвет с прозрачностью — для мягких подложек виджетов.</summary>
+        public static Color Alpha(Color color, int alpha)
+        {
+            return Color.FromArgb(Math.Max(0, Math.Min(255, alpha)), color);
+        }
 
         /// <summary>Облегчённый режим: без размытия/прозрачности и теней.</summary>
         public static bool Reduced;
@@ -179,7 +189,11 @@ namespace OtBaza
         private string _value = string.Empty;
         private string _hint = string.Empty;
         private Color _accent = Ui.Ink;
-        private bool _hover;
+        private double _hoverAmount;
+        private bool _clickable;
+        private string _action = string.Empty;
+
+        public event EventHandler Open;
 
         public GlassCard()
         {
@@ -190,25 +204,54 @@ namespace OtBaza
 
         public void SetData(string caption, string value, string hint, Color accent)
         {
+            SetData(caption, value, hint, accent, string.Empty);
+        }
+
+        public void SetData(string caption, string value, string hint, Color accent, string action)
+        {
             _caption = caption;
             _value = value;
             _hint = hint;
             _accent = accent;
+            _action = action ?? string.Empty;
+            _clickable = _action.Length > 0;
+            Cursor = _clickable ? Cursors.Hand : Cursors.Default;
             Invalidate();
         }
 
         protected override void OnMouseEnter(EventArgs e)
         {
-            _hover = true;
-            Invalidate();
+            AnimateHover(1.0);
             base.OnMouseEnter(e);
         }
 
         protected override void OnMouseLeave(EventArgs e)
         {
-            _hover = false;
-            Invalidate();
+            AnimateHover(0.0);
             base.OnMouseLeave(e);
+        }
+
+        protected override void OnClick(EventArgs e)
+        {
+            base.OnClick(e);
+            if (_clickable && Open != null) Open(this, EventArgs.Empty);
+        }
+
+        private void AnimateHover(double target)
+        {
+            if (Ui.Reduced)
+            {
+                _hoverAmount = target;
+                Invalidate();
+                return;
+            }
+            double from = _hoverAmount;
+            Anim.Run(Anim.Fast, delegate(double t)
+            {
+                if (IsDisposed) return;
+                _hoverAmount = from + (target - from) * t;
+                Invalidate();
+            }, null);
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -216,7 +259,7 @@ namespace OtBaza
             Graphics g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             Ui.PaintCanvas(g, ClientRectangle);
-            Ui.PaintGlass(g, ClientRectangle, 16, _hover ? 200 : 178, true);
+            Ui.PaintGlass(g, ClientRectangle, 16, 178 + (int)(22 * _hoverAmount), true);
 
             int pad = 16;
             var accent = new Rectangle(pad, pad + 2, 4, 14);
@@ -234,40 +277,49 @@ namespace OtBaza
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
 
             Ui.PaintText(g, _hint, Ui.Font(10.5f), Ui.Muted,
-                new Rectangle(pad, Height - 28, Width - pad * 2, 18),
+                new Rectangle(pad, Height - 28, Width - pad * 2 - (_clickable ? 62 : 0), 18),
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+
+            if (_clickable)
+            {
+                Ui.PaintText(g, _action, Ui.Font(10.5f, FontStyle.Bold), _accent,
+                    new Rectangle(Width - pad - 72, Height - 28, 72, 18),
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            }
         }
     }
 
     /// <summary>Пилюля-кнопка: primary (тёмная) или secondary (стеклянная).</summary>
     internal class PillButton : Control
     {
-        private bool _hover;
+        private double _hoverAmount;
         private bool _pressed;
+        private bool _focused;
 
         public bool Primary;
         public bool AlignLeft;
         public int Radius = 10;
+        public Color AccentColor = Color.Empty;
+        public string Hint = string.Empty;
 
         public PillButton()
         {
-            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor, true);
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor | ControlStyles.Selectable, true);
             BackColor = Color.Transparent;
             Cursor = Cursors.Hand;
+            TabStop = true;
         }
 
         protected override void OnMouseEnter(EventArgs e)
         {
-            _hover = true;
-            Invalidate();
+            AnimateHover(1.0);
             base.OnMouseEnter(e);
         }
 
         protected override void OnMouseLeave(EventArgs e)
         {
-            _hover = false;
             _pressed = false;
-            Invalidate();
+            AnimateHover(0.0);
             base.OnMouseLeave(e);
         }
 
@@ -285,26 +337,88 @@ namespace OtBaza
             base.OnMouseUp(e);
         }
 
+        protected override void OnGotFocus(EventArgs e)
+        {
+            _focused = true;
+            Invalidate();
+            base.OnGotFocus(e);
+        }
+
+        protected override void OnLostFocus(EventArgs e)
+        {
+            _focused = false;
+            Invalidate();
+            base.OnLostFocus(e);
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter)
+            {
+                e.Handled = true;
+                OnClick(EventArgs.Empty);
+            }
+            base.OnKeyDown(e);
+        }
+
+        protected override void OnEnabledChanged(EventArgs e)
+        {
+            Cursor = Enabled ? Cursors.Hand : Cursors.Default;
+            Invalidate();
+            base.OnEnabledChanged(e);
+        }
+
+        private void AnimateHover(double target)
+        {
+            if (Ui.Reduced)
+            {
+                _hoverAmount = target;
+                Invalidate();
+                return;
+            }
+            double from = _hoverAmount;
+            Anim.Run(Anim.Fast, delegate(double t)
+            {
+                if (IsDisposed) return;
+                _hoverAmount = from + (target - from) * t;
+                Invalidate();
+            }, null);
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             var body = new Rectangle(0, 0, Width - 1, Height - 1);
+            bool primary = Primary;
+            Color accent = AccentColor == Color.Empty ? Ui.Accent : AccentColor;
 
             Color fill;
             Color text;
             Color border;
-            if (Primary)
+            if (!Enabled)
             {
-                fill = _pressed ? Ui.AccentHover : _hover ? Ui.AccentHover : Ui.Accent;
+                fill = Color.FromArgb(120, 255, 255, 255);
+                text = Color.FromArgb(110, Ui.Ink);
+                border = Color.FromArgb(90, Ui.Line);
+            }
+            else if (primary)
+            {
+                Color baseColor = _pressed ? Ui.AccentHover : accent;
+                if (_hoverAmount > 0.01f && !_pressed)
+                {
+                    baseColor = Blend(accent, Ui.AccentHover, _hoverAmount * 0.9);
+                }
+                fill = baseColor;
                 text = Color.White;
                 border = fill;
             }
             else
             {
-                fill = _hover ? Color.FromArgb(235, 255, 255, 255) : Color.FromArgb(190, 255, 255, 255);
+                int alpha = 190 + (int)(45 * _hoverAmount);
+                fill = Color.FromArgb((int)(_pressed ? 255 : alpha), 255, 255, 255);
                 text = Ui.Ink;
-                border = Color.FromArgb(215, 255, 255, 255);
+                border = Color.FromArgb(200 + (int)(40 * _hoverAmount), 255, 255, 255);
             }
 
             using (var path = Ui.Round(body, Radius))
@@ -317,10 +431,28 @@ namespace OtBaza
                 }
             }
 
+            if (_focused)
+            {
+                using (var path = Ui.Round(new Rectangle(1, 1, Width - 3, Height - 3), Math.Max(4, Radius - 1)))
+                using (var pen = new Pen(Ui.Alpha(primary ? Color.White : Ui.Blue, 190), 2f))
+                {
+                    g.DrawPath(pen, path);
+                }
+            }
+
             var flags = (AlignLeft ? TextFormatFlags.Left : TextFormatFlags.HorizontalCenter)
-                        | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis;
+                        | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix;
             var textRect = new Rectangle(AlignLeft ? 14 : 6, 0, AlignLeft ? Width - 20 : Width - 12, Height);
             Ui.PaintText(g, Text, Ui.Font(12.5f, Primary ? FontStyle.Bold : FontStyle.Regular), text, textRect, flags);
+        }
+
+        private static Color Blend(Color from, Color to, double amount)
+        {
+            amount = Math.Max(0, Math.Min(1, amount));
+            return Color.FromArgb(
+                (int)(from.R + (to.R - from.R) * amount),
+                (int)(from.G + (to.G - from.G) * amount),
+                (int)(from.B + (to.B - from.B) * amount));
         }
     }
 
@@ -373,6 +505,12 @@ namespace OtBaza
         protected readonly TransparentPanel Body;
         private readonly string _caption;
 
+        /// <summary>
+        /// true — форма показана не отдельным окном, а листом внутри главного окна
+        /// (SheetHost). Тогда её не нужно тащить мышью и подгонять под рабочий стол.
+        /// </summary>
+        public bool Embedded;
+
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern bool ReleaseCapture();
 
@@ -418,6 +556,7 @@ namespace OtBaza
 
         private void DragWindow(object sender, MouseEventArgs e)
         {
+            if (Embedded) return;
             if (e.Button != MouseButtons.Left) return;
             ReleaseCapture();
             SendMessage(Handle, 0xA1, 0x2, 0);
@@ -431,6 +570,7 @@ namespace OtBaza
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
+            if (Embedded) return;
             Rectangle area = Screen.FromControl(this).WorkingArea;
             int width = Math.Min(Width, area.Width - 20);
             int height = Math.Min(Height, area.Height - 20);
@@ -445,6 +585,7 @@ namespace OtBaza
 
         private void ApplyRegion()
         {
+            if (Width <= 0 || Height <= 0) return;
             using (var path = Ui.Round(new Rectangle(0, 0, Width, Height), 18))
             {
                 Region = new Region(path);
@@ -454,6 +595,14 @@ namespace OtBaza
 
         protected override void OnPaintBackground(PaintEventArgs e)
         {
+            if (Embedded)
+            {
+                using (var brush = new SolidBrush(Color.FromArgb(0xFA, 0xFC, 0xFF)))
+                {
+                    e.Graphics.FillRectangle(brush, ClientRectangle);
+                }
+                return;
+            }
             Ui.PaintCanvas(e.Graphics, ClientRectangle);
             Ui.PaintGlass(e.Graphics, ClientRectangle, 18, 208, true);
         }
