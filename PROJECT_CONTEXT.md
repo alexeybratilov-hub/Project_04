@@ -47,6 +47,7 @@
 - `native/OrganizationForm.cs` — организации (несколько юрлиц, переключение, реквизиты); `native/Store.cs` — `CreateOrganization` / `SetActiveEntity` / `EnsureModuleTabs`.
 - `native/TemplatesForm.cs` — шаблоны документов: встроенные и свои, редактор с тегами, формирование DOCX по работнику.
 - `native/NormsView.cs` — экран «Нормативная база»: требования, события, сроки/периодичность, нормативные основания, поиск.
+- `native/GitReadiness.cs` + `native/ReadinessView.cs` — самопроверка готовности к проверке ГИТ: 9 направлений, 100 баллов, экспорт PDF/CSV.
 - `native/DocxTemplateService.cs` — подстановка тегов в готовые `.docx`-бланки (по абзацу, а не по прогону);
 - `native/PdfFont.cs` + `native/PdfWriter.cs` — PDF с кириллицей: разбор TrueType, встраивание шрифта (CIDFontType2/Identity-H/ToUnicode), A4, таблицы, страницы;
 - `native/XlsxReader.cs` / `native/XlsxWriter.cs` — импорт и экспорт Excel без библиотек; `native/DateText.cs` — нормализация дат к ISO; `native/CsvExport.cs` — экранирование CSV (в т.ч. защита от формул).
