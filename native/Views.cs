@@ -400,20 +400,14 @@ namespace OtBaza
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
                 var builder = new StringBuilder();
-                builder.AppendLine(string.Join(";", Columns.Select(c => EscapeCsv(J.Str(J.Get(c, "name"))))));
+                builder.AppendLine(string.Join(";", Columns.Select(c => CsvExport.Escape(J.Str(J.Get(c, "name"))))));
                 foreach (var row in _rows)
                 {
-                    builder.AppendLine(string.Join(";", Columns.Select(c => EscapeCsv(J.Str(J.Get(row, J.Str(J.Get(c, "id"))))))));
+                    builder.AppendLine(string.Join(";", Columns.Select(c => CsvExport.Escape(J.Str(J.Get(row, J.Str(J.Get(c, "id"))))))));
                 }
                 File.WriteAllText(dialog.FileName, builder.ToString(), new UTF8Encoding(true));
                 MessageBox.Show("Экспортировано записей: " + _rows.Count, "ОТ-База", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
-        }
-
-        private static string EscapeCsv(string value)
-        {
-            if (value.IndexOfAny(new[] { ';', '"', '\n' }) < 0) return value;
-            return "\"" + value.Replace("\"", "\"\"") + "\"";
         }
     }
 

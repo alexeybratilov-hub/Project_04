@@ -190,6 +190,13 @@ namespace OtBaza
                 check(reloaded.Tabs.Count == store.Tabs.Count, "после перезапуска число вкладок совпадает");
 
                 check(File.Exists(Path.Combine(root, "data", "backups", "ot_database_prev.json")), "создана резервная копия предыдущей базы");
+
+                // Экспорт CSV: экранирование структуры файла и нейтрализация формул.
+                check(CsvExport.Escape("Иванов;Пётр") == "\"Иванов;Пётр\"", "CSV: разделитель экранирован");
+                check(CsvExport.Escape("ООО \"Ромашка\"") == "\"ООО \"\"Ромашка\"\"\"", "CSV: кавычки удвоены");
+                check(CsvExport.Escape("=HYPERLINK(\"http://x\")") == "\"'=HYPERLINK(\"\"http://x\"\")\"", "CSV: формула нейтрализована");
+                check(CsvExport.Escape("-42,5") == "-42,5", "CSV: отрицательное число не испорчено");
+                check(CsvExport.Escape("@SUM(A1)") == "'@SUM(A1)", "CSV: значение с @ нейтрализовано");
             }
             catch (Exception ex)
             {
