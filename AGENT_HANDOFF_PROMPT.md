@@ -35,8 +35,8 @@
 - Хранение: (1) рабочая папка через File System Access API, (2) localStorage, (3) OT-Baza.exe (нативный сервер).
 - Интерфейс: Liquid Glass + Bento, сайдбар 236/64 px, bento-дашборд «Главная», превью вкладок,
   режим эффектов glass/reduced; таблицы — на непрозрачной подложке.
-- Проверки на момент передачи: pnpm test — 191/191 (20 файлов), pnpm lint — 0 ошибок,
-  vite build — успешно, pnpm audit --prod — 0 уязвимостей.
+- Проверки на момент передачи (2026-11-27): pnpm test — 196/196 (21 файл), pnpm lint — 0 ошибок,
+  vite build — успешно, pnpm audit --prod — 0 уязвимостей; build_native_app.ps1 + --selftest — 31/31.
 
 КОМАНДЫ
   pnpm install

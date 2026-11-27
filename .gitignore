@@ -31,6 +31,9 @@ Thumbs.db
 npm-debug.log*
 pnpm-debug.log*
 
+# отчёты внешних проверок (генерируются, не часть кода)
+/factory-gate-report.json
+
 # Десктопная сборка: рабочие данные и служебные папки
 /data/
 /.webview2/

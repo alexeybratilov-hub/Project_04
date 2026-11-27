@@ -34,7 +34,7 @@ pnpm preview      # http://localhost:4173
 
 ```bash
 pnpm lint         # tsc --noEmit (strict)
-pnpm test         # vitest run (191 тест, 20 файлов)
+pnpm test         # vitest run (196 тестов, 21 файл)
 pnpm build        # vite build
 pnpm check        # lint + test + build
 ```

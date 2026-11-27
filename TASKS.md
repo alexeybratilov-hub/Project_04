@@ -139,3 +139,14 @@
 | N-03 | P2 | **Стеклянные модалки, превью вкладок и облегчённый режим**: `GlassForm` (без рамки, перетаскивание, пилюли), `TabPreviewForm` (280 мс, реальные данные), `Ui.Reduced` с сохранением в `settings.visualEffects`, переключатель в сайдбаре | `native/Glass.cs`, `native/Dialogs.cs`, `native/MainForm.cs` | Выполнено (скриншоты модалки, превью и reduced-режима; сборка 200 КБ) |
 | N-04 | P1 | **Карточка работника и документы**: `EmployeeCardForm` (чек-лист, «Выполнено», события), `DocxService` (OOXML без библиотек, теги, таблицы, `documents/<Категория>/`, реестр `generatedDocs`), резолвер полей по id/названию колонки, 7 шаблонов в каталоге | `native/Card.cs`, `native/DocxService.cs`, `native/Employees.cs`, `native/modules.json`, `native/Views.cs` | Выполнено (selftest 26/26, DOCX проверен `python-docx`) |
 | N-05 | P1 | **Импорт Excel и просмотр DOCX без офисных приложений**: `XlsxReader` (sharedStrings, стили дат, сопоставление колонок), «Импорт Excel» в таблицах, `DocxPreviewForm` (текст из document.xml), проверка `--import-test` | `native/XlsxReader.cs`, `native/Preview.cs`, `native/Views.cs`, `native/Card.cs`, `README.md`, `DECISIONS.md` | Выполнено (xlsx с датами и кириллицей прочитан, DOCX просмотрен, selftest 26/26) |
+
+---
+
+## Повторный аудит и гигиена (2026-11-27)
+
+| ID | Приоритет | Задача | Файлы | Статус |
+|---|---|---|---|---|
+| A-01 | P2 | **CSV-инъекция в нативном экспорте**: значения вида `=...`, `+...`, `@...` попадали в `.csv` как формулы (Excel их выполняет). Экранирование вынесено в `CsvExport.Escape` с нейтрализацией формул, числовые значения не портятся, добавлено экранирование `\r` | `native/CsvExport.cs`, `native/Views.cs`, `native/Program.cs` | Выполнено (selftest 31/31, сборка 236 КБ) |
+| A-02 | P2 | **Синхронизация документации**: 191 тест/20 файлов → 196/21, «7 обязательств при приёме» → 8 требований + приказ (9 обязательств) | `README.md`, `HANDOFF.md`, `PROJECT_CONTEXT.md`, `ROADMAP.md`, `AGENT_HANDOFF_PROMPT.md`, `ИТОГОВЫЙ_ОТЧЁТ.md` | Выполнено |
+| A-03 | P3 | **Гигиена репозитория**: удалён незакоммиченный `factory-gate-report.json`, шаблон добавлен в `.gitignore` | `.gitignore` | Выполнено |
+| A-04 | P2 | **Рекомендации без правки**: минимальный пароль бэкапа 4 символа, нет файловой блокировки `data/ot_database.json` на два экземпляра, нет CI, dev-цепочка `glob`/`minimatch` (2 moderate, только dev) | — | Ожидает решения владельца (см. `HANDOFF.md` §4.5) |
