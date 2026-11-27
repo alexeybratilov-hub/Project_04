@@ -138,6 +138,16 @@ namespace OtBaza
         /// <summary>Каталог проверки: отчёт пишется рядом с ним, чтобы его можно было прочитать.</summary>
         private static string selftestRoot;
 
+        private static void WriteZipText(ZipArchive archive, string name, string text)
+        {
+            ZipArchiveEntry entry = archive.CreateEntry(name, CompressionLevel.Optimal);
+            using (Stream stream = entry.Open())
+            using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+            {
+                writer.Write(text);
+            }
+        }
+
         public static int Run(string targetDirectory)
         {
             var log = new StringBuilder();
@@ -304,6 +314,69 @@ namespace OtBaza
                         string xml = entry == null ? string.Empty : new StreamReader(entry.Open()).ReadToEnd();
                         check(xml.Contains("Тестов Иван Иванович"), "шаблоны: тег {ФИО} подставлен");
                         check(xml.Contains("Катания"), "шаблоны: синоним {Организация_полное} подставлен");
+                    }
+                }
+
+                // Готовый .docx-шаблон: теги, разорванные Word на прогоны, всё равно подставляются.
+                string docxTemplatePath = Path.Combine(store.TemplatesDirectory, "split.docx");
+                string docxXml =
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>" +
+                    "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>" +
+                    "<w:p><w:r><w:t>Работник: {ФИ</w:t></w:r><w:r><w:t>О}, должность: {Долж</w:t></w:r><w:r><w:t>ность}</w:t></w:r></w:p>" +
+                    "<w:p><w:r><w:t>Организация: {Организация_полное}</w:t></w:r></w:p>" +
+                    "<w:p><w:r><w:t>Проверка &amp; экранирования &lt;тег&gt;</w:t></w:r></w:p>" +
+                    "<w:p><w:r><w:t>Неизвестный {Такой_тег} остаётся как есть</w:t></w:r></w:p>" +
+                    "</w:body></w:document>";
+                using (var stream = new FileStream(docxTemplatePath, FileMode.Create, FileAccess.Write))
+                using (var archive = new ZipArchive(stream, ZipArchiveMode.Create))
+                {
+                    WriteZipText(archive, "[Content_Types].xml",
+                        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>" +
+                        "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">" +
+                        "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>" +
+                        "<Default Extension=\"xml\" ContentType=\"application/xml\"/>" +
+                        "<Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>" +
+                        "</Types>");
+                    WriteZipText(archive, "_rels/.rels",
+                        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>" +
+                        "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
+                        "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/>" +
+                        "</Relationships>");
+                    WriteZipText(archive, "word/document.xml", docxXml);
+                }
+
+                var docxTags = DocxTemplateService.ListTags(docxTemplatePath);
+                check(docxTags.Contains("ФИО") && docxTags.Contains("Должность"),
+                    "docx-шаблон: теги найдены (" + string.Join(", ", docxTags.ToArray()) + ")");
+
+                var docxTemplates = J.Arr(J.Get(store.Entity, "templates"));
+                docxTemplates.Add(new Dictionary<string, object>
+                {
+                    { "id", "tpl_docx_test" },
+                    { "name", "Бланк из Word" },
+                    { "category", "Проверка" },
+                    { "kind", "docx" },
+                    { "templateFile", "templates/split.docx" },
+                    { "contentTemplate", string.Empty }
+                });
+                J.Put(store.Entity, "templates", docxTemplates.Cast<object>().ToArray());
+
+                string docxOut = DocxService.Generate(store, "row_test_1", "tpl_docx_test", ObligationsEngine.TodayIso());
+                check(docxOut != null && File.Exists(docxOut), "docx-шаблон: документ сформирован из бланка Word");
+                if (docxOut != null)
+                {
+                    using (var zip = System.IO.Compression.ZipFile.OpenRead(docxOut))
+                    {
+                        var entry = zip.GetEntry("word/document.xml");
+                        string xml = entry == null ? string.Empty : new StreamReader(entry.Open()).ReadToEnd();
+                        check(xml.Contains("Тестов Иван Иванович"), "docx-шаблон: тег, разорванный на 3 прогона, подставлен");
+                        check(xml.Contains("Начальник цеха"), "docx-шаблон: должность подставлена");
+                        check(xml.Contains("Общество с ограниченной ответственностью «Катания»"),
+                            "docx-шаблон: синоним {Организация_полное} подставлен");
+                        check(xml.Contains("Проверка &amp; экранирования &lt;тег&gt;"),
+                            "docx-шаблон: XML-экранирование сохранено");
+                        check(xml.Contains("{Такой_тег}"), "docx-шаблон: неизвестный тег не тронут");
+                        check(!xml.Contains("{ФИ"), "docx-шаблон: обрывков тега не осталось");
                     }
                 }
 

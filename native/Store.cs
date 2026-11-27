@@ -84,6 +84,10 @@ namespace OtBaza
         public string Name;
         public string Category;
         public string Content;
+        /// <summary>Шаблон — готовый .docx из Word (теги подставляются в XML), а не текст.</summary>
+        public bool IsDocx;
+        /// <summary>Путь к .docx-шаблону: относительный считается от папки данных.</summary>
+        public string FilePath;
     }
 
     internal sealed class Catalog
@@ -145,7 +149,9 @@ namespace OtBaza
                     Id = J.Str(J.Get(rawTemplate, "id")),
                     Name = J.Str(J.Get(rawTemplate, "name")),
                     Category = J.Str(J.Get(rawTemplate, "category")),
-                    Content = J.Str(J.Get(rawTemplate, "content"))
+                    Content = J.Str(J.Get(rawTemplate, "content")),
+                    FilePath = J.Str(J.Get(rawTemplate, "file")),
+                    IsDocx = string.Equals(J.Str(J.Get(rawTemplate, "kind")), "docx", StringComparison.OrdinalIgnoreCase)
                 });
             }
 
@@ -430,6 +436,18 @@ namespace OtBaza
         public void SetInstalledModules(IEnumerable<string> ids)
         {
             Settings["installedModules"] = ids.Distinct().ToArray();
+        }
+
+        /// <summary>Папка с готовыми .docx-шаблонами (переносится вместе с базой).</summary>
+        public string TemplatesDirectory
+        {
+            get
+            {
+                string directory = Path.Combine(DataRoot, "templates");
+                try { Directory.CreateDirectory(directory); }
+                catch { }
+                return directory;
+            }
         }
 
         public Dictionary<string, object> FindTab(string tabId)

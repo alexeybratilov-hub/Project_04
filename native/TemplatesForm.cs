@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Windows.Forms;
 
@@ -69,6 +70,10 @@ namespace OtBaza
             var newButton = new PillButton { Text = "Новый шаблон", Width = 190, Height = 34, Margin = new Padding(0, 0, 0, 6) };
             newButton.Click += delegate { StartNew(); };
             listButtons.Controls.Add(newButton);
+
+            var importButton = new PillButton { Text = "Загрузить .docx…", Width = 190, Height = 34, Margin = new Padding(0, 0, 0, 6) };
+            importButton.Click += delegate { ImportDocx(); };
+            listButtons.Controls.Add(importButton);
 
             var deleteButton = new PillButton { Text = "Удалить свой", Width = 170, Height = 34 };
             deleteButton.Click += delegate { DeleteCurrent(); };
@@ -242,7 +247,9 @@ namespace OtBaza
                     Name = template.Name,
                     Category = template.Category,
                     TabId = string.Empty,
-                    Content = template.Content
+                    Content = template.Content,
+                    Kind = template.IsDocx ? "docx" : "text",
+                    FilePath = template.FilePath
                 });
             }
             foreach (object item in J.Arr(J.Get(_store.Entity, "templates")))
@@ -251,13 +258,18 @@ namespace OtBaza
                 if (raw == null) continue;
                 string id = J.Str(J.Get(raw, "id"));
                 if (id.Length == 0) continue;
+                string kind = J.Str(J.Get(raw, "kind"));
+                string file = J.Str(J.Get(raw, "templateFile"));
+                bool isDocx = string.Equals(kind, "docx", StringComparison.OrdinalIgnoreCase);
                 _items.Add(new TemplateItem
                 {
                     EntityId = id,
                     Name = J.Str(J.Get(raw, "name")),
                     Category = J.Str(J.Get(raw, "category")),
                     TabId = J.Str(J.Get(raw, "tabId")),
-                    Content = J.Str(J.Get(raw, "contentTemplate"))
+                    Content = J.Str(J.Get(raw, "contentTemplate")),
+                    Kind = isDocx ? "docx" : "text",
+                    FilePath = file
                 });
             }
 
@@ -314,6 +326,17 @@ namespace OtBaza
             }
             _tab.SelectedIndex = index;
 
+            bool isDocx = _current.Kind == "docx";
+            _content.ReadOnly = isDocx;
+            _content.BackColor = isDocx ? Color.FromArgb(0xF3, 0xF7, 0xFD) : Color.White;
+            if (isDocx)
+            {
+                string file = _current.FilePath ?? string.Empty;
+                var tags = DocxTemplateService.ListTags(DocxService.ResolveTemplateFile(_store, new TemplateDef { FilePath = file }));
+                _status.Text = "Шаблон Word: теги подставляются прямо в бланк. Найдено тегов: " +
+                               (tags.Count == 0 ? "нет (добавьте {ФИО} и другие в документ)" : string.Join(", ", tags.ToArray()));
+                return;
+            }
             _status.Text = _current.EntityId == null
                 ? "Встроенный шаблон: можно править и сохранить как свой (изменения встроенного не затрагиваются)."
                 : "Свой шаблон организации: изменения сохраняются в базу.";
@@ -333,10 +356,91 @@ namespace OtBaza
             _current = null;
             _name.Text = "Новый шаблон";
             _category.Text = "Документы";
+            _content.ReadOnly = false;
+            _content.BackColor = Color.White;
             _content.Text = "{Организация}\n\nДОКУМЕНТ\n\nРаботник: {ФИО}, должность: {Должность}\n\nДата: {Дата_события}\n\nРуководитель ________________ / {Директор} /";
             if (_tab.Items.Count > 0) _tab.SelectedIndex = 0;
             _status.Text = "Новый шаблон ещё не сохранён — нажмите «Сохранить как свой».";
             _name.Focus();
+        }
+
+        /// <summary>
+        /// Импорт готового бланка Word: файл копируется в папку templates рядом с базой,
+        /// а в организации появляется запись шаблона. Теги {ФИО} и т. п. ставятся
+        /// прямо в Word и подставляются при формировании.
+        /// </summary>
+        private void ImportDocx()
+        {
+            using (var dialog = new OpenFileDialog
+            {
+                Title = "Загрузить шаблон Word",
+                Filter = "Документ Word (*.docx)|*.docx"
+            })
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+                try
+                {
+                    string source = dialog.FileName;
+                    string baseName = Path.GetFileNameWithoutExtension(source);
+                    string safeName = MakeSafeFileName(baseName);
+                    string directory = _store.TemplatesDirectory;
+                    string target = Path.Combine(directory, safeName + ".docx");
+                    int index = 2;
+                    while (File.Exists(target))
+                    {
+                        target = Path.Combine(directory, safeName + " (" + index + ").docx");
+                        index++;
+                    }
+                    File.Copy(source, target, false);
+
+                    var templates = J.Arr(J.Get(_store.Entity, "templates"));
+                    templates.Add(new Dictionary<string, object>
+                    {
+                        { "id", "tpl_docx_" + DateTime.Now.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture) },
+                        { "name", baseName },
+                        { "category", _category.Text.Trim().Length == 0 ? "Документы" : _category.Text.Trim() },
+                        { "tabId", _tab.SelectedItem is TabItem ? ((TabItem)_tab.SelectedItem).Id : string.Empty },
+                        { "kind", "docx" },
+                        { "templateFile", "templates/" + Path.GetFileName(target) },
+                        { "contentTemplate", string.Empty },
+                        { "isBuiltIn", false }
+                    });
+                    J.Put(_store.Entity, "templates", templates.Cast<object>().ToArray());
+                    _store.Save();
+                    Changed = true;
+                    RefreshAll();
+
+                    for (int i = 0; i < _list.Items.Count; i++)
+                    {
+                        var item = _list.Items[i] as TemplateItem;
+                        if (item != null && item.EntityId != null && item.FilePath != null &&
+                            item.FilePath.EndsWith(Path.GetFileName(target), StringComparison.OrdinalIgnoreCase))
+                        {
+                            _list.SelectedIndex = i;
+                            break;
+                        }
+                    }
+
+                    var found = DocxTemplateService.ListTags(target);
+                    _status.Text = found.Count == 0
+                        ? "Шаблон Word добавлен. В нём нет тегов вида {ФИО} — документ будет копией бланка."
+                        : "Шаблон Word добавлен. Теги: " + string.Join(", ", found.ToArray());
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Не удалось загрузить шаблон: " + ex.Message, "Шаблоны", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+        }
+
+        private static string MakeSafeFileName(string value)
+        {
+            string name = string.IsNullOrWhiteSpace(value) ? "Шаблон" : value.Trim();
+            foreach (char c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
+            name = name.Replace('/', '_').Replace('\\', '_').Trim();
+            if (name.Length > 80) name = name.Substring(0, 80).Trim();
+            return name.Length == 0 ? "Шаблон" : name;
         }
 
         private void SaveTemplate()
@@ -347,9 +451,16 @@ namespace OtBaza
                 MessageBox.Show("Укажите название шаблона.", "Шаблоны", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
-            if (_content.Text.Trim().Length == 0)
+
+            bool isDocx = _current != null && _current.Kind == "docx";
+            if (!isDocx && _content.Text.Trim().Length == 0)
             {
                 MessageBox.Show("Текст шаблона пуст.", "Шаблоны", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if (isDocx && (_current.EntityId == null))
+            {
+                MessageBox.Show("Это встроенный Word-шаблон: его можно только сформировать.", "Шаблоны", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
@@ -365,7 +476,7 @@ namespace OtBaza
                     raw["name"] = name;
                     raw["category"] = _category.Text.Trim();
                     raw["tabId"] = tabId;
-                    raw["contentTemplate"] = _content.Text;
+                    if (!isDocx) raw["contentTemplate"] = _content.Text;
                     break;
                 }
             }
@@ -424,6 +535,20 @@ namespace OtBaza
                 return raw != null && J.Str(J.Get(raw, "id")) != _current.EntityId;
             }).ToList();
             J.Put(_store.Entity, "templates", keep.Cast<object>().ToArray());
+
+            // Файл своего .docx-бланка при удалении шаблона тоже убираем (он уникален для импорта).
+            if (_current.Kind == "docx" && !string.IsNullOrWhiteSpace(_current.FilePath))
+            {
+                try
+                {
+                    string path = DocxService.ResolveTemplateFile(_store, new TemplateDef { FilePath = _current.FilePath });
+                    if (File.Exists(path)) File.Delete(path);
+                }
+                catch
+                {
+                    // Файл занят — запись шаблона уже удалена, файл можно убрать вручную.
+                }
+            }
 
             try
             {
@@ -484,10 +609,14 @@ namespace OtBaza
             public string Category;
             public string TabId;
             public string Content;
+            public string Kind = "text";
+            public string FilePath;
 
             public override string ToString()
             {
-                return (EntityId == null ? "встроенный · " : "свой · ") + (Name ?? "(без названия)");
+                string prefix = EntityId == null ? "встроенный · " : "свой · ";
+                if (Kind == "docx") prefix = EntityId == null ? "встроенный Word · " : "Word · ";
+                return prefix + (Name ?? "(без названия)");
             }
         }
 

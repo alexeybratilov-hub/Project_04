@@ -31,8 +31,23 @@ namespace OtBaza
             if (template == null) return null;
 
             var employee = FindEmployee(store, employeeRowId);
-            string text = ApplyTags(template.Content, store, employee, eventDateIso);
-            byte[] bytes = BuildDocx(text);
+            var values = BuildTagValues(store, employee, eventDateIso);
+
+            byte[] bytes;
+            if (template.IsDocx)
+            {
+                string source = ResolveTemplateFile(store, template);
+                if (!File.Exists(source)) throw new FileNotFoundException("Файл шаблона не найден: " + source);
+                bytes = DocxTemplateService.Render(source, tag =>
+                {
+                    string value;
+                    return values.TryGetValue(tag, out value) ? value : null; // null — тег не трогаем
+                });
+            }
+            else
+            {
+                bytes = BuildDocx(ApplyTags(template.Content, values));
+            }
 
             string category = string.IsNullOrWhiteSpace(template.Category) ? "Документы" : template.Category;
             string directory = Path.Combine(store.DataRoot, "documents", SafeName(category));
@@ -56,6 +71,15 @@ namespace OtBaza
             return fullPath;
         }
 
+        /// <summary>Путь к файлу .docx-шаблона: относительный путь считается от папки данных.</summary>
+        public static string ResolveTemplateFile(Store store, TemplateDef template)
+        {
+            if (template == null || string.IsNullOrWhiteSpace(template.FilePath)) return string.Empty;
+            return Path.IsPathRooted(template.FilePath)
+                ? template.FilePath
+                : Path.Combine(store.DataRoot, template.FilePath.Replace('/', Path.DirectorySeparatorChar));
+        }
+
         private static TemplateDef ResolveTemplate(Store store, string templateId)
         {
             if (string.IsNullOrWhiteSpace(templateId)) return null;
@@ -70,12 +94,17 @@ namespace OtBaza
                 string id = J.Str(J.Get(raw, "id"));
                 string builtInId = J.Str(J.Get(raw, "builtInId"));
                 if (id != templateId && builtInId != templateId) continue;
+                string kind = J.Str(J.Get(raw, "kind"));
+                string file = J.Str(J.Get(raw, "templateFile"));
+                bool isDocx = string.Equals(kind, "docx", StringComparison.OrdinalIgnoreCase);
                 return new TemplateDef
                 {
                     Id = id,
                     Name = J.Str(J.Get(raw, "name")),
                     Category = J.Str(J.Get(raw, "category")),
-                    Content = J.Str(J.Get(raw, "contentTemplate"))
+                    Content = J.Str(J.Get(raw, "contentTemplate")),
+                    IsDocx = isDocx,
+                    FilePath = file
                 };
             }
             return null;
@@ -93,7 +122,8 @@ namespace OtBaza
             return new Dictionary<string, object>();
         }
 
-        private static string ApplyTags(string template, Store store, Dictionary<string, object> employee, string eventDateIso)
+        /// <summary>Значения всех поддерживаемых тегов для конкретного работника и даты события.</summary>
+        public static Dictionary<string, string> BuildTagValues(Store store, Dictionary<string, object> employee, string eventDateIso)
         {
             var profile = store.Profile;
             var info = Employees.Read(store, employee);
@@ -101,7 +131,7 @@ namespace OtBaza
             string hireDate = info.HireDate;
             if (string.IsNullOrWhiteSpace(hireDate)) hireDate = eventDate;
 
-            var tags = new Dictionary<string, string>
+            return new Dictionary<string, string>
             {
                 { "Организация", J.Str(J.Get(profile, "fullName")) },
                 { "Краткое", J.Str(J.Get(profile, "shortName")) },
@@ -136,9 +166,13 @@ namespace OtBaza
                 { "Дата_проведения", FormatDate(eventDate) },
                 { "Номер_записи", DateTime.Now.ToString("ddMMyy-HHmm", CultureInfo.InvariantCulture) }
             };
+        }
 
+        /// <summary>Подстановка тегов в текстовый шаблон (встроенный или свой текстовый).</summary>
+        public static string ApplyTags(string template, Dictionary<string, string> values)
+        {
             string result = template ?? string.Empty;
-            foreach (var pair in tags)
+            foreach (var pair in values)
             {
                 result = result.Replace("{" + pair.Key + "}", pair.Value);
             }
